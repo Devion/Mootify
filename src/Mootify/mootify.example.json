@@ -5,6 +5,8 @@
     "AdminUsername": "mooadmin",
     "MinPasswordLength": 8,
     "AllowRegistration": true,
+    "MaxFailedAttempts": 10,
+    "LockoutDuration": "00:15:00",
     "SessionLifetime": "30.00:00:00"
   },
 

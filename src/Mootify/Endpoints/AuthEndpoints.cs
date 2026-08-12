@@ -18,15 +18,44 @@ public static class AuthEndpoints
             [FromForm] string password,
             [FromForm] string? returnUrl,
             AccountService accounts,
+            LoginThrottle throttle,
             CancellationToken ct) =>
         {
+            var ip = http.Connection.RemoteIpAddress?.ToString();
+
+            // Locked out: no password check, no new failure recorded. Not counting attempts
+            // made during a lockout is what keeps "try again in 12 minutes" true.
+            if (throttle.GetLockout(username, ip) is { } remaining)
+            {
+                return Redirect(MootifyAuth.LoginPath, LockoutMessage(remaining), returnUrl);
+            }
+
+            // Before the check, not after, and regardless of the outcome — see LoginThrottle.
+            // A correct password answering instantly while a wrong one waits would tell an
+            // attacker which was which without reading the response.
+            var delay = throttle.GetDelay(username, ip);
+            if (delay > TimeSpan.Zero)
+            {
+                await Task.Delay(delay, ct);
+            }
+
             var result = await accounts.SignInAsync(username, password, ct);
 
             if (!result.Succeeded)
             {
+                throttle.RecordFailure(username, ip);
+
+                // If that was the one that tripped it, say so now rather than letting them
+                // discover it on the next try.
+                if (throttle.GetLockout(username, ip) is { } locked)
+                {
+                    return Redirect(MootifyAuth.LoginPath, LockoutMessage(locked), returnUrl);
+                }
+
                 return Redirect(MootifyAuth.LoginPath, result.Error!, returnUrl);
             }
 
+            throttle.RecordSuccess(username, ip);
             await SignInAsync(http, result);
             return Results.Redirect(SafeReturnUrl(returnUrl));
         }).RequireRateLimiting("login");
@@ -77,6 +106,13 @@ public static class AuthEndpoints
             await http.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme);
             return Results.Redirect(MootifyAuth.LoginPath);
         }).DisableAntiforgery();
+    }
+
+    private static string LockoutMessage(TimeSpan remaining)
+    {
+        // Round up: "try again in 0 minutes" is worse than useless.
+        var minutes = Math.Max(1, (int)Math.Ceiling(remaining.TotalMinutes));
+        return $"Too many wrong passwords. Try again in {minutes} minute{(minutes == 1 ? "" : "s")}.";
     }
 
     private static Task SignInAsync(HttpContext http, AuthResult result) =>

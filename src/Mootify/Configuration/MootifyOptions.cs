@@ -27,6 +27,17 @@ public sealed class AuthOptions
     /// </summary>
     public bool AllowRegistration { get; set; } = true;
 
+    /// <summary>
+    /// Wrong passwords before the account (and the address) is locked out. Each failure
+    /// before that adds a second of delay; this is the wall at the end of the corridor.
+    /// </summary>
+    [Range(3, 100)]
+    public int MaxFailedAttempts { get; set; } = 10;
+
+    /// <summary>How long a lockout lasts. Fixed from the moment it trips — retrying during
+    /// the lockout doesn't extend it, so the wait is predictable.</summary>
+    public TimeSpan LockoutDuration { get; set; } = TimeSpan.FromMinutes(15);
+
     /// <summary>How long a login cookie stays valid.</summary>
     public TimeSpan SessionLifetime { get; set; } = TimeSpan.FromDays(30);
 }

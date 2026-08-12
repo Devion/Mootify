@@ -80,6 +80,11 @@ builder.Services.AddScoped(sp =>
 
 // ---- auth ---------------------------------------------------------------
 builder.Services.AddSingleton<SetupState>();
+
+// Backs LoginThrottle. The size limit is the eviction policy: an attacker cycling random
+// usernames would otherwise grow the counter table without bound.
+builder.Services.AddMemoryCache(options => options.SizeLimit = 20_000);
+builder.Services.AddSingleton<LoginThrottle>();
 builder.Services.AddScoped<SettingsService>();
 builder.Services.AddScoped<AccountService>();
 builder.Services.AddScoped<AdminService>();

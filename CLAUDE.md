@@ -142,6 +142,24 @@ bound to the requesting identity, so a form rendered for one user and posted as 
 with a raw 400. Authorization failures go to `/denied`, not to the login page, for the same
 reason.
 
+`LoginThrottle` is two layers. **Delay**: one second per prior failure, applied *before* the
+password check and to correct passwords too — delaying only failures would let an attacker read
+the answer off the response time. **Lockout**: at `Auth:MaxFailedAttempts` (10) the door shuts
+for `Auth:LockoutDuration` (15 min), no password is checked, and attempts during it aren't
+counted, so "try again in 12 minutes" stays true. Tripping the lockout clears the counter, so
+serving it earns a clean ten rather than a hair trigger.
+
+Both are counted per username **and** per IP, whichever is worse: per-username alone does
+nothing against spraying one password across many accounts, per-IP alone does nothing against a
+botnet grinding one account. Counters live in a size-limited `IMemoryCache`, so cycling random
+usernames can't grow them without bound.
+
+Two consequences worth knowing before changing the numbers. Anyone who can reach the login page
+can lock a *known* username out for 15 minutes on purpose — that's inherent to account lockout,
+and the 15-minute expiry is the whole mitigation, so there is no unlock button. And behind a
+reverse proxy every request carries the proxy's address, so the per-IP half would treat all
+users as one; wire up forwarded headers before putting this behind one.
+
 ## Testing
 
 `tests/Mootify.Tests` uses real SQLite in memory, not the EF InMemory provider — the bugs worth
