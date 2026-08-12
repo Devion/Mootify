@@ -12,6 +12,11 @@
     <link rel="stylesheet" href="@Assets["Mootify.styles.css"]" />
     <ImportMap />
     <link rel="icon" type="image/png" href="@Assets["img/logo-small.png"]" />
+
+    @*  Fetched while the connection still works. The reconnect dialog and the error bar both
+        use this image, and both only appear once the network has already gone — asking for
+        it then is asking too late. *@
+    <link rel="preload" as="image" href="@Assets["img/pietjeerror-sm.png"]" />
     <title>Mootify</title>
     <HeadOutlet />
 </head>
@@ -25,6 +30,16 @@
        The login page opts out via [ExcludeFromInteractiveRouting] so it can write the
        sign-in cookie during static SSR, before the response starts. *@
     <Routes @rendermode="RenderModeForPage" />
+
+    @*  Blazor unhides this when the circuit throws something it can't recover from. Static
+        markup on purpose: by the time it's visible, nothing interactive can be trusted. *@
+    <div id="blazor-error-ui" data-nosnippet>
+        <img src="img/pietjeerror-sm.png" alt="" />
+        <span>Something broke. Reload the page to carry on.</span>
+        <a href="" class="reload">Reload</a>
+        <a class="dismiss" role="button" aria-label="Dismiss">&times;</a>
+    </div>
+
     <ReconnectModal />
     <script src="@Assets["_framework/blazor.web.js"]"></script>
 </body>

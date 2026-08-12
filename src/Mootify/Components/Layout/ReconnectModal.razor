@@ -2,18 +2,23 @@
 
 <dialog id="components-reconnect-modal" data-nosnippet>
     <div class="components-reconnect-container">
+        @*  Deliberately the small copy, and it's preloaded in App.razor. This dialog only
+            ever appears when the connection has already failed — a 2 MB image fetched at
+            that exact moment is the one that won't arrive.  *@
+        <img class="reconnect__cow" src="img/pietjeerror-sm.png" alt="" />
+
         <div class="components-rejoining-animation" aria-hidden="true">
             <div></div>
             <div></div>
         </div>
         <p class="components-reconnect-first-attempt-visible">
-            Rejoining the server...
+            Lost the server. Rejoining&hellip;
         </p>
         <p class="components-reconnect-repeated-attempt-visible">
-            Rejoin failed... trying again in <span id="components-seconds-to-next-attempt"></span> seconds.
+            Still nothing. Trying again in <span id="components-seconds-to-next-attempt"></span> seconds.
         </p>
         <p class="components-reconnect-failed-visible">
-            Failed to rejoin.<br />Please retry or reload the page.
+            Couldn't get back.<br />Retry, or reload the page.
         </p>
         <button id="components-reconnect-button" class="components-reconnect-failed-visible">
             Retry

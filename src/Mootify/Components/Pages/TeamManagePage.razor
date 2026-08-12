@@ -11,7 +11,7 @@
 @if (_team is null)
 {
     <div class="emptystate">
-        <img src="img/pietjecow.png" alt="" />
+        <img src="img/pietjecow-sm.png" alt="" />
         <p>That team doesn't exist.</p>
     </div>
 }
@@ -19,7 +19,7 @@ else if (!_team.IsOwner)
 {
     @* Members can see the team page; only owners get the controls. *@
     <div class="emptystate">
-        <img src="img/pietjecow.png" alt="" />
+        <img src="img/pietjecow-sm.png" alt="" />
         <p>Only an owner can manage @_team.Name.</p>
         <a class="button" href="@($"/team/{TeamId}")">Back to the team</a>
     </div>
