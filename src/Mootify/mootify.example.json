@@ -33,6 +33,11 @@
   "Library": {
     "//MusicRoot": "The path THIS app can see. Lidarr's root folder is a path inside its own container, so it is usually a different string. A UNC share works: \\\\\\\\host\\\\Data\\\\MediaMusic",
     "MusicRoot": "",
+    "//Username": "Only needed for a UNC share that requires a login. Windows only — on Linux, mount the share in the OS.",
+    "//Password": "Also reads from the Library__Password environment variable or a Docker secret.",
+    "Username": "",
+    "Password": "",
+    "Domain": "",
     "FullScanInterval": "06:00:00",
     "WatchFileSystem": true,
     "WatchDebounce": "00:00:10",

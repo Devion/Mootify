@@ -486,3 +486,6 @@ mootify.json
 
 # SQLite dev database
 src/Mootify/data/
+
+# Publish output when published into the project folder
+src/Mootify/publish/

@@ -27,9 +27,14 @@ using Serilog;
 var builder = WebApplication.CreateBuilder(args);
 
 // mootify.json is the one file you edit. It is gitignored; mootify.example.json is the
-// committed template. Environment variables still win, so Docker secrets work untouched
-// (Lidarr__ApiKey, Library__MusicRoot, ...).
+// committed template.
 builder.Configuration.AddJsonFile("mootify.json", optional: true, reloadOnChange: true);
+
+// Re-added so it sits *above* mootify.json in precedence. Configuration is last-wins, and the
+// default builder registers environment variables before this file — so without this line the
+// file would quietly override Lidarr__ApiKey and Library__Password, which is the opposite of
+// what secrets are for.
+builder.Configuration.AddEnvironmentVariables();
 
 builder.Host.UseSerilog((context, config) => config
     .ReadFrom.Configuration(context.Configuration)
@@ -180,6 +185,7 @@ builder.Services.AddRateLimiter(options =>
 });
 
 // ---- application services ----------------------------------------------
+builder.Services.AddSingleton<NetworkShareConnector>();
 builder.Services.AddSingleton<LibraryScanner>();
 builder.Services.AddHostedService<LibraryScanService>();
 

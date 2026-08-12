@@ -3,6 +3,7 @@
 @inject AdminService Admin
 @inject SettingsService Settings
 @inject LibraryScanner Scanner
+@inject NetworkShareConnector Shares
 @inject LidarrClient Lidarr
 @inject Transcoder Transcoder
 @inject CurrentUser CurrentUser
@@ -44,7 +45,11 @@
         <li>
             <span class="dot @(_musicRootOk ? "dot--ok" : "dot--bad")"></span>
             Music root: <code>@(_musicRoot is { Length: > 0 } ? _musicRoot : "not set")</code>
-            @if (!_musicRootOk)
+            @if (Shares.Last is { } share)
+            {
+                <span class="muted">&mdash; @share.Detail</span>
+            }
+            else if (!_musicRootOk)
             {
                 <span class="muted">&mdash; not reachable from this machine</span>
             }
@@ -78,6 +83,11 @@
         <button class="button" @onclick="Rescan" disabled="@Scanner.IsScanning">
             @(Scanner.IsScanning ? "Scanning…" : "Rescan library")
         </button>
+        @if (_isNetworkShare)
+        {
+            @* For when the NAS came back after Mootify did. Beats restarting the app. *@
+            <button class="linkbutton" @onclick="Reconnect">Reconnect to share</button>
+        }
         <button class="linkbutton" @onclick="Prune">Prune missing tracks from playlists</button>
     </div>
 
@@ -92,6 +102,7 @@
     private bool _registrationOpen;
     private string? _musicRoot;
     private bool _musicRootOk;
+    private bool _isNetworkShare;
     private bool _ffmpegOk;
     private string? _ffmpegVersion;
     private bool? _lidarrOk;
@@ -123,6 +134,14 @@
         _registrationOpen = await Settings.GetRegistrationEnabledAsync();
         _musicRoot = LibraryOptions.CurrentValue.MusicRoot;
         _musicRootOk = !string.IsNullOrWhiteSpace(_musicRoot) && Directory.Exists(_musicRoot);
+        _isNetworkShare = !string.IsNullOrWhiteSpace(_musicRoot) && NetworkShareConnector.IsUncPath(_musicRoot);
+    }
+
+    private async Task Reconnect()
+    {
+        var result = await Shares.EnsureConnectedAsync();
+        await LoadAsync();
+        _message = result.Detail;
     }
 
     private async Task ToggleRegistration()

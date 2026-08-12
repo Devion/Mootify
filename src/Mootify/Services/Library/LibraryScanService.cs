@@ -9,6 +9,7 @@ namespace Mootify.Services.Library;
 /// </summary>
 public sealed class LibraryScanService(
     LibraryScanner scanner,
+    NetworkShareConnector shares,
     IOptionsMonitor<LibraryOptions> options,
     ILogger<LibraryScanService> log) : BackgroundService
 {
@@ -19,6 +20,9 @@ public sealed class LibraryScanService(
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         var opts = options.CurrentValue;
+
+        // A credentialled share needs its session opened before anything can read the path.
+        await shares.EnsureConnectedAsync(stoppingToken);
 
         if (string.IsNullOrWhiteSpace(opts.MusicRoot) || !Directory.Exists(opts.MusicRoot))
         {
@@ -111,6 +115,10 @@ public sealed class LibraryScanService(
     {
         try
         {
+            // Network shares drop — a reboot at the other end, a flaky switch. Reconnecting
+            // before each scan is what makes the library heal itself instead of emptying.
+            await shares.EnsureConnectedAsync(ct);
+
             await scanner.ScanAllAsync(ct);
         }
         catch (OperationCanceledException)

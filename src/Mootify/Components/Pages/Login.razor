@@ -24,8 +24,8 @@
     </div>
 
     <div class="login__form">
-        <img class="login__wordmark" src="img/logo-small.png" alt="Mootify" />
-
+        @* No wordmark here — the big logo in the panel alongside already says Mootify twice
+           over, and a second one just crowds the form. *@
         <form method="post" action="/auth/login">
             <input type="hidden" name="__RequestVerificationToken" value="@_token" />
             <input type="hidden" name="returnUrl" value="@ReturnUrl" />

@@ -28,7 +28,10 @@ secrets work without touching the file.
 Two settings need real thought:
 
 - **`Library:MusicRoot`** — the path *this app* can see. Lidarr's root folder is a path inside
-  Lidarr's own container; they are usually not the same string.
+  Lidarr's own container; they are usually not the same string. If it's a UNC share that needs
+  a login, set `Library:Username` / `Password` / `Domain` — Mootify opens the SMB session itself
+  and reconnects before every scan. Windows only; on Linux mount the share in the OS and point
+  `MusicRoot` at the mount.
 - **`Lidarr:QualityProfileId`** — pick a profile without FLAC in it (Lidarr's stock "Standard"
   is usually id 3). Anything non-MP3 that slips through gets transcoded, but not downloading it
   in the first place is cheaper.

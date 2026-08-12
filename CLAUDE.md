@@ -21,9 +21,19 @@ dotnet test --filter "FullyQualifiedName~PlaylistServiceTests"     # one class
 dotnet test --filter "DisplayName~Adding_the_same_request_twice"   # one test
 ```
 
-Config lives in `src/Mootify/mootify.json` (gitignored — it holds the Lidarr API key).
-`mootify.example.json` is the committed template. Environment variables override it
-(`Lidarr__ApiKey`, `Library__MusicRoot`).
+Config lives in `src/Mootify/mootify.json` (gitignored — it holds the Lidarr API key and any
+share password). `mootify.example.json` is the committed template. Environment variables
+override it (`Lidarr__ApiKey`, `Library__Password`, …) — but only because `Program.cs` re-adds
+the environment provider *after* the JSON file. Configuration is last-wins, and the default
+builder registers env vars before that file, so removing that line silently makes the file beat
+your secrets.
+
+A UNC share that needs a login is handled by `NetworkShareConnector` (`Library:Username` /
+`Password` / `Domain`). It opens an SMB session with `WNetAddConnection2`, which Windows scopes
+to the logon session — so every later file read on that path just works and the scanner needs
+to know nothing about it. It reconnects before each scan, so a NAS reboot heals itself.
+**Windows-only**: on Linux the mount belongs to the OS (fstab or a Docker volume), and the
+connector says so rather than failing silently.
 
 There are no EF migrations yet: startup calls `EnsureCreated()`. **Any change to
 `Data/Entities.cs` means deleting `src/Mootify/data/mootify.db` before the app will start.**

@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using Mootify.Configuration;
 using Mootify.Data;
+using Mootify.Services.Library;
 using Mootify.Services.Lidarr;
 using Mootify.Services.Settings;
 using Mootify.Services.Transcoding;
@@ -53,6 +54,11 @@ public static class StartupChecks
         // ---- music root -----------------------------------------------------
         var library = services.GetRequiredService<IOptions<LibraryOptions>>().Value;
 
+        // Opens the SMB session first if the share needs credentials, so the reachability
+        // check below reports the truth rather than "not found".
+        var shares = services.GetRequiredService<NetworkShareConnector>();
+        await shares.EnsureConnectedAsync();
+
         if (string.IsNullOrWhiteSpace(library.MusicRoot))
         {
             log.LogWarning("Library:MusicRoot is not set — Mootify will start, but the library stays empty.");
@@ -60,8 +66,9 @@ public static class StartupChecks
         else if (!Directory.Exists(library.MusicRoot))
         {
             log.LogWarning(
-                "Library:MusicRoot ({Root}) does not exist from this machine. Remember Lidarr's root " +
-                "folder is a path inside its own container; this one has to be the path Mootify can see.",
+                "Library:MusicRoot ({Root}) is not reachable. Remember Lidarr's root folder is a path " +
+                "inside its own container; this one has to be the path Mootify can see. If it's a share " +
+                "that needs a login, set Library:Username and Library:Password.",
                 library.MusicRoot);
         }
         else

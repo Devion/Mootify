@@ -94,6 +94,27 @@ public sealed class LibraryOptions
     [Required(AllowEmptyStrings = false)]
     public string MusicRoot { get; set; } = "";
 
+    /// <summary>
+    /// Credentials for a UNC share that needs them. Leave blank when the share is open, or
+    /// when the account Mootify runs under already has access.
+    ///
+    /// Only used on Windows — it opens an SMB session for the process, after which the normal
+    /// file APIs work against the path unchanged. On Linux the mount belongs to the OS
+    /// (fstab, or a Docker volume), not to us.
+    /// </summary>
+    public string? Username { get; set; }
+
+    /// <summary>
+    /// Also readable from the <c>Library__Password</c> environment variable or a Docker
+    /// secret, so it needn't be written into the file at all.
+    /// </summary>
+    public string? Password { get; set; }
+
+    /// <summary>Optional. <c>DOMAIN\user</c> in <see cref="Username"/> works just as well.</summary>
+    public string? Domain { get; set; }
+
+    public bool HasCredentials => !string.IsNullOrWhiteSpace(Username);
+
     /// <summary>Full rescan cadence. The watcher handles the fast path; this catches what it drops.</summary>
     public TimeSpan FullScanInterval { get; set; } = TimeSpan.FromHours(6);
 

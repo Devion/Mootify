@@ -1,4 +1,5 @@
 @implements IDisposable
+@using System.Globalization
 @inject PlayerService Player
 
 @*  Rendered entirely from PlayerService. Nothing here keeps its own copy of "is playing" —
@@ -65,9 +66,13 @@
         </div>
 
         <div class="playbar__scrub">
-            <span class="playbar__time">@Format(Player.Position)</span>
-            <input type="range" min="0" max="@Math.Max(1, Player.Duration)" step="0.5"
-                   value="@Player.Position" @onchange="OnSeek"
+            @* Shows where you're dragging to, not where playback is, so you can aim. *@
+            <span class="playbar__time">@Format(ScrubPosition)</span>
+            <input type="range" min="0" max="@Num(Math.Max(1, Player.Duration))" step="0.5"
+                   value="@Num(ScrubPosition)"
+                   @onpointerdown="BeginScrub"
+                   @oninput="OnScrubbing"
+                   @onchange="OnSeek"
                    disabled="@(Player.Current is null)" aria-label="Seek" />
             <span class="playbar__time">@Format(Player.Duration)</span>
         </div>
@@ -78,18 +83,54 @@
             <path fill="currentColor" d="M4 9h3l4-4v14l-4-4H4Zm12.5 3a4.5 4.5 0 0 0-2.5-4v8a4.5 4.5 0 0 0 2.5-4Z"/>
         </svg>
         <input class="playbar__volume" type="range" min="0" max="1" step="0.01"
-               value="@Player.Volume" @onchange="OnVolume" aria-label="Volume" />
+               value="@Num(Player.Volume)" @onchange="OnVolume" aria-label="Volume" />
     </div>
 </footer>
 
 @code {
+    /// <summary>
+    /// Where the scrubber should sit: normally the playhead, but the value you're dragging
+    /// to while you're dragging.
+    /// </summary>
+    private double ScrubPosition => _scrubbing ? _scrubTarget : Player.Position;
+
+    private bool _scrubbing;
+    private double _scrubTarget;
+
     protected override void OnInitialized() => Player.StateChanged += OnChanged;
 
-    private async Task OnChanged() => await InvokeAsync(StateHasChanged);
+    private async Task OnChanged()
+    {
+        // Not while somebody is dragging. Playback reports its position several times a
+        // second, and re-rendering rewrites the input's value — which yanks the thumb back to
+        // the playhead mid-gesture, so the browser abandons the drag and never fires `change`.
+        // The seek then never happens and the bar looks broken.
+        if (_scrubbing) return;
+
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private void BeginScrub()
+    {
+        // Claim the bar on pointer-down, before the first `input` arrives — a position update
+        // landing in that gap is enough to lose the gesture.
+        _scrubbing = true;
+        _scrubTarget = Player.Position;
+    }
+
+    private void OnScrubbing(ChangeEventArgs e)
+    {
+        if (!TryReadNumber(e, out var seconds)) return;
+
+        _scrubbing = true;
+        _scrubTarget = seconds;
+    }
 
     private async Task OnSeek(ChangeEventArgs e)
     {
-        if (double.TryParse(e.Value?.ToString(), out var seconds))
+        _scrubbing = false;
+
+        if (TryReadNumber(e, out var seconds))
         {
             await Player.SeekAsync(seconds);
         }
@@ -97,11 +138,30 @@
 
     private async Task OnVolume(ChangeEventArgs e)
     {
-        if (double.TryParse(e.Value?.ToString(), out var volume))
+        if (TryReadNumber(e, out var volume))
         {
             await Player.SetVolumeAsync(volume);
         }
     }
+
+    // ---- culture -----------------------------------------------------------
+    //
+    // HTML number syntax is invariant: "0.8", never "0,8". Both directions have to say so
+    // explicitly, because .NET defaults to the server's culture for each.
+    //
+    // Render with the machine's culture and a Dutch or German host emits value="0,8", which is
+    // invalid per spec — the browser silently discards it and parks the thumb at the midpoint
+    // of min and max. That's the "it just sits in the centre" symptom, and it takes the max
+    // attribute with it, so the whole bar is mis-scaled.
+    //
+    // Parse with the machine's culture and the "47.9" the browser sends back fails to parse on
+    // that same host, so seeking is quietly ignored. Broken coming and going, and invisible on
+    // an en-US dev box.
+
+    private static string Num(double value) => value.ToString(CultureInfo.InvariantCulture);
+
+    private static bool TryReadNumber(ChangeEventArgs e, out double value) =>
+        double.TryParse(e.Value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out value);
 
     private static string Format(double seconds)
     {
