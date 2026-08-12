@@ -162,10 +162,16 @@ public sealed class TranscodeOptions
 
     public string Bitrate { get; set; } = "320k";
 
-    /// <summary>Keep the FLAC by default; disk is cheaper than re-downloading.</summary>
+    /// <summary>Keep the original by default; disk is cheaper than re-downloading.</summary>
     public bool DeleteSourceAfterTranscode { get; set; }
 
+    /// <summary>
+    /// Where on-demand MP3s live for browsers that can't decode the original. Kept out of the
+    /// music root so the scanner never indexes a copy of a track it already has.
+    /// </summary>
+    public string CacheDirectory { get; set; } = "";
+
     /// <summary>Transcoding competes with playback for CPU. Keep this small.</summary>
-    [Range(1, 8)]
+    [Range(1, 16)]
     public int MaxConcurrent { get; set; } = 1;
 }

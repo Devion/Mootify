@@ -49,21 +49,37 @@ public sealed class LibraryScannerTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Only_mp3_files_become_tracks()
+    public async Task Mp3_and_flac_both_become_tracks()
     {
-        // The MP3-only invariant is enforced here and by transcoding before the rescan.
-        // A FLAC that reached the library would be unplayable in the browser.
+        // FLAC is what Lidarr actually fetches and every current browser decodes it, so
+        // indexing MP3 only left most of the library invisible. Browsers that can't cope
+        // get a transcoded copy from /media/{id}/mp3 instead of losing the original.
         WriteFile(@"Cowbells\Album\01 - Morning Graze.mp3");
         WriteFile(@"Cowbells\Album\02 - Lossless Lament.flac");
         WriteFile(@"Cowbells\Album\cover.jpg");
+        WriteFile(@"Cowbells\Album\03 - Old Format.wma");
 
         var report = await CreateScanner().ScanAllAsync();
 
-        Assert.Equal(1, report.Added);
+        Assert.Equal(2, report.Added);
 
         await using var db = _db.CreateDbContext();
-        var track = await db.Tracks.SingleAsync();
-        Assert.Equal("01 - Morning Graze", track.Title);
+        var titles = await db.Tracks.Select(t => t.Title).OrderBy(t => t).ToListAsync();
+        Assert.Equal(["01 - Morning Graze", "02 - Lossless Lament"], titles);
+    }
+
+    [Theory]
+    [InlineData("song.mp3", true)]
+    [InlineData("song.MP3", true)]
+    [InlineData("song.flac", true)]
+    [InlineData("song.FLAC", true)]
+    // Still needs converting — no browser plays these.
+    [InlineData("song.wma", false)]
+    [InlineData("song.ape", false)]
+    [InlineData("cover.jpg", false)]
+    public void The_indexable_formats_are_the_ones_browsers_play(string fileName, bool expected)
+    {
+        Assert.Equal(expected, LibraryScanner.IsIndexable(fileName));
     }
 
     [Fact]
@@ -148,15 +164,4 @@ public sealed class LibraryScannerTests : IAsyncLifetime
         Assert.Equal(ScanReport.Empty, report);
     }
 
-    [Theory]
-    [InlineData("song.flac", true)]
-    [InlineData("song.ogg", true)]
-    [InlineData("song.m4a", true)]
-    [InlineData("song.wav", true)]
-    [InlineData("song.mp3", false)]
-    [InlineData("cover.jpg", false)]
-    public void Transcoder_targets_exactly_the_unplayable_formats(string fileName, bool expected)
-    {
-        Assert.Equal(expected, Transcoder.NeedsTranscode(fileName));
-    }
 }

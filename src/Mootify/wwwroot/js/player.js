@@ -34,8 +34,16 @@ function ensureAudio() {
     audio.addEventListener('ended', () => dotnet?.invokeMethodAsync('OnEnded'));
     audio.addEventListener('play', () => dotnet?.invokeMethodAsync('OnPlayStateChanged', true));
     audio.addEventListener('pause', () => dotnet?.invokeMethodAsync('OnPlayStateChanged', false));
+    // Metadata arrived, so the browser really can decode this one.
+    audio.addEventListener('loadedmetadata', () => clearTimeout(stallTimer));
+
     audio.addEventListener('error', () => {
+        // canPlayType is a guess and browsers get it wrong. If a native decode fails and we
+        // have a transcoded copy to fall back on, take it once — silently, mid-track, so the
+        // listener sees a hiccup instead of a dead player.
         const code = audio.error ? audio.error.code : 0;
+        if (switchToFallback('media error ' + code)) return;
+
         dotnet?.invokeMethodAsync('OnError', 'media error code ' + code);
     });
 
@@ -48,10 +56,68 @@ export function init(dotnetRef) {
     primeNotificationAudio();
 }
 
-export function play(url) {
+// Chrome, Firefox and Edge decode FLAC; Safari's support has been patchy and version
+// dependent. Ask the browser rather than sniffing the user agent, and treat "maybe" as no —
+// a silent failure mid-song is worse than transcoding something we didn't need to.
+function supportsFlac() {
     const el = ensureAudio();
-    el.src = url;
+    return el.canPlayType('audio/flac') === 'probably'
+        || el.canPlayType('audio/x-flac') === 'probably';
+}
+
+// Set when a native decode fails or stalls, so the retry doesn't loop.
+let usedFallback = false;
+let stallTimer = null;
+
+// How long to give a native file to produce metadata before assuming the browser can't
+// actually decode it.
+const STALL_MS = 6000;
+
+function switchToFallback(reason) {
+    const el = ensureAudio();
+    if (!el._fallbackUrl || usedFallback) return false;
+
+    usedFallback = true;
+    clearTimeout(stallTimer);
+
+    const at = el.currentTime || 0;
+    el.src = el._fallbackUrl;
+    el.currentTime = at;
+    el.play().catch(() => {});
+
+    // So the play bar says MP3 rather than claiming FLAC while streaming a transcode.
+    dotnet?.invokeMethodAsync('OnFallbackUsed');
+
+    console.info('[mootify] falling back to transcoded audio:', reason);
+    return true;
+}
+
+export function play(url, fallbackUrl) {
+    const el = ensureAudio();
+
+    // fallbackUrl is only supplied for tracks stored in something other than MP3.
+    const useFallback = !!fallbackUrl && !supportsFlac();
+    usedFallback = useFallback;
+    el._fallbackUrl = fallbackUrl || null;
+
+    el.src = useFallback ? fallbackUrl : url;
     el.play().catch(err => dotnet?.invokeMethodAsync('OnError', String(err)));
+
+    // Decided before a single byte moved — the browser told us it can't decode this container.
+    if (useFallback) dotnet?.invokeMethodAsync('OnFallbackUsed');
+
+    clearTimeout(stallTimer);
+
+    // canPlayType answers about the container, not the file. A 24-bit/192kHz FLAC is a
+    // format Chrome claims it can play and then can't decode: it loads for ever, produces
+    // no metadata, and fires no error — so there's nothing to react to except the silence.
+    // If nothing has arrived by now, assume the worst and take the transcoded copy.
+    if (!useFallback && fallbackUrl) {
+        stallTimer = setTimeout(() => {
+            if (el.readyState < 1) switchToFallback('no metadata after ' + STALL_MS + 'ms');
+        }, STALL_MS);
+    }
+
     updateMediaSession();
 }
 

@@ -171,7 +171,7 @@ public sealed class LibraryScanner(
         {
             using var tag = TagLib.File.Create(file.FullName);
 
-            artistName = FirstNonEmpty(tag.Tag.AlbumArtists) ?? FirstNonEmpty(tag.Tag.Performers) ?? artistName;
+            artistName = ReadArtist(tag) ?? artistName;
             albumTitle = Blank(tag.Tag.Album) ? null : tag.Tag.Album;
             title = Blank(tag.Tag.Title) ? title : tag.Tag.Title!;
             year = (int)tag.Tag.Year;
@@ -276,7 +276,16 @@ public sealed class LibraryScanner(
             b.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
             StringComparison.OrdinalIgnoreCase);
 
-    /// <summary>MP3 only. Everything else is a transcode job, not a library entry.</summary>
+    /// <summary>
+    /// What the library indexes. MP3 plays everywhere; FLAC plays in every current browser
+    /// and is what Lidarr actually fetches, so refusing it left most of the music invisible.
+    /// Anything else still needs converting before it can be a library entry.
+    /// </summary>
+    public static readonly string[] IndexedExtensions = [".mp3", ".flac"];
+
+    public static bool IsIndexable(string path) =>
+        IndexedExtensions.Contains(Path.GetExtension(path), StringComparer.OrdinalIgnoreCase);
+
     public static IEnumerable<FileInfo> EnumerateAudioFiles(string root)
     {
         var opts = new EnumerationOptions
@@ -286,7 +295,11 @@ public sealed class LibraryScanner(
             AttributesToSkip = FileAttributes.System,
         };
 
-        return new DirectoryInfo(root).EnumerateFiles("*.mp3", opts);
+        // One walk with a filter rather than a walk per pattern — over SMB the enumeration
+        // is the expensive part, not the comparison.
+        return new DirectoryInfo(root)
+            .EnumerateFiles("*", opts)
+            .Where(f => IsIndexable(f.Name));
     }
 
     /// <summary>Size + mtime, not a content hash. Hashing 40,000 files on every scan is not worth it.</summary>
@@ -298,6 +311,30 @@ public sealed class LibraryScanner(
 
     private static bool Blank(string? s) => string.IsNullOrWhiteSpace(s);
 
-    private static string? FirstNonEmpty(string[]? values) =>
-        values?.FirstOrDefault(v => !string.IsNullOrWhiteSpace(v));
+    /// <summary>
+    /// The artist as the file actually names them.
+    ///
+    /// TagLib splits ID3v2.3 TPE1 on "/" — a leftover from ID3v1, where that was the
+    /// multi-artist convention. So "AC/DC" arrives as ["AC", "DC"], and taking the first
+    /// element files the whole discography under "AC". Rejoining with the same separator
+    /// gives back exactly what the tag said, whether that was one band with a slash in its
+    /// name or two artists.
+    ///
+    /// ID3v2.4 and Vorbis comments have real multi-value fields, so there the parts are
+    /// genuinely separate names and a slash would be a lie.
+    /// </summary>
+    internal static string? ReadArtist(TagLib.File file)
+    {
+        var separator = file.GetTag(TagLib.TagTypes.Id3v2) is TagLib.Id3v2.Tag { Version: < 4 }
+            ? "/"
+            : "; ";
+
+        return Join(file.Tag.AlbumArtists, separator) ?? Join(file.Tag.Performers, separator);
+    }
+
+    private static string? Join(string[]? values, string separator)
+    {
+        var parts = values?.Where(v => !string.IsNullOrWhiteSpace(v)).Select(v => v.Trim()).ToArray();
+        return parts is { Length: > 0 } ? string.Join(separator, parts) : null;
+    }
 }

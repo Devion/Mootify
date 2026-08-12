@@ -11,6 +11,7 @@ using Mootify.Data;
 using Mootify.Endpoints;
 using Mootify.Services.Admin;
 using Mootify.Services.Auth;
+using Mootify.Services.Import;
 using Mootify.Services.Library;
 using Microsoft.Extensions.Options;
 using Mootify.Services.Lidarr;
@@ -191,9 +192,14 @@ builder.Services.AddHostedService<LibraryScanService>();
 
 builder.Services.AddSingleton<NotificationDispatcher>();
 builder.Services.AddSingleton<Transcoder>();
+builder.Services.AddSingleton<LibraryTranscodeService>();
+builder.Services.AddSingleton<TranscodeCache>();
 
 builder.Services.AddScoped<PlaylistService>();
 builder.Services.AddScoped<PlaylistEvents>();
+builder.Services.AddScoped<PlaylistImportService>();
+// Singleton: one import runs at a time and its progress outlives any circuit.
+builder.Services.AddSingleton<ImportRequestQueue>();
 builder.Services.AddScoped<TeamService>();
 builder.Services.AddScoped<PlayerService>();
 builder.Services.AddScoped<RequestService>();

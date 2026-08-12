@@ -194,6 +194,23 @@ h2 { font-size: 1.15rem; margin: 1.75rem 0 .75rem; }
 .playbar__artist { color: var(--text-dim); font-size: .85rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .playbar__meta--idle .playbar__title { font-weight: 500; color: var(--text-dim); }
 
+.playbar__format {
+    display: inline-block;
+    margin-left: .4rem;
+    padding: 0 .3rem;
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    font-size: .62rem;
+    font-weight: 700;
+    letter-spacing: .04em;
+    vertical-align: 1px;
+    color: var(--text-dim);
+    cursor: help;
+}
+
+/* Transcoded on the fly — not what's on disk. */
+.playbar__format.is-fallback { border-color: #f5a52455; color: var(--accent); }
+
 .playbar__transport { display: flex; flex-direction: column; gap: .35rem; }
 .playbar__buttons { display: flex; align-items: center; justify-content: center; gap: .35rem; }
 
@@ -744,6 +761,22 @@ a.badge:hover { text-decoration: none; filter: brightness(1.2); }
 .admintable__inline:hover td { background: var(--bg-raised); }
 
 .badge--danger { background: #e5484d22; color: var(--danger); }
+
+.progressbar {
+    height: 6px;
+    margin: .6rem 0;
+    max-width: 520px;
+    background: var(--bg);
+    border-radius: 3px;
+    overflow: hidden;
+}
+
+.progressbar span {
+    display: block;
+    height: 100%;
+    background: var(--accent);
+    transition: width .3s ease;
+}
 
 .statuslist { list-style: none; margin: .5rem 0 0; padding: 0; }
 .statuslist li { padding: .35rem 0; display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; }

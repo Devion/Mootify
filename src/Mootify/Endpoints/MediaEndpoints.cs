@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using Mootify.Data;
+using Mootify.Services.Transcoding;
 
 namespace Mootify.Endpoints;
 
@@ -16,31 +17,59 @@ public static class MediaEndpoints
             MootifyDbContext db,
             CancellationToken ct) =>
         {
-            var track = await db.Tracks
-                .AsNoTracking()
-                .Where(t => t.Id == trackId && t.IsPresent)
-                .Select(t => new { t.Path, t.FileModifiedAt, t.FileSize })
-                .FirstOrDefaultAsync(ct);
+            var track = await LoadAsync(db, trackId, ct);
+            if (track is null || !File.Exists(track.Path)) return Results.NotFound();
 
-            if (track is null)
-            {
-                return Results.NotFound();
-            }
+            return Serve(track.Path, ContentTypeFor(track.Path), track.FileModifiedAt, track.FileSize);
+        });
 
-            if (!File.Exists(track.Path))
-            {
-                // The row outlived the file; the next scan will mark it absent.
-                return Results.NotFound();
-            }
+        // The fallback. Browsers that can't decode the original ask for this instead, and
+        // player.js decides which to use — see its canPlayType check. Converted files are
+        // cached, so the wait is once per track rather than once per play.
+        media.MapGet("/{trackId:guid}/mp3", async (
+            Guid trackId,
+            MootifyDbContext db,
+            TranscodeCache cache,
+            CancellationToken ct) =>
+        {
+            var track = await LoadAsync(db, trackId, ct);
+            if (track is null) return Results.NotFound();
 
-            return Results.File(
-                track.Path,
-                contentType: "audio/mpeg",
-                lastModified: track.FileModifiedAt,
-                entityTag: new Microsoft.Net.Http.Headers.EntityTagHeaderValue(
-                    $"\"{track.FileSize:x}-{track.FileModifiedAt.Ticks:x}\""),
-                enableRangeProcessing: true);
+            var path = await cache.GetOrCreateAsync(trackId, track.Path, ct);
+            if (path is null || !File.Exists(path)) return Results.NotFound();
+
+            var info = new FileInfo(path);
+            return Serve(path, "audio/mpeg", info.LastWriteTimeUtc, info.Length);
         });
     }
+
+    private static async Task<TrackFile?> LoadAsync(MootifyDbContext db, Guid trackId, CancellationToken ct) =>
+        await db.Tracks
+            .AsNoTracking()
+            .Where(t => t.Id == trackId && t.IsPresent)
+            .Select(t => new TrackFile(t.Path, t.FileModifiedAt, t.FileSize))
+            .FirstOrDefaultAsync(ct);
+
+    private sealed record TrackFile(string Path, DateTimeOffset FileModifiedAt, long FileSize);
+
+    private static IResult Serve(string path, string contentType, DateTimeOffset modified, long size) =>
+        Results.File(
+            path,
+            contentType: contentType,
+            lastModified: modified,
+            entityTag: new Microsoft.Net.Http.Headers.EntityTagHeaderValue(
+                $"\"{size:x}-{modified.Ticks:x}\""),
+            enableRangeProcessing: true);
+
+    /// <summary>
+    /// The real type, not always audio/mpeg. Sending FLAC as audio/mpeg makes Safari refuse
+    /// it outright and confuses caches.
+    /// </summary>
+    private static string ContentTypeFor(string path) =>
+        System.IO.Path.GetExtension(path).ToLowerInvariant() switch
+        {
+            ".flac" => "audio/flac",
+            _ => "audio/mpeg",
+        };
 
 }

@@ -25,33 +25,54 @@ public sealed class RequestService(
         string? trackTitle,
         string? recordingMbid,
         Guid? targetPlaylistId,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        /// <summary>
+        /// Imports set this false. The quota is there to stop somebody casually queueing a
+        /// discography; an import is somebody deliberately queueing a discography, having
+        /// been shown the number first.
+        /// </summary>
+        bool enforceQuota = true)
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct);
 
-        var openCount = await db.Requests.CountAsync(
-            r => r.RequesterId == userId
-              && r.Status != RequestStatus.Available
-              && r.Status != RequestStatus.NotFound
-              && r.Status != RequestStatus.Failed, ct);
-
-        var max = options.CurrentValue.MaxOpenPerUser;
-        if (openCount >= max)
+        if (enforceQuota)
         {
-            return new CreateRequestResult(false, null,
-                $"You have {openCount} requests still in flight (limit {max}). Wait for one to land.");
+            var openCount = await db.Requests.CountAsync(
+                r => r.RequesterId == userId
+                  && r.Status != RequestStatus.Available
+                  && r.Status != RequestStatus.NotFound
+                  && r.Status != RequestStatus.Failed, ct);
+
+            var max = options.CurrentValue.MaxOpenPerUser;
+            if (openCount >= max)
+            {
+                return new CreateRequestResult(false, null,
+                    $"You have {openCount} requests still in flight (limit {max}). Wait for one to land.");
+            }
         }
 
         if (album.MusicBrainzId is not null)
         {
-            var duplicate = await db.Requests.AnyAsync(
-                r => r.AlbumMusicBrainzId == album.MusicBrainzId
-                  && r.Status != RequestStatus.NotFound
-                  && r.Status != RequestStatus.Failed, ct);
+            // Scoped by kind. Five songs from one album are five separate track requests
+            // against the same release — deduping on the album alone would silently drop
+            // four of them, and only the first song would ever reach the playlist.
+            var duplicate = kind == RequestKind.Track
+                ? await db.Requests.AnyAsync(
+                    r => r.AlbumMusicBrainzId == album.MusicBrainzId
+                      && r.Kind == RequestKind.Track
+                      && r.TrackTitle == trackTitle
+                      && r.TargetPlaylistId == targetPlaylistId
+                      && r.Status != RequestStatus.NotFound
+                      && r.Status != RequestStatus.Failed, ct)
+                : await db.Requests.AnyAsync(
+                    r => r.AlbumMusicBrainzId == album.MusicBrainzId
+                      && r.Kind != RequestKind.Track
+                      && r.Status != RequestStatus.NotFound
+                      && r.Status != RequestStatus.Failed, ct);
 
             if (duplicate)
             {
-                return new CreateRequestResult(false, null, "Somebody already requested that one.");
+                return new CreateRequestResult(false, null, "That one's already been requested.");
             }
         }
 

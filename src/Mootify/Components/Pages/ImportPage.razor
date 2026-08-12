@@ -1,0 +1,242 @@
+@page "/import"
+@attribute [Authorize]
+@implements IDisposable
+@inject PlaylistImportService Importer
+@inject ImportRequestQueue Queue
+@inject RequestService Requests
+@inject LidarrClient Lidarr
+@inject TeamService Teams
+@inject PlaylistEvents PlaylistEvents
+@inject CurrentUser CurrentUser
+@inject NavigationManager Nav
+@using Mootify.Services.Import
+@using Mootify.Services.Lidarr
+@using Mootify.Services.Requests
+@using Mootify.Services.Teams
+
+<PageTitle>Import · Mootify</PageTitle>
+
+<h1>Import a playlist</h1>
+<p class="pagehead__meta">
+    Drop in a CSV from <a href="https://exportify.net" target="_blank" rel="noopener">Exportify</a>.
+    The file name becomes the playlist name. Anything already in the library goes straight in;
+    the rest can be requested.
+</p>
+
+@if (_error is not null) { <p class="error">@_error</p> }
+
+<section class="managebox">
+    <InputFile OnChange="OnFileChosen" accept=".csv" />
+    @if (_reading)
+    {
+        <p class="muted">Reading&hellip;</p>
+    }
+</section>
+
+@if (_preview is { } preview)
+{
+    <section class="managebox">
+        <h2>@preview.PlaylistName</h2>
+
+        <div class="statrow">
+            <div class="stat"><strong>@preview.Total</strong><span>songs in the file</span></div>
+            <div class="stat"><strong>@preview.Matched.Count</strong><span>already in your library</span></div>
+            <div class="stat"><strong>@preview.Missing.Count</strong><span>not found</span></div>
+            @if (preview.Skipped > 0)
+            {
+                <div class="stat"><strong>@preview.Skipped</strong><span>duplicates skipped</span></div>
+            }
+        </div>
+
+        @if (preview.Total == 0)
+        {
+            <p class="error">No tracks in that file. Is it an Exportify export?</p>
+        }
+        else if (_createdPlaylistId is null)
+        {
+            <label for="team">Where should it live?</label>
+            <select id="team" @bind="_teamId">
+                <option value="">My playlists</option>
+                @foreach (var team in _teams)
+                {
+                    <option value="@team.Id">@team.Name (shared with the team)</option>
+                }
+            </select>
+
+            <div class="managebox__actions">
+                <button class="button" @onclick="Create" disabled="@_working">
+                    Create with @preview.Matched.Count song@(preview.Matched.Count == 1 ? "" : "s")
+                </button>
+            </div>
+        }
+        else
+        {
+            <p class="success">
+                Created &mdash; <a href="@($"/playlist/{_createdPlaylistId}")">open @preview.PlaylistName</a>.
+            </p>
+        }
+    </section>
+
+    @if (preview.Missing.Count > 0)
+    {
+        <section class="managebox">
+            <h2>Not in the library (@preview.Missing.Count)</h2>
+
+            @{ var queue = Queue.Progress; }
+
+            @if (_createdPlaylistId is null)
+            {
+                <p class="muted">Create the playlist first, then these can be requested into it.</p>
+            }
+            else if (!Lidarr.IsConfigured)
+            {
+                <p class="muted">Lidarr isn't configured, so these can't be fetched.</p>
+            }
+            else if (queue.IsRunning)
+            {
+                <p>
+                    Album <strong>@queue.AlbumsDone</strong> of @queue.TotalAlbums &mdash;
+                    @queue.Queued song@(queue.Queued == 1 ? "" : "s") queued
+                    @if (queue.NotFound > 0) { <text>, @queue.NotFound not found</text> }
+                </p>
+                @if (queue.Current is { } current) { <p class="muted">@current</p> }
+                <div class="progressbar"><span style="width:@(queue.Percent)%"></span></div>
+                <div class="managebox__actions">
+                    <button class="linkbutton linkbutton--danger" @onclick="() => Queue.Cancel()">Stop</button>
+                </div>
+            }
+            else if (queue.FinishedAt is not null)
+            {
+                <p class="success">
+                    Queued @queue.Queued request@(queue.Queued == 1 ? "" : "s") across @queue.AlbumsDone album@(queue.AlbumsDone == 1 ? "" : "s").
+                    You'll get a cowbell as they land.
+                </p>
+                @if (queue.NotFound > 0)
+                {
+                    <p class="muted">@queue.NotFound song@(queue.NotFound == 1 ? "" : "s") Lidarr couldn't find. @queue.LastError</p>
+                }
+            }
+            else
+            {
+                @* Say the real number before starting. Lidarr fetches whole albums, so the
+                   album count is what this actually costs in disk and indexer traffic — and
+                   it's usually a third of the song count. *@
+                <p class="muted">
+                    These @preview.Missing.Count songs live on <strong>@_albumCount album@(_albumCount == 1 ? "" : "s")</strong>,
+                    and Lidarr fetches whole albums. Requests go out a few seconds apart and land in
+                    <strong>@preview.PlaylistName</strong> as they arrive. You can stop it at any point.
+                </p>
+                <div class="managebox__actions">
+                    <button class="button" @onclick="RequestMissing">
+                        Request all @preview.Missing.Count
+                    </button>
+                </div>
+            }
+
+            <ul class="importlist">
+                @foreach (var track in preview.Missing.Take(_showAllMissing ? int.MaxValue : 25))
+                {
+                    <li>
+                        <span class="importlist__title">@track.Title</span>
+                        <span class="muted">@track.Artist@(string.IsNullOrWhiteSpace(track.Album) ? "" : $" · {track.Album}")</span>
+                    </li>
+                }
+            </ul>
+
+            @if (!_showAllMissing && preview.Missing.Count > 25)
+            {
+                <button class="linkbutton" @onclick="() => _showAllMissing = true">
+                    Show all @preview.Missing.Count
+                </button>
+            }
+        </section>
+    }
+}
+
+@code {
+    private ImportPreview? _preview;
+    private List<TeamSummary> _teams = [];
+    private Guid _userId;
+    private Guid? _createdPlaylistId;
+    private string? _teamId;
+    private string? _error;
+    private int _albumCount;
+    private bool _reading, _working, _showAllMissing;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _userId = await CurrentUser.GetRequiredIdAsync();
+        _teams = await Teams.GetForUserAsync(_userId);
+        Queue.Changed += OnQueueChanged;
+    }
+
+    private void OnQueueChanged() => _ = InvokeAsync(StateHasChanged);
+
+    public void Dispose() => Queue.Changed -= OnQueueChanged;
+
+    private async Task OnFileChosen(InputFileChangeEventArgs e)
+    {
+        _error = null;
+        _preview = null;
+        _createdPlaylistId = null;
+        _albumCount = 0;
+        _showAllMissing = false;
+        _reading = true;
+
+        try
+        {
+            var file = e.File;
+
+            // Exportify files run to a few hundred KB; a cap keeps a stray upload from
+            // reading the server out of memory.
+            await using var stream = file.OpenReadStream(maxAllowedSize: 8 * 1024 * 1024);
+            using var reader = new StreamReader(stream);
+            var csv = await reader.ReadToEndAsync();
+
+            _preview = await Importer.PreviewAsync(file.Name, csv);
+
+            // What the request step will actually cost — albums, not songs.
+            _albumCount = ImportRequestQueue.CountAlbums(_preview.Missing);
+        }
+        catch (Exception ex)
+        {
+            _error = $"Couldn't read that file: {ex.Message}";
+        }
+        finally
+        {
+            _reading = false;
+        }
+    }
+
+    private async Task Create()
+    {
+        if (_preview is null) return;
+
+        _working = true;
+        Guid? teamId = Guid.TryParse(_teamId, out var id) ? id : null;
+
+        _createdPlaylistId = await Importer.CreateAsync(_userId, _preview, teamId);
+        if (_createdPlaylistId is null)
+        {
+            _error = "Couldn't create that playlist.";
+        }
+
+        PlaylistEvents.NotifyChanged();
+        _working = false;
+    }
+
+    /// <summary>
+    /// Hands the whole list to the background queue. Hundreds of Lidarr lookups take many
+    /// minutes, which is far longer than a circuit should be held open — and the page stays
+    /// usable while it runs.
+    /// </summary>
+    private void RequestMissing()
+    {
+        if (_preview is null || _createdPlaylistId is null) return;
+
+        if (!Queue.Start(_userId, _createdPlaylistId.Value, _preview.Missing))
+        {
+            _error = "Another import is still being requested. Let that finish first.";
+        }
+    }
+}

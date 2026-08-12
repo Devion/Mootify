@@ -85,6 +85,23 @@ doesn't support it: MusicBrainz ranks by text match with no popularity signal, s
 `bohemian rhapsody` returns seven tribute bands and no Queen. Scoping to a detected artist fixes
 relevance but needs a further call per result at 1 req/s. The reasoning is in `Plan/Plan.md`.
 
+### Importing playlists
+
+`/import` reads an Exportify CSV: the file name becomes the playlist name, matches go straight
+in, and the rest can be requested into it.
+
+The matching is the whole job (`PlaylistImportService.Normalize`). Spotify titles carry
+decoration the files don't — `(2011 Remaster)`, `- Radio Edit`, `feat. X` — so an exact
+comparison finds almost nothing. Both sides are normalised (parentheticals and trailing
+dash-suffixes stripped, accents folded, punctuation dropped), matched on title+artist first,
+then on title with duration as the tiebreaker within 5s. Measured against a real 661-row export:
+51 matched where only 58 rows had a title in the library at all, and the misses were
+same-title-different-artist covers, correctly rejected.
+
+Requesting the missing ones is capped per import (`MaxRequests`) and deliberately a second,
+explicit click — every missing song means fetching a whole album, and 600 of them would fill
+a disk.
+
 ### Teams and authorization
 
 A playlist has an owner **or** a team, never both. Everyone can see that a team exists — that's

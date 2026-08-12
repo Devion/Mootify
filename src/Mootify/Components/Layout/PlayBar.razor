@@ -14,7 +14,14 @@
             </div>
             <div class="playbar__meta">
                 <a class="playbar__title" href="@($"/album/{track.AlbumId}")">@track.Title</a>
-                <span class="playbar__artist">@track.ArtistName</span>
+                <span class="playbar__artist">
+                    @track.ArtistName
+                    @* What's actually streaming. If the browser couldn't decode the original
+                       this says MP3, not FLAC — claiming lossless while sending a transcode
+                       would be the one genuinely misleading thing to put here. *@
+                    <span class="playbar__format @(Player.UsingFallback ? "is-fallback" : "")"
+                          title="@FormatHint(track)">@Player.PlayingFormat</span>
+                </span>
             </div>
         }
         else
@@ -162,6 +169,11 @@
 
     private static bool TryReadNumber(ChangeEventArgs e, out double value) =>
         double.TryParse(e.Value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out value);
+
+    private string FormatHint(TrackInfo track) =>
+        Player.UsingFallback
+            ? $"Converted to MP3 — your browser can't play the {track.Format} original"
+            : $"Playing the {track.Format} file as it is on disk";
 
     private static string Format(double seconds)
     {

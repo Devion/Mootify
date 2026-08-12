@@ -151,6 +151,47 @@ public sealed class PlaylistService(
         return true;
     }
 
+    /// <summary>
+    /// Hands a personal playlist to a team: everyone in it can then see and edit it, and
+    /// requests into it notify the whole team.
+    ///
+    /// A move, not a copy. Two divergent copies of the same list is the thing people actually
+    /// complain about, and the original owner is in the team anyway — they lose nothing but
+    /// exclusivity. Deleting it afterwards becomes an owner's call, which is the point.
+    /// </summary>
+    public async Task<(bool Ok, string? Error)> ShareWithTeamAsync(
+        Guid playlistId, Guid userId, Guid teamId, CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
+
+        var playlist = await db.Playlists.FirstOrDefaultAsync(p => p.Id == playlistId, ct);
+        if (playlist is null) return (false, "That playlist is gone.");
+
+        if (playlist.TeamId is not null)
+        {
+            return (false, "That playlist already belongs to a team.");
+        }
+
+        if (playlist.OwnerUserId != userId)
+        {
+            return (false, "Only the owner can share a playlist.");
+        }
+
+        if (!await db.TeamMembers.AnyAsync(m => m.TeamId == teamId && m.UserId == userId, ct))
+        {
+            return (false, "You're not in that team.");
+        }
+
+        playlist.OwnerUserId = null;
+        playlist.TeamId = teamId;
+        playlist.Visibility = PlaylistVisibility.Team;
+        playlist.UpdatedAt = DateTimeOffset.UtcNow;
+
+        await db.SaveChangesAsync(ct);
+        log.LogInformation("{User} shared playlist {Playlist} with team {Team}", userId, playlist.Name, teamId);
+        return (true, null);
+    }
+
     public async Task<bool> DeleteAsync(Guid playlistId, Guid userId, CancellationToken ct = default)
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct);

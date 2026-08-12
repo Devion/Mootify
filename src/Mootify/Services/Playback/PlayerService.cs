@@ -10,7 +10,19 @@ public sealed record TrackInfo(
     string ArtistName,
     string AlbumTitle,
     Guid AlbumId,
-    TimeSpan Duration);
+    TimeSpan Duration,
+    /// <summary>
+    /// True when the file isn't an MP3, so the browser is offered a transcoded fallback in
+    /// case it can't decode the original. The path itself never leaves the server.
+    /// </summary>
+    bool NeedsFallback = false,
+    /// <summary>"FLAC", "MP3" — what the file on disk is. Shown in the play bar.</summary>
+    string Format = "MP3")
+{
+    /// <summary>Extension to something worth putting on screen. The path never leaves the server.</summary>
+    public static string FormatOf(string path) =>
+        Path.GetExtension(path).TrimStart('.').ToUpperInvariant() is { Length: > 0 } ext ? ext : "AUDIO";
+}
 
 /// <summary>
 /// Owns playback state for one circuit. The play bar and every in-list play button render
@@ -40,6 +52,16 @@ public sealed class PlayerService(
     public bool ShuffleEnabled { get; private set; }
     public RepeatMode Repeat { get; private set; } = RepeatMode.Off;
     public int ShuffleSeed { get; private set; } = Random.Shared.Next();
+
+    /// <summary>
+    /// Set when the browser couldn't decode the original and took the transcoded copy. The
+    /// play bar shows what's actually coming down the wire, not what's on disk — otherwise
+    /// it would claim FLAC while streaming a 320k MP3.
+    /// </summary>
+    public bool UsingFallback { get; private set; }
+
+    /// <summary>What's actually playing right now, for the play bar badge.</summary>
+    public string? PlayingFormat => Current is null ? null : UsingFallback ? "MP3" : Current.Format;
 
     public bool HasNext => _cursor >= 0 && (_cursor + 1 < _order.Count || Repeat == RepeatMode.All);
     public bool HasPrevious => _cursor > 0 || Position > 3;
@@ -152,13 +174,17 @@ public sealed class PlayerService(
                 AlbumTitle = t.Album!.Title,
                 t.AlbumId,
                 t.DurationTicks,
+                t.Path,
             })
             .ToListAsync();
 
         // Preserve the caller's order; the IN query returns whatever the database felt like.
         var byId = rows.ToDictionary(
             r => r.Id,
-            r => new TrackInfo(r.Id, r.Title, r.ArtistName, r.AlbumTitle, r.AlbumId, TimeSpan.FromTicks(r.DurationTicks)));
+            r => new TrackInfo(
+                r.Id, r.Title, r.ArtistName, r.AlbumTitle, r.AlbumId, TimeSpan.FromTicks(r.DurationTicks),
+                NeedsFallback: !r.Path.EndsWith(".mp3", StringComparison.OrdinalIgnoreCase),
+                Format: TrackInfo.FormatOf(r.Path)));
         return [.. ids.Select(id => byId.GetValueOrDefault(id)).OfType<TrackInfo>()];
     }
 
@@ -176,8 +202,18 @@ public sealed class PlayerService(
         Duration = Current.Duration.TotalSeconds;
         IsPlaying = true;
 
+        // Each track gets a fresh verdict; the last one falling back says nothing about this one.
+        UsingFallback = false;
+
         await EnsureInitializedAsync();
-        await _module!.InvokeVoidAsync("play", $"/media/{Current.Id}");
+
+        // The second URL is only offered for non-MP3 sources; player.js uses it when the
+        // browser says it can't decode the original, or when a native decode fails anyway.
+        await _module!.InvokeVoidAsync(
+            "play",
+            $"/media/{Current.Id}",
+            Current.NeedsFallback ? $"/media/{Current.Id}/mp3" : null);
+
         await NotifyAsync();
     }
 
@@ -314,6 +350,20 @@ public sealed class PlayerService(
 
     [JSInvokable]
     public async Task OnEnded() => await NextAsync();
+
+    /// <summary>
+    /// The browser gave up on the original and took the transcoded copy — either it said so
+    /// up front, errored, or stalled without producing metadata.
+    /// </summary>
+    [JSInvokable]
+    public async Task OnFallbackUsed()
+    {
+        if (UsingFallback) return;
+
+        UsingFallback = true;
+        log.LogInformation("Serving {Track} transcoded — the browser couldn't play the original", Current?.Title);
+        await NotifyAsync();
+    }
 
     [JSInvokable]
     public async Task OnPlayStateChanged(bool playing)

@@ -1,5 +1,7 @@
 @page "/admin"
 @attribute [Authorize(Policy = MootifyAuth.AdminPolicy)]
+@implements IDisposable
+@inject LibraryTranscodeService LibraryTranscode
 @inject AdminService Admin
 @inject SettingsService Settings
 @inject LibraryScanner Scanner
@@ -97,8 +99,80 @@
     }
 </section>
 
+@* The scanner only indexes MP3, so anything Lidarr grabbed as FLAC is sitting there invisible.
+   This is the sweep that rescues it. *@
+<section class="managebox">
+    <h2>Non-MP3 files</h2>
+
+    @{ var progress = LibraryTranscode.Progress; }
+
+    @if (progress.IsRunning)
+    {
+        <p>
+            Converting <strong>@progress.Done</strong> of @progress.Total
+            @if (progress.Failed > 0) { <text>(@progress.Failed failed) </text> }
+            &mdash; @progress.Percent%
+        </p>
+        @if (progress.Current is { } current)
+        {
+            <p class="muted">@current</p>
+        }
+        <div class="progressbar"><span style="width:@(progress.Percent)%"></span></div>
+        @if (progress.LastError is { } running)
+        {
+            <p class="error">@running</p>
+        }
+        <div class="managebox__actions">
+            <button class="linkbutton linkbutton--danger" @onclick="() => LibraryTranscode.Cancel()">Stop</button>
+        </div>
+    }
+    else if (_convertible == 0)
+    {
+        <p class="muted">
+            Everything in the library is already an MP3.
+            @if (progress.FinishedAt is not null)
+            {
+                <text>Converted @progress.Done, @progress.Failed failed.</text>
+            }
+        </p>
+    }
+    else
+    {
+        <p>
+            <strong>@_convertible.ToString("N0")</strong> file@(_convertible == 1 ? "" : "s")
+            can't be played or even seen &mdash; the library only indexes MP3.
+        </p>
+        <p class="muted">
+            Converting keeps the originals unless <code>Transcode:DeleteSourceAfterTranscode</code>
+            is on. It's CPU-heavy and takes a while, so it runs in the background and you can stop it.
+        </p>
+        @if (progress.FinishedAt is not null && progress.Failed > 0)
+        {
+            @* Say why. "698 failed" on its own leaves somebody with nowhere to go. *@
+            <p class="error">
+                Last run: @progress.Done converted, @progress.Failed failed.
+                @if (progress.LastError is { } why)
+                {
+                    <text> &mdash; @why</text>
+                }
+            </p>
+        }
+
+        <div class="managebox__actions">
+            <button class="button" @onclick="StartConversion" disabled="@(!_ffmpegOk)">
+                Convert @_convertible.ToString("N0") file@(_convertible == 1 ? "" : "s") to MP3
+            </button>
+            @if (!_ffmpegOk)
+            {
+                <span class="muted">FFmpeg isn't available.</span>
+            }
+        </div>
+    }
+</section>
+
 @code {
     private AdminStats _stats = new(0, 0, 0, 0, 0, 0, 0);
+    private int _convertible;
     private bool _registrationOpen;
     private string? _musicRoot;
     private bool _musicRootOk;
@@ -116,6 +190,7 @@
     protected override async Task OnInitializedAsync()
     {
         _userId = await CurrentUser.GetRequiredIdAsync();
+        LibraryTranscode.Changed += OnTranscodeProgress;
         await LoadAsync();
 
         var (ffmpegOk, version) = await Transcoder.ProbeAsync();
@@ -135,7 +210,29 @@
         _musicRoot = LibraryOptions.CurrentValue.MusicRoot;
         _musicRootOk = !string.IsNullOrWhiteSpace(_musicRoot) && Directory.Exists(_musicRoot);
         _isNetworkShare = !string.IsNullOrWhiteSpace(_musicRoot) && NetworkShareConnector.IsUncPath(_musicRoot);
+        _convertible = LibraryTranscode.FindConvertible().Count;
     }
+
+    private void StartConversion()
+    {
+        if (LibraryTranscode.Start())
+        {
+            _message = "Converting in the background. You can leave this page.";
+        }
+    }
+
+    private void OnTranscodeProgress() => _ = InvokeAsync(async () =>
+    {
+        // The count only settles once the sweep has finished and rescanned.
+        if (!LibraryTranscode.Progress.IsRunning)
+        {
+            _convertible = LibraryTranscode.FindConvertible().Count;
+        }
+
+        StateHasChanged();
+    });
+
+    public void Dispose() => LibraryTranscode.Changed -= OnTranscodeProgress;
 
     private async Task Reconnect()
     {

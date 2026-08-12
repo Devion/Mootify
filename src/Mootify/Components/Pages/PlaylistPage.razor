@@ -2,6 +2,7 @@
 @attribute [Authorize]
 @inject PlaylistService Playlists
 @inject PlaylistEvents PlaylistEvents
+@inject TeamService Teams
 @inject CurrentUser CurrentUser
 @inject PlayerService Player
 @inject NavigationManager Nav
@@ -42,9 +43,35 @@ else
         </div>
         <div class="pagehead__actions">
             <button class="button" @onclick="PlayAll" disabled="@(_tracks.Count == 0)">Play</button>
+            @* Only for personal playlists — a team one is already shared. *@
+            @if (_teamId is null && _myTeams.Count > 0)
+            {
+                <button class="linkbutton" @onclick="() => _sharing = !_sharing">Share with a team</button>
+            }
             <button class="linkbutton linkbutton--danger" @onclick="Delete">Delete</button>
         </div>
     </div>
+
+    @if (_sharing)
+    {
+        <div class="managebox">
+            <p class="muted">
+                The playlist moves to the team &mdash; everyone in it can add and remove, and
+                requests into it tell the whole team. Only a team owner can delete it afterwards.
+            </p>
+            <div class="inviterow">
+                <select @bind="_shareTeamId" aria-label="Team to share with">
+                    <option value="">Pick a team&hellip;</option>
+                    @foreach (var team in _myTeams)
+                    {
+                        <option value="@team.Id">@team.Name</option>
+                    }
+                </select>
+                <button class="button" @onclick="Share" disabled="@string.IsNullOrEmpty(_shareTeamId)">Share</button>
+                <button class="linkbutton" @onclick="() => _sharing = false">Cancel</button>
+            </div>
+        </div>
+    }
 
     @if (_deleteError is not null)
     {
@@ -65,6 +92,9 @@ else
     private string? _teamName;
     private string? _deleteError;
     private List<TrackList.Row> _tracks = [];
+    private List<TeamSummary> _myTeams = [];
+    private bool _sharing;
+    private string? _shareTeamId;
 
     protected override async Task OnParametersSetAsync() => await LoadAsync();
 
@@ -83,6 +113,7 @@ else
         _name = playlist.Name;
         _teamId = playlist.TeamId;
         _teamName = playlist.Team?.Name;
+        _myTeams = _teamId is null ? await Teams.GetForUserAsync(userId) : [];
 
         _tracks =
         [
@@ -134,6 +165,20 @@ else
             _name = _draftName.Trim();
             PlaylistEvents.NotifyChanged();
         }
+    }
+
+    private async Task Share()
+    {
+        if (!Guid.TryParse(_shareTeamId, out var teamId)) return;
+
+        var userId = await CurrentUser.GetRequiredIdAsync();
+        var (ok, error) = await Playlists.ShareWithTeamAsync(PlaylistId, userId, teamId);
+
+        _deleteError = ok ? null : error;
+        _sharing = false;
+
+        await LoadAsync();
+        PlaylistEvents.NotifyChanged();
     }
 
     private async Task Delete()
