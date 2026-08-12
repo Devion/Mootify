@@ -64,8 +64,16 @@ Polling is the source of truth; a webhook (not yet built) would only be the fast
 reconciler is idempotent — `PlaylistItem.RequestId` makes the append safe to run twice, which
 it will be.
 
-Lidarr cannot fetch a single track. A song request resolves to the album it appears on. See
-the lookup flow in `Components/Pages/SearchPage.razor`.
+Lidarr cannot fetch a single track, and has no song index at all: `album/lookup` returns a
+track *count* with no titles, `/track` only answers for albums already in the library, and the
+universal search returns artists and albums. So requests are always "this album, keep one
+track" — `Components/Pages/SearchPage.razor` searches albums via Lidarr, expands one to its
+tracklist via `MusicBrainzClient`, and stores the chosen recording MBID on the `Request`.
+
+**Don't replace this with song-title search.** It was tried against the live API and the data
+doesn't support it: MusicBrainz ranks by text match with no popularity signal, so
+`bohemian rhapsody` returns seven tribute bands and no Queen. Scoping to a detected artist fixes
+relevance but needs a further call per result at 1 req/s. The reasoning is in `Plan/Plan.md`.
 
 ### Teams and authorization
 

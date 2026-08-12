@@ -63,6 +63,29 @@ public sealed class LidarrOptions
         !string.IsNullOrWhiteSpace(BaseUrl) && !string.IsNullOrWhiteSpace(ApiKey);
 }
 
+public sealed class MusicBrainzOptions
+{
+    public const string Section = "MusicBrainz";
+
+    public string BaseUrl { get; set; } = "https://musicbrainz.org/ws/2/";
+
+    /// <summary>
+    /// MusicBrainz requires an identifying User-Agent with a way to contact you, and throttles
+    /// or blocks requests without one. Put a real address or repository here.
+    /// </summary>
+    [Required(AllowEmptyStrings = false)]
+    public string Contact { get; set; } = "https://github.com/mootify";
+
+    /// <summary>
+    /// Their published limit is one request per second, averaged. Going faster gets an IP
+    /// banned, and there is no appeal worth the afternoon.
+    /// </summary>
+    public TimeSpan MinRequestInterval { get; set; } = TimeSpan.FromSeconds(1);
+
+    /// <summary>Tracklists don't change. Cache them and stop asking.</summary>
+    public TimeSpan CacheDuration { get; set; } = TimeSpan.FromHours(24);
+}
+
 public sealed class LibraryOptions
 {
     public const string Section = "Library";

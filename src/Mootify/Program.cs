@@ -12,7 +12,9 @@ using Mootify.Endpoints;
 using Mootify.Services.Admin;
 using Mootify.Services.Auth;
 using Mootify.Services.Library;
+using Microsoft.Extensions.Options;
 using Mootify.Services.Lidarr;
+using Mootify.Services.MusicBrainz;
 using Mootify.Services.Notifications;
 using Mootify.Services.Playback;
 using Mootify.Services.Playlists;
@@ -43,6 +45,11 @@ builder.Services.AddOptions<AuthOptions>()
 
 builder.Services.AddOptions<LidarrOptions>()
     .Bind(builder.Configuration.GetSection(LidarrOptions.Section))
+    .ValidateDataAnnotations()
+    .ValidateOnStart();
+
+builder.Services.AddOptions<MusicBrainzOptions>()
+    .Bind(builder.Configuration.GetSection(MusicBrainzOptions.Section))
     .ValidateDataAnnotations()
     .ValidateOnStart();
 
@@ -190,6 +197,15 @@ builder.Services.AddHostedService<RequestReconcilerService>();
 // Retry + circuit breaker: a Lidarr that's down must not take Mootify down with it.
 builder.Services.AddHttpClient<LidarrClient>(client => client.Timeout = TimeSpan.FromSeconds(30))
     .AddStandardResilienceHandler();
+
+// MusicBrainz insists on an identifying User-Agent and throttles anyone without one.
+builder.Services.AddHttpClient<MusicBrainzClient>((sp, client) =>
+{
+    var mb = sp.GetRequiredService<IOptions<MusicBrainzOptions>>().Value;
+    client.BaseAddress = new Uri(mb.BaseUrl.TrimEnd('/') + "/");
+    client.Timeout = TimeSpan.FromSeconds(20);
+    client.DefaultRequestHeaders.UserAgent.ParseAdd($"Mootify/0.1 ( {mb.Contact} )");
+});
 
 builder.Services.AddRazorComponents()
     .AddInteractiveServerComponents();

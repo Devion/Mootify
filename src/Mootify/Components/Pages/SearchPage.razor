@@ -7,7 +7,9 @@
 @inject PlaylistService Playlists
 @inject CurrentUser CurrentUser
 @inject NavigationManager Nav
+@inject MusicBrainzClient MusicBrainz
 @using Mootify.Services.Lidarr
+@using Mootify.Services.MusicBrainz
 @using Mootify.Services.Requests
 
 <PageTitle>Search · Mootify</PageTitle>
@@ -61,46 +63,92 @@
         }
         else if (_remote.Count > 0)
         {
-            @* Lidarr works in artists and albums — it cannot fetch a single track. So a song
-               request is shown as "the album it lives on", which is what actually gets grabbed. *@
+            @* Lidarr fetches whole albums, but you rarely want one. Expand an album and pick
+               the song: Lidarr still grabs the album, and only that track joins your playlist. *@
             <p class="muted">
-                Lidarr fetches albums, not single tracks &mdash; pick the release your song is on.
+                Open an album to pick a single song &mdash; Lidarr fetches the album either way,
+                but only what you choose lands in your playlist.
             </p>
+
+            @* Team playlists are listed here too: requesting into one is how a team gets music
+               without everybody asking separately. *@
+            <div class="lookup__target">
+                <select @bind="_targetPlaylistId" aria-label="Add to playlist when it arrives">
+                    <option value="">Don't add to a playlist</option>
+                    @foreach (var p in _playlists)
+                    {
+                        <option value="@p.Id">Add to @p.Name@(p.IsTeamPlaylist ? $" ({p.TeamName})" : "")</option>
+                    }
+                </select>
+            </div>
 
             <ul class="results">
                 @foreach (var album in _remote)
                 {
-                    <li class="result">
-                        <img class="result__art" src="@(album.CoverUrl ?? "img/pietjecow.png")" alt="" loading="lazy" />
+                    var isOpen = _expanded == album.MusicBrainzId;
 
-                        <div class="result__meta">
-                            <strong>@album.Title</strong>
-                            <span>@(album.Artist?.ArtistName ?? "Unknown artist")</span>
-                            @* Disambiguation matters: three results called Greatest Hits with no
-                               year is a coin flip, and picking wrong wastes a download. *@
-                            <span class="result__detail">
-                                @(album.Year?.ToString() ?? "year unknown")
-                                @if (!string.IsNullOrEmpty(album.AlbumType)) { <text> &middot; @album.AlbumType</text> }
-                                @if (album.Statistics is { TrackCount: > 0 }) { <text> &middot; @album.Statistics.TrackCount tracks</text> }
-                            </span>
+                    <li class="result @(isOpen ? "is-open" : "")">
+                        <div class="result__row" @onclick="() => Toggle(album)">
+                            <img class="result__art" src="@(album.CoverUrl ?? "img/pietjecow.png")" alt="" loading="lazy" />
+
+                            <div class="result__meta">
+                                <strong>@album.Title</strong>
+                                <span>@(album.Artist?.ArtistName ?? "Unknown artist")</span>
+                                @* Disambiguation matters: three results called Greatest Hits with
+                                   no year is a coin flip, and picking wrong wastes a download. *@
+                                <span class="result__detail">
+                                    @(album.Year?.ToString() ?? "year unknown")
+                                    @if (!string.IsNullOrEmpty(album.AlbumType)) { <text> &middot; @album.AlbumType</text> }
+                                    @if (album.Statistics is { TrackCount: > 0 }) { <text> &middot; @album.Statistics.TrackCount tracks</text> }
+                                </span>
+                            </div>
+
+                            <div class="result__actions" @onclick:stopPropagation="true">
+                                <button class="linkbutton" @onclick="() => Toggle(album)">
+                                    @(isOpen ? "Hide songs" : "Songs")
+                                </button>
+                                <button class="button" @onclick="() => RequestAlbum(album)" disabled="@_submitting">
+                                    Request
+                                </button>
+                            </div>
                         </div>
 
-                        <div class="result__actions">
-                            @* Team playlists are listed here too: requesting into one is how a
-                               team gets music without everybody asking separately. *@
-                            <select @bind="_targetPlaylistId" aria-label="Add to playlist when it arrives">
-                                <option value="">Don't add to a playlist</option>
-                                @foreach (var p in _playlists)
+                        @if (isOpen)
+                        {
+                            <div class="tracklisting">
+                                @if (_loadingTracks)
                                 {
-                                    <option value="@p.Id">
-                                        Add to @p.Name@(p.IsTeamPlaylist ? $" ({p.TeamName})" : "")
-                                    </option>
+                                    <p class="muted">Fetching the tracklist&hellip;</p>
                                 }
-                            </select>
-                            <button class="button" @onclick="() => RequestAlbum(album)" disabled="@_submitting">
-                                Request
-                            </button>
-                        </div>
+                                else if (_tracks.Count == 0)
+                                {
+                                    @* MusicBrainz doesn't have every tracklist. Requesting the
+                                       whole album still works. *@
+                                    <p class="muted">No tracklist for this one. Request the album instead.</p>
+                                }
+                                else
+                                {
+                                    <table class="tracklist">
+                                        <tbody>
+                                            @foreach (var track in _tracks)
+                                            {
+                                                <tr>
+                                                    <td class="tracklist__num">@track.Position</td>
+                                                    <td class="tracklist__title">@track.Title</td>
+                                                    <td class="tracklist__dur">@Format(track.Duration)</td>
+                                                    <td class="tracklist__actions">
+                                                        <button class="linkbutton" disabled="@_submitting"
+                                                                @onclick="() => RequestTrack(album, track)">
+                                                            Request this song
+                                                        </button>
+                                                    </td>
+                                                </tr>
+                                            }
+                                        </tbody>
+                                    </table>
+                                }
+                            </div>
+                        }
                     </li>
                 }
             </ul>
@@ -124,6 +172,10 @@
     private string? _message;
     private bool _messageIsError;
     private bool _searching, _lookingUp, _lookupDone, _submitting;
+
+    private string? _expanded;
+    private IReadOnlyList<AlbumTrack> _tracks = [];
+    private bool _loadingTracks;
 
     private CancellationTokenSource? _debounceCts;
 
@@ -208,7 +260,42 @@
         _lookupDone = true;
     }
 
-    private async Task RequestAlbum(LidarrAlbum album)
+    /// <summary>
+    /// Expanding an album fetches its tracklist from MusicBrainz — Lidarr's album lookup
+    /// carries a track count and no titles, so this is the only source for music we don't
+    /// own yet. One album open at a time keeps that to one call per click.
+    /// </summary>
+    private async Task Toggle(LidarrAlbum album)
+    {
+        if (_expanded == album.MusicBrainzId)
+        {
+            _expanded = null;
+            _tracks = [];
+            return;
+        }
+
+        _expanded = album.MusicBrainzId;
+        _tracks = [];
+
+        if (string.IsNullOrEmpty(album.MusicBrainzId)) return;
+
+        _loadingTracks = true;
+        _tracks = await MusicBrainz.GetTracksAsync(album.MusicBrainzId);
+        _loadingTracks = false;
+    }
+
+    private async Task RequestAlbum(LidarrAlbum album) =>
+        await Submit(album, RequestKind.Album, trackTitle: null, recordingMbid: null,
+            success: $"Requested {album.Title}. You'll get a cowbell when it lands.");
+
+    private async Task RequestTrack(LidarrAlbum album, AlbumTrack track) =>
+        await Submit(album, RequestKind.Track, track.Title, track.RecordingId,
+            // Say what actually happens: the whole album is fetched, one track is kept.
+            success: $"Requested \"{track.Title}\". Lidarr will fetch {album.Title}; " +
+                     "only that song goes in your playlist.");
+
+    private async Task Submit(
+        LidarrAlbum album, RequestKind kind, string? trackTitle, string? recordingMbid, string success)
     {
         _submitting = true;
         _message = null;
@@ -216,16 +303,15 @@
         var userId = await CurrentUser.GetRequiredIdAsync();
         Guid? playlistId = Guid.TryParse(_targetPlaylistId, out var pid) ? pid : null;
 
-        var result = await Requests.CreateAsync(
-            userId, album, RequestKind.Album, trackTitle: null, recordingMbid: null, playlistId);
+        var result = await Requests.CreateAsync(userId, album, kind, trackTitle, recordingMbid, playlistId);
 
         _messageIsError = !result.Ok;
-        _message = result.Ok
-            ? $"Requested {album.Title}. You'll get a cowbell when it lands."
-            : result.Error;
-
+        _message = result.Ok ? success : result.Error;
         _submitting = false;
     }
+
+    private static string Format(TimeSpan t) =>
+        t == TimeSpan.Zero ? "" : t.ToString(@"m\:ss");
 
     public void Dispose() => _debounceCts?.Dispose();
 }

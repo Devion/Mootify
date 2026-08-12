@@ -175,13 +175,25 @@ One search box, escalating in three steps. This is the "find the right song" flo
 2. **"Not in the library? Search for it →"** — always visible under local results, even when there are hits, because the local match may be the wrong version.
 3. **Remote lookup** — hits Lidarr's `/api/v1/album/lookup` and `/artist/lookup`, renders cover art, release year, type (album/EP/single) and track count. Disambiguation matters: three results named *Greatest Hits* with no year is a coin flip, and the user picking wrong means a wasted download and a confused "where's my song".
 
-**The gotcha that shapes this whole feature: Lidarr cannot fetch a single track.** It works in artists and albums. So a *song* request has to be resolved to a release before it can be dispatched:
+**Lidarr cannot fetch a single track**, and it has no song index either. Measured against a real instance: `album/lookup` returns a track *count* and no titles, `/track` only answers for albums already in the library, and the universal search returns artists and albums only. So a song request has to be expressed as "this album, but keep one track".
 
-- Query MusicBrainz `/ws/2/recording` for the title (+ artist if given), take the recording's release-groups, and present them as "*Song X* appears on: …" with the earliest studio album preselected — people usually want the album version, not a compilation.
-- Store the chosen recording MBID on the `Request` alongside the album MBID. That recording MBID is what lets you pick the right track out of the album once it lands, instead of guessing by title.
-- Respect MusicBrainz rate limits (1 req/s, `User-Agent` with contact info) and cache lookups. Lidarr proxies MB too, so prefer Lidarr's endpoints where they suffice and only call MB directly for recording→release-group resolution.
+**Search by song title is a trap, and it was worth proving before building it.** MusicBrainz is the only free song index, and its search ranks by text match with no popularity signal. Against the live API:
 
-The request dialog then confirms in one screen: what you're getting, quality profile, and **which playlist to add it to when it arrives** (defaulting to the playlist you were looking at, or "don't add anywhere"). Capturing the target playlist at request time — not asking later — is what makes the completion flow silent and automatic.
+- `bohemian rhapsody` → the top seven hits are tribute bands, a string quartet and a karaoke album. **No Queen at all.**
+- `one more time daft punk` → a piano cover, an NFT, and a Chemical Brothers mashup outrank Daft Punk, because the covers put "Daft Punk" in their *title* while the real recording only has it in the artist field.
+
+Scoping the query to a detected artist (`arid:`) fixes relevance completely, but then mapping each recording back to its studio album needs a further call per result at one request per second — too slow to type against. A song-first search would either be wrong or be slow.
+
+So the flow is **album search, then tracklist**:
+
+- Album search stays with Lidarr, which is accurate — `Discovery / Daft Punk` comes back correctly.
+- Expanding an album fetches its tracklist from MusicBrainz in one call (`release?release-group=<mbid>&inc=recordings`), which returns every pressing with full tracks and recording MBIDs. Pick the earliest official pressing so you get the album as released rather than a remaster with bonus discs.
+- Requesting a song stores the recording MBID on the `Request`. That's what picks the right track out of the album when it lands, instead of guessing by title.
+- Lidarr is handed the album by MBID (`album/lookup?term=lidarr:<release-group-mbid>` resolves it exactly), downloads the lot, and only the chosen track joins the playlist.
+
+Respect the MusicBrainz rate limit (1 req/s, `User-Agent` with contact info) and cache tracklists — they're historical facts and won't change.
+
+The request row confirms in one place: what you're getting, and **which playlist to add it to when it arrives** (or "don't add anywhere"). Capturing the target playlist at request time — not asking later — is what makes the completion flow silent and automatic.
 
 ### Dispatch and reconciliation
 

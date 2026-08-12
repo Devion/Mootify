@@ -22,6 +22,14 @@
     "PollInterval": "00:10:00"
   },
 
+  "MusicBrainz": {
+    "//Contact": "MusicBrainz requires an identifying User-Agent with contact info; put a real address or repo here.",
+    "BaseUrl": "https://musicbrainz.org/ws/2/",
+    "Contact": "https://github.com/mootify",
+    "MinRequestInterval": "00:00:01",
+    "CacheDuration": "24:00:00"
+  },
+
   "Library": {
     "//MusicRoot": "The path THIS app can see. Lidarr's root folder is a path inside its own container, so it is usually a different string. A UNC share works: \\\\\\\\host\\\\Data\\\\MediaMusic",
     "MusicRoot": "",

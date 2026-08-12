@@ -516,13 +516,41 @@ input[type=range]:disabled { opacity: .4; cursor: default; }
 .results { list-style: none; margin: 1rem 0 0; padding: 0; display: flex; flex-direction: column; gap: .5rem; }
 
 .result {
+    background: var(--bg-raised);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    overflow: hidden;
+}
+
+.result.is-open { border-color: var(--accent); }
+
+.result__row {
     display: flex;
     align-items: center;
     gap: 1rem;
     padding: .75rem;
+    cursor: pointer;
+}
+
+.result__row:hover { background: var(--bg-hover); }
+
+.tracklisting {
+    padding: .25rem .75rem .75rem 5rem;
+    border-top: 1px solid var(--line);
+}
+
+.tracklisting .tracklist td { padding: .3rem .6rem; border-bottom: 1px solid #ffffff08; }
+.tracklisting .tracklist__actions { text-align: right; width: 170px; }
+
+.lookup__target { margin: .75rem 0; }
+
+.lookup__target select {
+    padding: .45rem .7rem;
     background: var(--bg-raised);
     border: 1px solid var(--line);
     border-radius: var(--radius);
+    color: var(--text);
+    min-width: 260px;
 }
 
 .result__art { width: 56px; height: 56px; border-radius: 6px; object-fit: cover; flex-shrink: 0; background: var(--bg-hover); }
