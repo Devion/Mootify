@@ -1,0 +1,92 @@
+@inject PlayerService Player
+
+<table class="tracklist">
+    <thead>
+        <tr>
+            <th class="tracklist__num">#</th>
+            <th>Title</th>
+            @if (ShowArtist)
+            {
+                <th>Artist</th>
+            }
+            <th class="tracklist__dur">Time</th>
+            <th class="tracklist__actions"></th>
+        </tr>
+    </thead>
+    <tbody>
+        @for (var i = 0; i < Rows.Count; i++)
+        {
+            var index = i;
+            var row = Rows[i];
+            var isCurrent = Player.Current?.Id == row.TrackId;
+
+            <tr class="@(isCurrent ? "is-current" : "")" @ondblclick="() => PlayFrom(index)">
+                <td class="tracklist__num">
+                    <button class="tracklist__play" @onclick="() => PlayFrom(index)"
+                            title="Play" aria-label="@($"Play {row.Title}")">
+                        @if (isCurrent && Player.IsPlaying)
+                        {
+                            <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M7 5h4v14H7zm6 0h4v14h-4z"/></svg>
+                        }
+                        else
+                        {
+                            <span class="tracklist__index">@(index + 1)</span>
+                            <svg class="tracklist__playicon" viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>
+                        }
+                    </button>
+                </td>
+                <td class="tracklist__title">@row.Title</td>
+                @if (ShowArtist)
+                {
+                    <td class="tracklist__artist">@row.ArtistName</td>
+                }
+                <td class="tracklist__dur">@Format(row.Duration)</td>
+                <td class="tracklist__actions">
+                    <AddToPlaylistButton TrackIds="@(new[] { row.TrackId })" />
+                    @if (OnRemove.HasDelegate)
+                    {
+                        <button class="iconbutton iconbutton--small" @onclick="() => OnRemove.InvokeAsync(row.ItemId!.Value)"
+                                title="Remove from playlist" aria-label="Remove from playlist">
+                            <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M6 7h12v13a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1Zm3-3h6l1 2H8Z"/></svg>
+                        </button>
+                    }
+                </td>
+            </tr>
+        }
+    </tbody>
+</table>
+
+@if (Rows.Count == 0)
+{
+    <div class="emptystate">
+        <img src="img/pietjecow.png" alt="" />
+        <p>@EmptyMessage</p>
+    </div>
+}
+
+@code {
+    public sealed record Row(
+        Guid TrackId,
+        string Title,
+        string ArtistName,
+        TimeSpan Duration,
+        Guid? ItemId = null);
+
+    [Parameter, EditorRequired] public IReadOnlyList<Row> Rows { get; set; } = [];
+    [Parameter] public bool ShowArtist { get; set; } = true;
+    [Parameter] public string EmptyMessage { get; set; } = "Nothing here yet.";
+    [Parameter] public EventCallback<Guid> OnRemove { get; set; }
+
+    /// <summary>
+    /// Playing a row queues the whole list from that point — clicking track 3 of an album
+    /// should not leave you with a queue of one.
+    /// </summary>
+    private async Task PlayFrom(int index)
+    {
+        var ids = Rows.Select(r => r.TrackId).ToList();
+        await Player.PlayQueueAsync(ids, index);
+    }
+
+    private static string Format(TimeSpan t) =>
+        t.TotalHours >= 1 ? t.ToString(@"h\:mm\:ss") : t.ToString(@"m\:ss");
+}

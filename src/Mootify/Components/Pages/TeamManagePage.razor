@@ -1,0 +1,330 @@
+@page "/team/{TeamId:guid}/manage"
+@attribute [Authorize]
+@inject TeamService Teams
+@inject PlaylistEvents PlaylistEvents
+@inject CurrentUser CurrentUser
+@inject NavigationManager Nav
+@using Mootify.Services.Teams
+
+<PageTitle>Manage @(_team?.Name ?? "team") · Mootify</PageTitle>
+
+@if (_team is null)
+{
+    <div class="emptystate">
+        <img src="img/pietjecow.png" alt="" />
+        <p>That team doesn't exist.</p>
+    </div>
+}
+else if (!_team.IsOwner)
+{
+    @* Members can see the team page; only owners get the controls. *@
+    <div class="emptystate">
+        <img src="img/pietjecow.png" alt="" />
+        <p>Only an owner can manage @_team.Name.</p>
+        <a class="button" href="@($"/team/{TeamId}")">Back to the team</a>
+    </div>
+}
+else
+{
+    <div class="pagehead">
+        <div>
+            <h1>Manage @_team.Name</h1>
+            <p class="pagehead__meta">
+                <a href="@($"/team/{TeamId}")">Back to the team</a>
+                &middot; @_members.Count member@(_members.Count == 1 ? "" : "s")
+            </p>
+        </div>
+    </div>
+
+    @if (_error is not null)
+    {
+        <p class="error">@_error</p>
+    }
+    @if (_status is not null)
+    {
+        <p class="success">@_status</p>
+    }
+
+    <section class="managebox">
+        <h2>Details</h2>
+
+        <label for="teamname">Name</label>
+        <input id="teamname" @bind="_name" maxlength="128" />
+
+        <label for="teamdesc">Description</label>
+        <input id="teamdesc" @bind="_description" maxlength="512" placeholder="What's it for? (optional)" />
+
+        <label for="policy">Who can join</label>
+        <select id="policy" @bind="_policy">
+            <option value="@TeamJoinPolicy.Open">Anyone — they join instantly</option>
+            <option value="@TeamJoinPolicy.RequestToJoin">Anyone can ask — you accept</option>
+            <option value="@TeamJoinPolicy.InviteOnly">Invite only</option>
+        </select>
+        @if (_policy == TeamJoinPolicy.Open && _applications.Count > 0)
+        {
+            @* Switching to Open would make these moot, so say what saving will do. *@
+            <p class="managebox__hint">
+                Saving will let in the @_applications.Count person@(_applications.Count == 1 ? "" : "s") waiting below.
+            </p>
+        }
+
+        <div class="managebox__actions">
+            <button class="button" @onclick="Save">Save changes</button>
+        </div>
+    </section>
+
+    <section class="managebox">
+        <h2>Requests to join @if (_applications.Count > 0) { <span class="badge">@_applications.Count</span> }</h2>
+
+        @if (_applications.Count == 0)
+        {
+            <p class="muted">Nobody's waiting.</p>
+        }
+        else
+        {
+            <ul class="requestlist">
+                @foreach (var r in _applications)
+                {
+                    <li>
+                        <span class="requestlist__who">@r.DisplayName</span>
+                        <span class="muted">asked @Relative(r.CreatedAt)</span>
+                        <span class="requestlist__actions">
+                            <button class="button" @onclick="() => Accept(r)">Accept</button>
+                            <button class="linkbutton" @onclick="() => Decline(r)">Decline</button>
+                        </span>
+                    </li>
+                }
+            </ul>
+        }
+    </section>
+
+    <section class="managebox">
+        <h2>Invites</h2>
+
+        @if (_invitable.Count == 0)
+        {
+            <p class="muted">Everybody with an account is already in the team or has a pending invite.</p>
+        }
+        else
+        {
+            <div class="inviterow">
+                <select @bind="_inviteeId" aria-label="Person to invite">
+                    <option value="">Pick somebody&hellip;</option>
+                    @foreach (var u in _invitable)
+                    {
+                        <option value="@u.Id">@u.DisplayName</option>
+                    }
+                </select>
+                <button class="button" @onclick="Invite" disabled="@string.IsNullOrEmpty(_inviteeId)">Send invite</button>
+            </div>
+            <p class="managebox__hint">
+                Only people who've signed in at least once appear here &mdash; accounts are created on first login.
+            </p>
+        }
+
+        @if (_invites.Count > 0)
+        {
+            <ul class="requestlist">
+                @foreach (var r in _invites)
+                {
+                    <li>
+                        <span class="requestlist__who">@r.DisplayName</span>
+                        <span class="muted">invited @Relative(r.CreatedAt), not answered yet</span>
+                        <span class="requestlist__actions">
+                            <button class="linkbutton" @onclick="() => Decline(r)">Revoke</button>
+                        </span>
+                    </li>
+                }
+            </ul>
+        }
+    </section>
+
+    <section class="managebox">
+        <h2>Members</h2>
+        <ul class="requestlist">
+            @foreach (var m in _members)
+            {
+                <li>
+                    <span class="requestlist__who">@m.DisplayName</span>
+                    @if (m.Role == TeamRole.Owner)
+                    {
+                        <span class="badge">owner</span>
+                    }
+                    <span class="muted">joined @Relative(m.JoinedAt)</span>
+                    <span class="requestlist__actions">
+                        @if (m.Role == TeamRole.Owner)
+                        {
+                            <button class="linkbutton" @onclick="() => Demote(m)">Make member</button>
+                        }
+                        else
+                        {
+                            <button class="linkbutton" @onclick="() => Promote(m)">Make owner</button>
+                        }
+                        @if (m.UserId != _userId)
+                        {
+                            <button class="linkbutton linkbutton--danger" @onclick="() => Remove(m)">Remove</button>
+                        }
+                    </span>
+                </li>
+            }
+        </ul>
+    </section>
+
+    <section class="managebox managebox--danger">
+        <h2>Delete team</h2>
+        <p class="muted">
+            This deletes @_team.PlaylistCount team playlist@(_team.PlaylistCount == 1 ? "" : "s") too.
+            The tracks stay in the library.
+        </p>
+        @if (_confirmingDelete)
+        {
+            <div class="managebox__actions">
+                <button class="button" @onclick="Delete">Yes, delete @_team.Name</button>
+                <button class="linkbutton" @onclick="() => _confirmingDelete = false">Cancel</button>
+            </div>
+        }
+        else
+        {
+            <button class="linkbutton linkbutton--danger" @onclick="() => _confirmingDelete = true">Delete this team</button>
+        }
+    </section>
+}
+
+@code {
+    [Parameter] public Guid TeamId { get; set; }
+
+    private TeamSummary? _team;
+    private List<TeamMemberInfo> _members = [];
+    private List<PendingRequestInfo> _applications = [];
+    private List<PendingRequestInfo> _invites = [];
+    private List<UserOption> _invitable = [];
+    private Guid _userId;
+
+    private string _name = "";
+    private string? _description;
+    private TeamJoinPolicy _policy;
+    private string? _inviteeId;
+    private string? _error;
+    private string? _status;
+    private bool _confirmingDelete;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        _userId = await CurrentUser.GetRequiredIdAsync();
+        await LoadAsync();
+
+        if (_team is not null)
+        {
+            _name = _team.Name;
+            _description = _team.Description;
+            _policy = _team.JoinPolicy;
+        }
+    }
+
+    private async Task LoadAsync()
+    {
+        _team = await Teams.GetAsync(TeamId, _userId);
+        if (_team is null || !_team.IsOwner) return;
+
+        _members = await Teams.GetMembersAsync(TeamId);
+
+        var pending = await Teams.GetPendingForTeamAsync(TeamId);
+        _applications = [.. pending.Where(r => r.Kind == MembershipRequestKind.Application)];
+        _invites = [.. pending.Where(r => r.Kind == MembershipRequestKind.Invite)];
+
+        _invitable = await Teams.GetInvitableUsersAsync(TeamId);
+    }
+
+    private async Task Save()
+    {
+        var (ok, error) = await Teams.UpdateAsync(_userId, TeamId, _name, _description, _policy);
+        _error = error;
+        _status = ok ? "Saved." : null;
+
+        await LoadAsync();
+        PlaylistEvents.NotifyChanged();
+    }
+
+    private async Task Invite()
+    {
+        if (!Guid.TryParse(_inviteeId, out var inviteeId)) return;
+
+        var (ok, error) = await Teams.InviteAsync(_userId, TeamId, inviteeId);
+        _error = error;
+        _status = ok ? "Invite sent." : null;
+        _inviteeId = null;
+
+        await LoadAsync();
+    }
+
+    private async Task Accept(PendingRequestInfo r)
+    {
+        var (ok, error) = await Teams.AcceptAsync(_userId, r.Id);
+        _error = error;
+        _status = ok ? $"{r.DisplayName} is in." : null;
+
+        await LoadAsync();
+    }
+
+    private async Task Decline(PendingRequestInfo r)
+    {
+        var (ok, error) = await Teams.DeclineAsync(_userId, r.Id);
+        _error = ok ? null : error;
+        _status = null;
+
+        await LoadAsync();
+    }
+
+    private async Task Promote(TeamMemberInfo m)
+    {
+        await Teams.PromoteAsync(_userId, TeamId, m.UserId);
+        _status = $"{m.DisplayName} is an owner now.";
+        await LoadAsync();
+    }
+
+    private async Task Demote(TeamMemberInfo m)
+    {
+        var (ok, error) = await Teams.DemoteAsync(_userId, TeamId, m.UserId);
+        _error = error;
+        _status = ok ? $"{m.DisplayName} is a member now." : null;
+
+        await LoadAsync();
+
+        // Demoting yourself means this page is no longer yours.
+        if (ok && m.UserId == _userId)
+        {
+            Nav.NavigateTo($"/team/{TeamId}");
+        }
+    }
+
+    private async Task Remove(TeamMemberInfo m)
+    {
+        var (ok, error) = await Teams.RemoveMemberAsync(_userId, TeamId, m.UserId);
+        _error = error;
+        _status = ok ? $"Removed {m.DisplayName}." : null;
+
+        await LoadAsync();
+        PlaylistEvents.NotifyChanged();
+    }
+
+    private async Task Delete()
+    {
+        if (await Teams.DeleteAsync(_userId, TeamId))
+        {
+            PlaylistEvents.NotifyChanged();
+            Nav.NavigateTo("/teams");
+        }
+    }
+
+    private static string Relative(DateTimeOffset when)
+    {
+        var d = DateTimeOffset.UtcNow - when;
+        return d switch
+        {
+            { TotalSeconds: < 60 } => "just now",
+            { TotalMinutes: < 60 } => $"{(int)d.TotalMinutes}m ago",
+            { TotalHours: < 24 } => $"{(int)d.TotalHours}h ago",
+            _ => $"{(int)d.TotalDays}d ago",
+        };
+    }
+}

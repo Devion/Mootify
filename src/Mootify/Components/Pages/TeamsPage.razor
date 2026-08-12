@@ -1,0 +1,245 @@
+@page "/teams"
+@attribute [Authorize]
+@inject TeamService Teams
+@inject PlaylistEvents PlaylistEvents
+@inject CurrentUser CurrentUser
+@inject NavigationManager Nav
+@using Mootify.Services.Teams
+
+<PageTitle>Teams · Mootify</PageTitle>
+
+<div class="pagehead">
+    <div>
+        <h1>Teams</h1>
+        <p class="pagehead__meta">A team shares playlists. Anything anyone requests into one lands for everybody.</p>
+    </div>
+    <div class="pagehead__actions">
+        <button class="button" @onclick="StartCreate">New team</button>
+    </div>
+</div>
+
+@if (_creating)
+{
+    <div class="teamform">
+        <input @ref="_nameInput" @bind="_newName" @bind:event="oninput" @onkeydown="OnCreateKey"
+               placeholder="Team name" maxlength="128" />
+        <input @bind="_newDescription" @onkeydown="OnCreateKey" placeholder="What's it for? (optional)" maxlength="512" />
+        <button class="button" @onclick="Create">Create</button>
+        <button class="linkbutton" @onclick="() => _creating = false">Cancel</button>
+    </div>
+}
+
+@if (_error is not null)
+{
+    <p class="error">@_error</p>
+}
+
+@* Invites first — they're waiting on you, and everything below is browsing. *@
+@if (_invites.Count > 0)
+{
+    <section>
+        <h2>Invitations</h2>
+        <ul class="teamlist">
+            @foreach (var invite in _invites)
+            {
+                <li class="team is-invited">
+                    <div class="team__meta">
+                        <a href="@($"/team/{invite.TeamId}")" class="team__name">@invite.TeamName</a>
+                        <span class="team__detail">invited you @Relative(invite.CreatedAt)</span>
+                    </div>
+                    <div class="team__actions">
+                        <button class="button" @onclick="() => AcceptInvite(invite)">Accept</button>
+                        <button class="linkbutton" @onclick="() => DeclineInvite(invite)">Decline</button>
+                    </div>
+                </li>
+            }
+        </ul>
+    </section>
+}
+
+@if (_teams.Count == 0)
+{
+    <div class="emptystate">
+        <img src="img/pietjecow.png" alt="" />
+        <p>No teams yet. Make one and decide who gets in.</p>
+    </div>
+}
+else
+{
+    <ul class="teamlist">
+        @foreach (var team in _teams)
+        {
+            <li class="team @(team.IsMember ? "is-member" : "")">
+                <div class="team__meta">
+                    <a href="@($"/team/{team.Id}")" class="team__name">@team.Name</a>
+                    @if (team.IsOwner)
+                    {
+                        <span class="badge">owner</span>
+                        @if (team.PendingApplicationCount > 0)
+                        {
+                            @* The one thing an owner needs to act on, visible without digging. *@
+                            <a class="badge" href="@($"/team/{team.Id}/manage")">
+                                @team.PendingApplicationCount waiting
+                            </a>
+                        }
+                    }
+                    else if (team.IsMember)
+                    {
+                        <span class="badge badge--quiet">member</span>
+                    }
+                    <span class="team__detail">
+                        @team.MemberCount member@(team.MemberCount == 1 ? "" : "s")
+                        &middot; @team.PlaylistCount playlist@(team.PlaylistCount == 1 ? "" : "s")
+                        &middot; @PolicyLabel(team.JoinPolicy)
+                    </span>
+                    @if (!string.IsNullOrWhiteSpace(team.Description))
+                    {
+                        <span class="team__description">@team.Description</span>
+                    }
+                </div>
+
+                <div class="team__actions">
+                    @if (team.IsOwner)
+                    {
+                        <a class="linkbutton" href="@($"/team/{team.Id}/manage")">Manage</a>
+                    }
+                    @if (team.IsMember)
+                    {
+                        <button class="linkbutton" @onclick="() => Leave(team)">Leave</button>
+                    }
+                    else if (team.HasPendingApplicationFromMe)
+                    {
+                        <span class="muted">Asked to join</span>
+                    }
+                    else if (team.HasPendingInviteForMe)
+                    {
+                        <span class="muted">Invited &mdash; see above</span>
+                    }
+                    else if (team.JoinPolicy == TeamJoinPolicy.InviteOnly)
+                    {
+                        <span class="muted">Invite only</span>
+                    }
+                    else
+                    {
+                        <button class="button" @onclick="() => Join(team)">
+                            @(team.JoinPolicy == TeamJoinPolicy.Open ? "Subscribe" : "Ask to join")
+                        </button>
+                    }
+                </div>
+            </li>
+        }
+    </ul>
+}
+
+@code {
+    private List<TeamSummary> _teams = [];
+    private List<PendingRequestInfo> _invites = [];
+    private bool _creating;
+    private bool _focusPending;
+    private string _newName = "";
+    private string _newDescription = "";
+    private string? _error;
+    private ElementReference _nameInput;
+    private Guid _userId;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _userId = await CurrentUser.GetRequiredIdAsync();
+        await LoadAsync();
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (_focusPending)
+        {
+            _focusPending = false;
+            await _nameInput.FocusAsync();
+        }
+    }
+
+    private async Task LoadAsync()
+    {
+        _teams = await Teams.GetAllAsync(_userId);
+        _invites = await Teams.GetInvitesForUserAsync(_userId);
+    }
+
+    private void StartCreate()
+    {
+        _creating = true;
+        _error = null;
+        _newName = "";
+        _newDescription = "";
+        _focusPending = true;
+    }
+
+    private async Task OnCreateKey(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter") await Create();
+        else if (e.Key == "Escape") _creating = false;
+    }
+
+    private async Task Create()
+    {
+        var (id, error) = await Teams.CreateAsync(_userId, _newName, _newDescription);
+        _error = error;
+
+        if (id is null) return;
+
+        _creating = false;
+        await LoadAsync();
+        PlaylistEvents.NotifyChanged();
+        Nav.NavigateTo($"/team/{id}");
+    }
+
+    private async Task Join(TeamSummary team)
+    {
+        var (joined, _, error) = await Teams.RequestJoinAsync(_userId, team.Id);
+        _error = error;
+
+        await LoadAsync();
+        if (joined) PlaylistEvents.NotifyChanged();
+    }
+
+    private async Task Leave(TeamSummary team)
+    {
+        var (ok, error) = await Teams.LeaveAsync(_userId, team.Id);
+        _error = ok ? null : error;
+
+        await LoadAsync();
+        PlaylistEvents.NotifyChanged();
+    }
+
+    private async Task AcceptInvite(PendingRequestInfo invite)
+    {
+        var (ok, error) = await Teams.AcceptAsync(_userId, invite.Id);
+        _error = ok ? null : error;
+
+        await LoadAsync();
+        PlaylistEvents.NotifyChanged();
+    }
+
+    private async Task DeclineInvite(PendingRequestInfo invite)
+    {
+        await Teams.DeclineAsync(_userId, invite.Id);
+        await LoadAsync();
+    }
+
+    private static string PolicyLabel(TeamJoinPolicy policy) => policy switch
+    {
+        TeamJoinPolicy.Open => "open to anyone",
+        TeamJoinPolicy.RequestToJoin => "ask to join",
+        _ => "invite only",
+    };
+
+    private static string Relative(DateTimeOffset when)
+    {
+        var d = DateTimeOffset.UtcNow - when;
+        return d switch
+        {
+            { TotalSeconds: < 60 } => "just now",
+            { TotalMinutes: < 60 } => $"{(int)d.TotalMinutes}m ago",
+            { TotalHours: < 24 } => $"{(int)d.TotalHours}h ago",
+            _ => $"{(int)d.TotalDays}d ago",
+        };
+    }
+}

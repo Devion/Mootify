@@ -1,0 +1,231 @@
+@page "/search"
+@attribute [Authorize]
+@implements IDisposable
+@inject IDbContextFactory<MootifyDbContext> DbFactory
+@inject LidarrClient Lidarr
+@inject RequestService Requests
+@inject PlaylistService Playlists
+@inject CurrentUser CurrentUser
+@inject NavigationManager Nav
+@using Mootify.Services.Lidarr
+@using Mootify.Services.Requests
+
+<PageTitle>Search · Mootify</PageTitle>
+
+<h1>Search</h1>
+
+<input class="filterbox filterbox--large" type="search" autofocus
+       placeholder="Song, album or artist…"
+       @bind="_query" @bind:event="oninput" @bind:after="OnQueryChanged" aria-label="Search" />
+
+@* Step 1: the local library, debounced. Instant, no network. *@
+<section>
+    <h2>In your library</h2>
+
+    @if (_searching)
+    {
+        <p class="muted">Searching&hellip;</p>
+    }
+    else if (_localTracks.Count == 0 && !string.IsNullOrWhiteSpace(_query))
+    {
+        <p class="muted">Nothing here matches.</p>
+    }
+    else
+    {
+        <TrackList Rows="_localTracks" EmptyMessage="Type something above." />
+    }
+</section>
+
+@* Step 2: always offered, even when there are local hits — the local match may be the
+   wrong version, and that's exactly when people give up and go elsewhere. *@
+@if (!string.IsNullOrWhiteSpace(_query))
+{
+    <section class="lookup">
+        <div class="sectionhead">
+            <h2>Not what you wanted?</h2>
+            @if (!_lookupDone)
+            {
+                <button class="button" @onclick="RunLookup" disabled="@(_lookingUp || !Lidarr.IsConfigured)">
+                    @(_lookingUp ? "Looking…" : "Search for it →")
+                </button>
+            }
+        </div>
+
+        @if (!Lidarr.IsConfigured)
+        {
+            <p class="muted">Lidarr isn't configured, so nothing new can be fetched.</p>
+        }
+        else if (_lookupDone && _remote.Count == 0)
+        {
+            <p class="muted">Lidarr found nothing for that.</p>
+        }
+        else if (_remote.Count > 0)
+        {
+            @* Lidarr works in artists and albums — it cannot fetch a single track. So a song
+               request is shown as "the album it lives on", which is what actually gets grabbed. *@
+            <p class="muted">
+                Lidarr fetches albums, not single tracks &mdash; pick the release your song is on.
+            </p>
+
+            <ul class="results">
+                @foreach (var album in _remote)
+                {
+                    <li class="result">
+                        <img class="result__art" src="@(album.CoverUrl ?? "img/pietjecow.png")" alt="" loading="lazy" />
+
+                        <div class="result__meta">
+                            <strong>@album.Title</strong>
+                            <span>@(album.Artist?.ArtistName ?? "Unknown artist")</span>
+                            @* Disambiguation matters: three results called Greatest Hits with no
+                               year is a coin flip, and picking wrong wastes a download. *@
+                            <span class="result__detail">
+                                @(album.Year?.ToString() ?? "year unknown")
+                                @if (!string.IsNullOrEmpty(album.AlbumType)) { <text> &middot; @album.AlbumType</text> }
+                                @if (album.Statistics is { TrackCount: > 0 }) { <text> &middot; @album.Statistics.TrackCount tracks</text> }
+                            </span>
+                        </div>
+
+                        <div class="result__actions">
+                            @* Team playlists are listed here too: requesting into one is how a
+                               team gets music without everybody asking separately. *@
+                            <select @bind="_targetPlaylistId" aria-label="Add to playlist when it arrives">
+                                <option value="">Don't add to a playlist</option>
+                                @foreach (var p in _playlists)
+                                {
+                                    <option value="@p.Id">
+                                        Add to @p.Name@(p.IsTeamPlaylist ? $" ({p.TeamName})" : "")
+                                    </option>
+                                }
+                            </select>
+                            <button class="button" @onclick="() => RequestAlbum(album)" disabled="@_submitting">
+                                Request
+                            </button>
+                        </div>
+                    </li>
+                }
+            </ul>
+        }
+
+        @if (_message is not null)
+        {
+            <p class="@(_messageIsError ? "error" : "success")">@_message</p>
+        }
+    </section>
+}
+
+@code {
+    [SupplyParameterFromQuery(Name = "q")] public string? InitialQuery { get; set; }
+
+    private string _query = "";
+    private List<TrackList.Row> _localTracks = [];
+    private List<LidarrAlbum> _remote = [];
+    private List<PlaylistSummary> _playlists = [];
+    private string? _targetPlaylistId;
+    private string? _message;
+    private bool _messageIsError;
+    private bool _searching, _lookingUp, _lookupDone, _submitting;
+
+    private CancellationTokenSource? _debounceCts;
+
+    protected override async Task OnInitializedAsync()
+    {
+        var userId = await CurrentUser.GetRequiredIdAsync();
+        _playlists = await Playlists.GetForUserAsync(userId);
+    }
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (!string.IsNullOrWhiteSpace(InitialQuery) && InitialQuery != _query)
+        {
+            _query = InitialQuery;
+            await SearchLocalAsync();
+        }
+    }
+
+    /// <summary>~300ms debounce: searching on every keystroke hammers the database and the circuit.</summary>
+    private async Task OnQueryChanged()
+    {
+        _lookupDone = false;
+        _remote = [];
+        _message = null;
+
+        _debounceCts?.Cancel();
+        _debounceCts?.Dispose();
+        _debounceCts = new CancellationTokenSource();
+        var token = _debounceCts.Token;
+
+        try
+        {
+            await Task.Delay(300, token);
+            await SearchLocalAsync();
+            StateHasChanged();
+        }
+        catch (TaskCanceledException)
+        {
+            // superseded by the next keystroke
+        }
+    }
+
+    private async Task SearchLocalAsync()
+    {
+        if (string.IsNullOrWhiteSpace(_query))
+        {
+            _localTracks = [];
+            return;
+        }
+
+        _searching = true;
+        var term = _query.Trim();
+
+        await using var db = await DbFactory.CreateDbContextAsync();
+
+        var hits = await db.Tracks
+            .AsNoTracking()
+            .Where(t => t.IsPresent && (
+                EF.Functions.Like(t.Title, $"%{term}%") ||
+                EF.Functions.Like(t.Artist!.Name, $"%{term}%") ||
+                EF.Functions.Like(t.Album!.Title, $"%{term}%")))
+            .OrderBy(t => t.Title)
+            .Take(50)
+            .Select(t => new { t.Id, t.Title, ArtistName = t.Artist!.Name, t.DurationTicks })
+            .ToListAsync();
+
+        _localTracks = [.. hits.Select(t => new TrackList.Row(
+            t.Id, t.Title, t.ArtistName, TimeSpan.FromTicks(t.DurationTicks)))];
+
+        _searching = false;
+    }
+
+    private async Task RunLookup()
+    {
+        _lookingUp = true;
+        _message = null;
+
+        _remote = await Lidarr.LookupAlbumsAsync(_query.Trim());
+        _remote = [.. _remote.Take(15)];
+
+        _lookingUp = false;
+        _lookupDone = true;
+    }
+
+    private async Task RequestAlbum(LidarrAlbum album)
+    {
+        _submitting = true;
+        _message = null;
+
+        var userId = await CurrentUser.GetRequiredIdAsync();
+        Guid? playlistId = Guid.TryParse(_targetPlaylistId, out var pid) ? pid : null;
+
+        var result = await Requests.CreateAsync(
+            userId, album, RequestKind.Album, trackTitle: null, recordingMbid: null, playlistId);
+
+        _messageIsError = !result.Ok;
+        _message = result.Ok
+            ? $"Requested {album.Title}. You'll get a cowbell when it lands."
+            : result.Error;
+
+        _submitting = false;
+    }
+
+    public void Dispose() => _debounceCts?.Dispose();
+}

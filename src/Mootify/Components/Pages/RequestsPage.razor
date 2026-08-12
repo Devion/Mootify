@@ -1,0 +1,121 @@
+@page "/requests"
+@attribute [Authorize]
+@inject RequestService Requests
+@inject RequestReconciler Reconciler
+@inject LidarrClient Lidarr
+@inject CurrentUser CurrentUser
+@using Mootify.Services.Lidarr
+@using Mootify.Services.Requests
+
+<PageTitle>Requests · Mootify</PageTitle>
+
+<div class="pagehead">
+    <div>
+        <h1>Requests</h1>
+        <p class="pagehead__meta">
+            @if (_lidarrOk is true)
+            {
+                <span class="dot dot--ok"></span> <text>Lidarr @_lidarrVersion</text>
+            }
+            else if (_lidarrOk is false)
+            {
+                <span class="dot dot--bad"></span> @(_lidarrError ?? "Lidarr unreachable")
+            }
+        </p>
+    </div>
+    <div class="pagehead__actions">
+        <a class="button" href="/search">Request something</a>
+        <button class="linkbutton" @onclick="Refresh" disabled="@_checking">Check now</button>
+    </div>
+</div>
+
+@if (_requests.Count == 0)
+{
+    <div class="emptystate">
+        <img src="img/pietjecow.png" alt="" />
+        <p>No requests yet. Search for something that isn't in the library.</p>
+    </div>
+}
+else
+{
+    <table class="requests">
+        <thead>
+            <tr><th>What</th><th>Status</th><th>Playlist</th><th>Asked</th></tr>
+        </thead>
+        <tbody>
+            @foreach (var r in _requests)
+            {
+                <tr>
+                    <td>
+                        <strong>@(r.Kind == Data.RequestKind.Track ? r.TrackTitle : r.AlbumTitle)</strong>
+                        <span class="muted"> &mdash; @r.ArtistName</span>
+                    </td>
+                    <td>
+                        <span class="status status--@r.Status.ToString().ToLowerInvariant()">@Describe(r.Status)</span>
+                        @if (r.FailureReason is not null)
+                        {
+                            @* "It didn't work" with no detail is what generates support messages. *@
+                            <div class="muted">@r.FailureReason</div>
+                        }
+                    </td>
+                    <td>
+                        @if (r.TargetPlaylist is not null)
+                        {
+                            <a href="@($"/playlist/{r.TargetPlaylistId}")">@r.TargetPlaylist.Name</a>
+                        }
+                        else
+                        {
+                            <span class="muted">&mdash;</span>
+                        }
+                    </td>
+                    <td class="muted">@r.CreatedAt.ToLocalTime().ToString("d MMM HH:mm")</td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}
+
+@code {
+    private List<Data.Request> _requests = [];
+    private bool? _lidarrOk;
+    private string? _lidarrVersion;
+    private string? _lidarrError;
+    private bool _checking;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadAsync();
+
+        var (ok, version, error) = await Lidarr.CheckAsync();
+        _lidarrOk = ok;
+        _lidarrVersion = version;
+        _lidarrError = error;
+    }
+
+    private async Task LoadAsync()
+    {
+        var userId = await CurrentUser.GetRequiredIdAsync();
+        _requests = await Requests.GetForUserAsync(userId);
+    }
+
+    /// <summary>Manual poke at the reconciler. It runs on a timer anyway; this is for impatience.</summary>
+    private async Task Refresh()
+    {
+        _checking = true;
+        await Reconciler.ReconcileAllAsync();
+        await LoadAsync();
+        _checking = false;
+    }
+
+    private static string Describe(Data.RequestStatus status) => status switch
+    {
+        Data.RequestStatus.Pending => "Queued",
+        Data.RequestStatus.Searching => "Searching",
+        Data.RequestStatus.Downloading => "Downloading",
+        Data.RequestStatus.Imported => "Importing",
+        Data.RequestStatus.Transcoding => "Converting to MP3",
+        Data.RequestStatus.Available => "Ready",
+        Data.RequestStatus.NotFound => "Not found",
+        _ => "Failed",
+    };
+}

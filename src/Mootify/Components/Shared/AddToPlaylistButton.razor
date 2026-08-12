@@ -1,0 +1,155 @@
+@implements IDisposable
+@inject PlaylistService Playlists
+@inject PlaylistEvents PlaylistEvents
+@inject CurrentUser CurrentUser
+
+@*  "Add this to a playlist that doesn't exist yet" is one interaction, not three:
+    Create new… is pinned at the top of the same picker. *@
+
+<div class="addto">
+    <button class="iconbutton iconbutton--small" @onclick="Toggle" title="Add to playlist" aria-label="Add to playlist">
+        <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+            <path fill="currentColor" d="M11 5h2v6h6v2h-6v6h-2v-6H5v-2h6z"/>
+        </svg>
+    </button>
+
+    @if (_open)
+    {
+        <div class="addto__panel" @onclick:stopPropagation="true">
+            <input placeholder="Find or create a playlist…" @bind="_filter" @bind:event="oninput"
+                   @onkeydown="OnKeyDown" @ref="_input" />
+
+            <ul>
+                @if (!string.IsNullOrWhiteSpace(_filter) && !ExactMatchExists)
+                {
+                    <li class="addto__create" @onclick="CreateAndAdd">
+                        <strong>Create</strong> &ldquo;@_filter&rdquo;
+                    </li>
+                }
+
+                @foreach (var p in Filtered)
+                {
+                    <li @onclick="() => AddTo(p.Id)">
+                        <span>
+                            @p.Name
+                            @* Adding to a team playlist is visible to everyone in it — say so
+                               before the click, not after. *@
+                            @if (p.IsTeamPlaylist)
+                            {
+                                <span class="addto__team">@p.TeamName</span>
+                            }
+                        </span>
+                        <span class="addto__count">@p.TrackCount</span>
+                    </li>
+                }
+            </ul>
+
+            @if (_status is not null)
+            {
+                <p class="addto__status">@_status</p>
+            }
+        </div>
+    }
+</div>
+
+@code {
+    /// <summary>Tracks to add. One for a row, many for a whole album.</summary>
+    [Parameter, EditorRequired] public IReadOnlyList<Guid> TrackIds { get; set; } = [];
+
+    private List<PlaylistSummary> _playlists = [];
+    private string _filter = "";
+    private string? _status;
+    private bool _open;
+    private bool _focusPending;
+    private ElementReference _input;
+
+    private IEnumerable<PlaylistSummary> Filtered =>
+        string.IsNullOrWhiteSpace(_filter)
+            ? _playlists
+            : _playlists.Where(p => p.Name.Contains(_filter, StringComparison.OrdinalIgnoreCase));
+
+    private bool ExactMatchExists =>
+        _playlists.Any(p => string.Equals(p.Name, _filter.Trim(), StringComparison.OrdinalIgnoreCase));
+
+    protected override void OnInitialized() => PlaylistEvents.Changed += OnChanged;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (_focusPending)
+        {
+            _focusPending = false;
+            await _input.FocusAsync();
+        }
+    }
+
+    private async Task Toggle()
+    {
+        _open = !_open;
+        _status = null;
+
+        if (_open)
+        {
+            var userId = await CurrentUser.GetRequiredIdAsync();
+            _playlists = await Playlists.GetForUserAsync(userId);
+            _filter = "";
+            _focusPending = true;
+        }
+    }
+
+    private async Task OnKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Escape")
+        {
+            _open = false;
+        }
+        else if (e.Key == "Enter" && !string.IsNullOrWhiteSpace(_filter))
+        {
+            var match = Filtered.FirstOrDefault();
+            if (match is not null && ExactMatchExists)
+            {
+                await AddTo(match.Id);
+            }
+            else
+            {
+                await CreateAndAdd();
+            }
+        }
+    }
+
+    private async Task CreateAndAdd()
+    {
+        var userId = await CurrentUser.GetRequiredIdAsync();
+
+        // Created personal, always. "Create" in this picker shouldn't quietly publish a new
+        // playlist to a team — team playlists are made from the team page, deliberately.
+        var id = await Playlists.CreateAsync(userId, _filter);
+        if (id is null)
+        {
+            _status = "Couldn't create that playlist.";
+            return;
+        }
+
+        await AddTo(id.Value);
+        PlaylistEvents.NotifyChanged();
+    }
+
+    private async Task AddTo(Guid playlistId)
+    {
+        var userId = await CurrentUser.GetRequiredIdAsync();
+        var added = await Playlists.AddTracksAsync(playlistId, userId, TrackIds);
+
+        _status = added switch
+        {
+            0 => "Nothing added.",
+            1 => "Added 1 track.",
+            _ => $"Added {added} tracks.",
+        };
+
+        PlaylistEvents.NotifyChanged();
+        _open = false;
+    }
+
+    private void OnChanged() => _ = InvokeAsync(StateHasChanged);
+
+    public void Dispose() => PlaylistEvents.Changed -= OnChanged;
+}

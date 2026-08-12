@@ -1,0 +1,149 @@
+@page "/admin"
+@attribute [Authorize(Policy = MootifyAuth.AdminPolicy)]
+@inject AdminService Admin
+@inject SettingsService Settings
+@inject LibraryScanner Scanner
+@inject LidarrClient Lidarr
+@inject Transcoder Transcoder
+@inject CurrentUser CurrentUser
+@using Mootify.Services.Admin
+@using Mootify.Services.Lidarr
+@using Mootify.Services.Settings
+@using Mootify.Services.Transcoding
+
+<PageTitle>Admin · Mootify</PageTitle>
+
+<h1>Admin</h1>
+<AdminNav />
+
+<div class="statrow">
+    <div class="stat"><strong>@_stats.Users</strong><span>users@(_stats.BannedUsers > 0 ? $" ({_stats.BannedUsers} banned)" : "")</span></div>
+    <div class="stat"><strong>@_stats.Teams</strong><span>teams</span></div>
+    <div class="stat"><strong>@_stats.Playlists</strong><span>playlists</span></div>
+    <div class="stat"><strong>@_stats.Tracks.ToString("N0")</strong><span>tracks</span></div>
+    <div class="stat"><strong>@_stats.OpenRequests</strong><span>open requests</span></div>
+</div>
+
+<section class="managebox">
+    <h2>Registration</h2>
+    <p class="muted">
+        @(_registrationOpen
+            ? "Anyone who can reach Mootify can create an account."
+            : "New accounts can only be made by an admin resetting a password for somebody, or by reopening this.")
+    </p>
+    <div class="managebox__actions">
+        <button class="button" @onclick="ToggleRegistration">
+            @(_registrationOpen ? "Close registration" : "Open registration")
+        </button>
+    </div>
+</section>
+
+<section class="managebox">
+    <h2>Library</h2>
+    <ul class="statuslist">
+        <li>
+            <span class="dot @(_musicRootOk ? "dot--ok" : "dot--bad")"></span>
+            Music root: <code>@(_musicRoot is { Length: > 0 } ? _musicRoot : "not set")</code>
+            @if (!_musicRootOk)
+            {
+                <span class="muted">&mdash; not reachable from this machine</span>
+            }
+        </li>
+        <li>
+            <span class="dot @(_ffmpegOk ? "dot--ok" : "dot--bad")"></span>
+            FFmpeg: @(_ffmpegOk ? _ffmpegVersion : "not found — non-MP3 imports will fail")
+        </li>
+        <li>
+            <span class="dot @(_lidarrOk == true ? "dot--ok" : "dot--bad")"></span>
+            Lidarr: @(_lidarrOk == true ? _lidarrVersion : _lidarrError ?? "not configured")
+        </li>
+        <li>
+            Last scan:
+            @if (Scanner.LastScanAt is { } at)
+            {
+                <text>@at.ToLocalTime().ToString("d MMM HH:mm")</text>
+                @if (Scanner.LastReport is { } r)
+                {
+                    <span class="muted"> &mdash; +@r.Added ~@r.Updated -@r.Removed !@r.Failed</span>
+                }
+            }
+            else
+            {
+                <span class="muted">not yet</span>
+            }
+        </li>
+    </ul>
+
+    <div class="managebox__actions">
+        <button class="button" @onclick="Rescan" disabled="@Scanner.IsScanning">
+            @(Scanner.IsScanning ? "Scanning…" : "Rescan library")
+        </button>
+        <button class="linkbutton" @onclick="Prune">Prune missing tracks from playlists</button>
+    </div>
+
+    @if (_message is not null)
+    {
+        <p class="success">@_message</p>
+    }
+</section>
+
+@code {
+    private AdminStats _stats = new(0, 0, 0, 0, 0, 0, 0);
+    private bool _registrationOpen;
+    private string? _musicRoot;
+    private bool _musicRootOk;
+    private bool _ffmpegOk;
+    private string? _ffmpegVersion;
+    private bool? _lidarrOk;
+    private string? _lidarrVersion;
+    private string? _lidarrError;
+    private string? _message;
+    private Guid _userId;
+
+    [Inject] private IOptionsMonitor<LibraryOptions> LibraryOptions { get; set; } = default!;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _userId = await CurrentUser.GetRequiredIdAsync();
+        await LoadAsync();
+
+        var (ffmpegOk, version) = await Transcoder.ProbeAsync();
+        _ffmpegOk = ffmpegOk;
+        _ffmpegVersion = version;
+
+        var (lidarrOk, lidarrVersion, error) = await Lidarr.CheckAsync();
+        _lidarrOk = lidarrOk;
+        _lidarrVersion = lidarrVersion;
+        _lidarrError = error;
+    }
+
+    private async Task LoadAsync()
+    {
+        _stats = await Admin.GetStatsAsync();
+        _registrationOpen = await Settings.GetRegistrationEnabledAsync();
+        _musicRoot = LibraryOptions.CurrentValue.MusicRoot;
+        _musicRootOk = !string.IsNullOrWhiteSpace(_musicRoot) && Directory.Exists(_musicRoot);
+    }
+
+    private async Task ToggleRegistration()
+    {
+        await Settings.SetRegistrationEnabledAsync(!_registrationOpen);
+        await LoadAsync();
+        _message = _registrationOpen ? "Registration is open." : "Registration is closed.";
+    }
+
+    private async Task Rescan()
+    {
+        var report = await Scanner.ScanAllAsync();
+        await LoadAsync();
+        _message = $"Scanned in {report.Elapsed.TotalSeconds:0.0}s: +{report.Added} ~{report.Updated} -{report.Removed}";
+    }
+
+    private async Task Prune()
+    {
+        var (removed, error) = await Admin.PruneMissingTracksAsync(_userId);
+        _message = error ?? (removed == 0
+            ? "Nothing to prune — no playlist points at a missing file."
+            : $"Removed {removed} playlist entr{(removed == 1 ? "y" : "ies")} with missing files.");
+    }
+}

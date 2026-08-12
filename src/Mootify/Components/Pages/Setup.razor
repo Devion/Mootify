@@ -1,0 +1,80 @@
+@page "/setup"
+@layout EmptyLayout
+@using Microsoft.AspNetCore.Antiforgery
+@using Microsoft.AspNetCore.Components.Endpoints
+@using Microsoft.Extensions.Options
+@using Mootify.Components.Layout
+@using Mootify.Services.Settings
+@attribute [AllowAnonymous]
+@attribute [ExcludeFromInteractiveRouting]
+@inject IAntiforgery Antiforgery
+@inject IHttpContextAccessor HttpContextAccessor
+@inject IOptions<AuthOptions> AuthOptions
+@inject SetupState SetupState
+@inject NavigationManager Nav
+
+<PageTitle>Set up Mootify</PageTitle>
+
+@* First run only. Once an account exists this page refuses, and the middleware stops
+   redirecting here — so it can't be used later to mint a second admin. *@
+
+<div class="login">
+    <div class="login__art">
+        <img src="img/logo-big.png" alt="Mootify" />
+    </div>
+
+    <div class="login__form">
+        <img class="login__wordmark" src="img/logo-small.png" alt="Mootify" />
+
+        <h1 class="login__title">First run</h1>
+        <p class="login__hint">
+            Nothing exists yet. Create the admin account and you're in &mdash; everyone else
+            can sign up afterwards.
+        </p>
+
+        <form method="post" action="/auth/setup">
+            <input type="hidden" name="__RequestVerificationToken" value="@_token" />
+
+            @if (!string.IsNullOrEmpty(Error))
+            {
+                <p class="login__error" role="alert">@Error</p>
+            }
+
+            <label for="username">Admin username</label>
+            @* Fixed, and shown read-only so it's obvious it isn't a choice. The server checks
+               it too — a read-only input is a hint, not a control. *@
+            <input id="username" name="username" value="@AuthOptions.Value.AdminUsername" readonly />
+
+            <label for="password">Password</label>
+            <input id="password" name="password" type="password" autocomplete="new-password" required
+                   placeholder="At least @AuthOptions.Value.MinPasswordLength characters" autofocus />
+
+            <label for="confirmPassword">Password again</label>
+            <input id="confirmPassword" name="confirmPassword" type="password" autocomplete="new-password" required
+                   placeholder="The same one" />
+
+            <button type="submit">Create admin account</button>
+        </form>
+    </div>
+</div>
+
+@code {
+    [SupplyParameterFromQuery] public string? Error { get; set; }
+
+    private string? _token;
+
+    protected override void OnInitialized()
+    {
+        if (SetupState.IsComplete)
+        {
+            Nav.NavigateTo("/login", forceLoad: true);
+            return;
+        }
+
+        var http = HttpContextAccessor.HttpContext;
+        if (http is not null)
+        {
+            _token = Antiforgery.GetAndStoreTokens(http).RequestToken;
+        }
+    }
+}

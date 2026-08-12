@@ -1,0 +1,39 @@
+@using Microsoft.AspNetCore.Components.Endpoints
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark" />
+    <base href="/" />
+    <ResourcePreloader />
+    <link rel="stylesheet" href="@Assets["app.css"]" />
+    <link rel="stylesheet" href="@Assets["Mootify.styles.css"]" />
+    <ImportMap />
+    <link rel="icon" type="image/png" href="@Assets["img/logo-small.png"]" />
+    <title>Mootify</title>
+    <HeadOutlet />
+</head>
+
+<body>
+    @* Interactivity is global rather than per-page, and that is load-bearing: the audio
+       element lives in MainLayout, and only a layout that stays mounted across navigation
+       can keep it playing. Per-page render modes would make each page its own island and
+       re-render the layout — and the music — on every click.
+
+       The login page opts out via [ExcludeFromInteractiveRouting] so it can write the
+       sign-in cookie during static SSR, before the response starts. *@
+    <Routes @rendermode="RenderModeForPage" />
+    <ReconnectModal />
+    <script src="@Assets["_framework/blazor.web.js"]"></script>
+</body>
+
+</html>
+
+@code {
+    [CascadingParameter] private HttpContext HttpContext { get; set; } = default!;
+
+    private IComponentRenderMode? RenderModeForPage =>
+        HttpContext.AcceptsInteractiveRouting() ? InteractiveServer : null;
+}

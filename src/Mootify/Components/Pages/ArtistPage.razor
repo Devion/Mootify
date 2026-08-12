@@ -1,0 +1,79 @@
+@page "/artist/{ArtistId:guid}"
+@attribute [Authorize]
+@inject IDbContextFactory<MootifyDbContext> DbFactory
+@inject PlayerService Player
+
+<PageTitle>@(_name ?? "Artist") · Mootify</PageTitle>
+
+@if (_name is null)
+{
+    <p>Loading&hellip;</p>
+}
+else
+{
+    <div class="pagehead">
+        <div>
+            <h1>@_name</h1>
+            <p class="pagehead__meta">@_albums.Count album@(_albums.Count == 1 ? "" : "s") &middot; @_allTrackIds.Count tracks</p>
+        </div>
+        <div class="pagehead__actions">
+            <button class="button" @onclick="PlayAll" disabled="@(_allTrackIds.Count == 0)">Play all</button>
+            <AddToPlaylistButton TrackIds="_allTrackIds" />
+        </div>
+    </div>
+
+    @foreach (var album in _albums)
+    {
+        <section class="albumblock">
+            <h2><a href="@($"/album/{album.Id}")">@album.Title</a>@(album.Year is { } y ? $" ({y})" : "")</h2>
+            <TrackList Rows="album.Tracks" ShowArtist="false" />
+        </section>
+    }
+}
+
+@code {
+    [Parameter] public Guid ArtistId { get; set; }
+
+    private sealed record AlbumBlock(Guid Id, string Title, int? Year, List<TrackList.Row> Tracks);
+
+    private string? _name;
+    private List<AlbumBlock> _albums = [];
+    private List<Guid> _allTrackIds = [];
+
+    protected override async Task OnParametersSetAsync()
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+
+        _name = await db.Artists
+            .Where(a => a.Id == ArtistId)
+            .Select(a => a.Name)
+            .FirstOrDefaultAsync();
+
+        var albums = await db.Albums
+            .AsNoTracking()
+            .Where(a => a.ArtistId == ArtistId)
+            .OrderBy(a => a.Year ?? int.MaxValue).ThenBy(a => a.Title)
+            .Select(a => new
+            {
+                a.Id,
+                a.Title,
+                a.Year,
+                Tracks = a.Tracks
+                    .Where(t => t.IsPresent)
+                    .OrderBy(t => t.DiscNumber).ThenBy(t => t.TrackNumber)
+                    .Select(t => new { t.Id, t.Title, ArtistName = t.Artist!.Name, t.DurationTicks })
+                    .ToList(),
+            })
+            .ToListAsync();
+
+        _albums =
+        [
+            .. albums.Select(a => new AlbumBlock(a.Id, a.Title, a.Year,
+                [.. a.Tracks.Select(t => new TrackList.Row(
+                    t.Id, t.Title, t.ArtistName, TimeSpan.FromTicks(t.DurationTicks)))]))
+        ];
+        _allTrackIds = [.. _albums.SelectMany(a => a.Tracks).Select(t => t.TrackId)];
+    }
+
+    private async Task PlayAll() => await Player.PlayQueueAsync(_allTrackIds, 0);
+}

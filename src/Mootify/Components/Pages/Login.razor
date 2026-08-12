@@ -1,0 +1,90 @@
+@page "/login"
+@layout EmptyLayout
+@using Microsoft.AspNetCore.Antiforgery
+@using Microsoft.AspNetCore.Components.Endpoints
+@using Mootify.Components.Layout
+@using Mootify.Services.Settings
+@attribute [AllowAnonymous]
+@attribute [ExcludeFromInteractiveRouting]
+@inject IAntiforgery Antiforgery
+@inject IHttpContextAccessor HttpContextAccessor
+@inject SettingsService Settings
+@inject NavigationManager Nav
+
+<PageTitle>Sign in · Mootify</PageTitle>
+
+@* Static SSR on purpose: the sign-in cookie has to be written before the response starts,
+   which an interactive circuit can't do. A plain form post to /auth/login it is. *@
+
+<div class="login">
+    <div class="login__art">
+        @* The big logo has a black background, so the panel behind it is black too and the
+           seam disappears. Don't move this onto a light surface. *@
+        <img src="img/logo-big.png" alt="Mootify" />
+    </div>
+
+    <div class="login__form">
+        <img class="login__wordmark" src="img/logo-small.png" alt="Mootify" />
+
+        <form method="post" action="/auth/login">
+            <input type="hidden" name="__RequestVerificationToken" value="@_token" />
+            <input type="hidden" name="returnUrl" value="@ReturnUrl" />
+
+            @if (!string.IsNullOrEmpty(Error))
+            {
+                <p class="login__error" role="alert">@Error</p>
+            }
+
+            <label for="username">Username</label>
+            <input id="username" name="username" autocomplete="username" required maxlength="64"
+                   placeholder="Your username" autofocus />
+
+            <label for="password">Password</label>
+            <input id="password" name="password" type="password" autocomplete="current-password" required
+                   placeholder="Your password" />
+
+            <button type="submit">Start mooving</button>
+        </form>
+
+        @if (_registrationOpen)
+        {
+            <p class="login__hint">
+                No account? <a href="/register">Sign up</a>.
+            </p>
+        }
+        else
+        {
+            <p class="login__hint">Registration is closed. Ask an admin for an account.</p>
+        }
+    </div>
+</div>
+
+@code {
+    [SupplyParameterFromQuery] public string? ReturnUrl { get; set; }
+    [SupplyParameterFromQuery] public string? Error { get; set; }
+
+    private string? _token;
+    private bool _registrationOpen;
+
+    protected override async Task OnInitializedAsync()
+    {
+        var http = HttpContextAccessor.HttpContext;
+
+        // Already signed in? Don't render the form. Antiforgery tokens are bound to the
+        // identity that requested them, so a login form minted for user A and posted while
+        // still user A — then landing as user B — fails with a 400 rather than a message.
+        // Signing out first is the only sane way to switch accounts.
+        if (http?.User.Identity?.IsAuthenticated == true)
+        {
+            Nav.NavigateTo("/", forceLoad: true);
+            return;
+        }
+
+        if (http is not null)
+        {
+            _token = Antiforgery.GetAndStoreTokens(http).RequestToken;
+        }
+
+        _registrationOpen = await Settings.GetRegistrationEnabledAsync();
+    }
+}

@@ -1,0 +1,159 @@
+@page "/playlist/{PlaylistId:guid}"
+@attribute [Authorize]
+@inject PlaylistService Playlists
+@inject PlaylistEvents PlaylistEvents
+@inject CurrentUser CurrentUser
+@inject PlayerService Player
+@inject NavigationManager Nav
+
+<PageTitle>@(_name ?? "Playlist") · Mootify</PageTitle>
+
+@if (_notFound)
+{
+    <div class="emptystate">
+        <img src="img/pietjecow.png" alt="" />
+        <p>That playlist doesn't exist, or isn't yours.</p>
+    </div>
+}
+else if (_name is null)
+{
+    <p>Loading&hellip;</p>
+}
+else
+{
+    <div class="pagehead">
+        <div>
+            @if (_renaming)
+            {
+                <input class="pagehead__rename" @bind="_draftName" @onkeydown="OnRenameKey" @onblur="CommitRename" />
+            }
+            else
+            {
+                <h1 @onclick="StartRename" title="Click to rename">@_name</h1>
+            }
+            <p class="pagehead__meta">
+                @if (_teamId is { } tid)
+                {
+                    <a href="@($"/team/{tid}")" class="badge">@_teamName</a>
+                    <text> &middot; </text>
+                }
+                @_tracks.Count tracks &middot; @FormatTotal()
+            </p>
+        </div>
+        <div class="pagehead__actions">
+            <button class="button" @onclick="PlayAll" disabled="@(_tracks.Count == 0)">Play</button>
+            <button class="linkbutton linkbutton--danger" @onclick="Delete">Delete</button>
+        </div>
+    </div>
+
+    @if (_deleteError is not null)
+    {
+        <p class="error">@_deleteError</p>
+    }
+
+    <TrackList Rows="_tracks" OnRemove="Remove" EmptyMessage="Empty. Add tracks with the + on any song." />
+}
+
+@code {
+    [Parameter] public Guid PlaylistId { get; set; }
+
+    private string? _name;
+    private string _draftName = "";
+    private bool _renaming;
+    private bool _notFound;
+    private Guid? _teamId;
+    private string? _teamName;
+    private string? _deleteError;
+    private List<TrackList.Row> _tracks = [];
+
+    protected override async Task OnParametersSetAsync() => await LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        var userId = await CurrentUser.GetRequiredIdAsync();
+        var playlist = await Playlists.GetAsync(PlaylistId, userId);
+
+        if (playlist is null)
+        {
+            _notFound = true;
+            return;
+        }
+
+        _notFound = false;
+        _name = playlist.Name;
+        _teamId = playlist.TeamId;
+        _teamName = playlist.Team?.Name;
+
+        _tracks =
+        [
+            .. playlist.Items
+                .Where(i => i.Track is { IsPresent: true })
+                .OrderBy(i => i.SortKey)
+                .Select(i => new TrackList.Row(
+                    i.TrackId,
+                    i.Track!.Title,
+                    i.Track.Artist?.Name ?? "",
+                    i.Track.Duration,
+                    i.Id))
+        ];
+    }
+
+    private async Task PlayAll() =>
+        await Player.PlayQueueAsync([.. _tracks.Select(t => t.TrackId)], 0);
+
+    private async Task Remove(Guid itemId)
+    {
+        var userId = await CurrentUser.GetRequiredIdAsync();
+        await Playlists.RemoveItemAsync(itemId, userId);
+        await LoadAsync();
+        PlaylistEvents.NotifyChanged();
+    }
+
+    private void StartRename()
+    {
+        _renaming = true;
+        _draftName = _name ?? "";
+    }
+
+    private async Task OnRenameKey(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter") await CommitRename();
+        else if (e.Key == "Escape") _renaming = false;
+    }
+
+    private async Task CommitRename()
+    {
+        if (!_renaming) return;
+        _renaming = false;
+
+        if (string.IsNullOrWhiteSpace(_draftName) || _draftName == _name) return;
+
+        var userId = await CurrentUser.GetRequiredIdAsync();
+        if (await Playlists.RenameAsync(PlaylistId, userId, _draftName))
+        {
+            _name = _draftName.Trim();
+            PlaylistEvents.NotifyChanged();
+        }
+    }
+
+    private async Task Delete()
+    {
+        var userId = await CurrentUser.GetRequiredIdAsync();
+        if (await Playlists.DeleteAsync(PlaylistId, userId))
+        {
+            PlaylistEvents.NotifyChanged();
+            Nav.NavigateTo("/");
+            return;
+        }
+
+        // Only reachable on a team playlist: members can add and remove tracks, but throwing
+        // away the whole list is an owner's call.
+        _deleteError = "Only a team owner can delete this playlist.";
+    }
+
+    private string FormatTotal()
+    {
+        var t = TimeSpan.FromTicks(_tracks.Sum(x => x.Duration.Ticks));
+        return t.TotalHours >= 1 ? $"{(int)t.TotalHours}h {t.Minutes}m" : $"{t.Minutes}m";
+    }
+}

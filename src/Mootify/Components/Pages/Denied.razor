@@ -1,0 +1,16 @@
+@page "/denied"
+@attribute [AllowAnonymous]
+
+<PageTitle>Not for you · Mootify</PageTitle>
+
+@*  Where authorization failures land. Previously this was the login page, which is wrong
+    twice over: it implies signing in again would help when it wouldn't, and rendering the
+    login form for somebody who is already signed in mints an antiforgery token bound to
+    their identity — so the next post fails with a 400 instead of a message.  *@
+
+<div class="emptystate emptystate--large">
+    <img src="img/pietjecow.png" alt="" />
+    <h2>That part's not yours</h2>
+    <p>You're signed in, but this page needs an admin account.</p>
+    <a class="button" href="/">Back to the music</a>
+</div>

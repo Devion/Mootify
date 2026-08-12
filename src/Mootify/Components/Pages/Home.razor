@@ -1,0 +1,95 @@
+@page "/"
+@attribute [Authorize]
+@inject IDbContextFactory<MootifyDbContext> DbFactory
+@inject CurrentUser CurrentUser
+@inject LibraryScanner Scanner
+
+<PageTitle>Mootify</PageTitle>
+
+<h1>Hey @_name.</h1>
+
+@if (_trackCount == 0)
+{
+    <div class="emptystate emptystate--large">
+        <img src="img/pietjecow.png" alt="" />
+        <h2>The library is empty</h2>
+        @if (Scanner.IsScanning)
+        {
+            <p>Scanning now&hellip; give it a moment.</p>
+        }
+        else
+        {
+            <p>
+                Point <code>Library:MusicRoot</code> in <code>mootify.json</code> at your music folder,
+                then scan. Remember it's the path <em>this app</em> can see &mdash; Lidarr's root folder
+                is a path inside its own container.
+            </p>
+            <button class="button" @onclick="Rescan">Scan now</button>
+        }
+    </div>
+}
+else
+{
+    <div class="statrow">
+        <div class="stat"><strong>@_trackCount.ToString("N0")</strong><span>tracks</span></div>
+        <div class="stat"><strong>@_albumCount.ToString("N0")</strong><span>albums</span></div>
+        <div class="stat"><strong>@_artistCount.ToString("N0")</strong><span>artists</span></div>
+        <div class="stat"><strong>@FormatTotal(_totalDuration)</strong><span>of music</span></div>
+    </div>
+
+    <section>
+        <div class="sectionhead">
+            <h2>Recently added</h2>
+            <button class="linkbutton" @onclick="Rescan" disabled="@Scanner.IsScanning">
+                @(Scanner.IsScanning ? "Scanning…" : "Rescan")
+            </button>
+        </div>
+        <TrackList Rows="_recent" EmptyMessage="Nothing added yet." />
+    </section>
+}
+
+@code {
+    private string _name = "";
+    private int _trackCount, _albumCount, _artistCount;
+    private TimeSpan _totalDuration;
+    private List<TrackList.Row> _recent = [];
+
+    protected override async Task OnInitializedAsync()
+    {
+        _name = await CurrentUser.GetDisplayNameAsync();
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+
+        _trackCount = await db.Tracks.CountAsync(t => t.IsPresent);
+        _albumCount = await db.Albums.CountAsync();
+        _artistCount = await db.Artists.CountAsync();
+
+        _totalDuration = _trackCount == 0
+            ? TimeSpan.Zero
+            : TimeSpan.FromTicks(await db.Tracks.Where(t => t.IsPresent).SumAsync(t => t.DurationTicks));
+
+        var recent = await db.Tracks
+            .AsNoTracking()
+            .Where(t => t.IsPresent)
+            .OrderByDescending(t => t.AddedAt)
+            .Take(20)
+            .Select(t => new { t.Id, t.Title, ArtistName = t.Artist!.Name, t.DurationTicks })
+            .ToListAsync();
+
+        _recent = [.. recent.Select(t => new TrackList.Row(
+            t.Id, t.Title, t.ArtistName, TimeSpan.FromTicks(t.DurationTicks)))];
+    }
+
+    private async Task Rescan()
+    {
+        await Scanner.ScanAllAsync();
+        await LoadAsync();
+    }
+
+    private static string FormatTotal(TimeSpan t) =>
+        t.TotalDays >= 1 ? $"{(int)t.TotalDays}d {t.Hours}h" : $"{(int)t.TotalHours}h {t.Minutes}m";
+}

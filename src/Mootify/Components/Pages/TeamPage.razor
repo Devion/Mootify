@@ -1,0 +1,241 @@
+@page "/team/{TeamId:guid}"
+@attribute [Authorize]
+@inject TeamService Teams
+@inject PlaylistService Playlists
+@inject PlaylistEvents PlaylistEvents
+@inject CurrentUser CurrentUser
+@inject NavigationManager Nav
+@using Mootify.Services.Teams
+
+<PageTitle>@(_team?.Name ?? "Team") · Mootify</PageTitle>
+
+@if (_team is null)
+{
+    <div class="emptystate">
+        <img src="img/pietjecow.png" alt="" />
+        <p>That team doesn't exist.</p>
+    </div>
+}
+else
+{
+    <div class="pagehead">
+        <div>
+            <h1>@_team.Name</h1>
+            <p class="pagehead__meta">
+                @_team.MemberCount member@(_team.MemberCount == 1 ? "" : "s")
+                @if (!string.IsNullOrWhiteSpace(_team.Description))
+                {
+                    <text> &middot; @_team.Description</text>
+                }
+            </p>
+        </div>
+        <div class="pagehead__actions">
+            @if (_team.IsOwner)
+            {
+                <a class="button" href="@($"/team/{TeamId}/manage")">
+                    Manage@(_team.PendingApplicationCount > 0 ? $" ({_team.PendingApplicationCount})" : "")
+                </a>
+            }
+            @if (_team.IsMember)
+            {
+                <button class="linkbutton" @onclick="Leave">Leave</button>
+            }
+            else if (_team.HasPendingInviteForMe)
+            {
+                <button class="button" @onclick="AcceptInvite">Accept invitation</button>
+            }
+            else if (_team.HasPendingApplicationFromMe)
+            {
+                <span class="muted">Waiting for an owner to accept you</span>
+            }
+            else if (_team.JoinPolicy == TeamJoinPolicy.InviteOnly)
+            {
+                <span class="muted">Invite only</span>
+            }
+            else
+            {
+                <button class="button" @onclick="Join">
+                    @(_team.JoinPolicy == TeamJoinPolicy.Open ? "Subscribe" : "Ask to join")
+                </button>
+            }
+        </div>
+    </div>
+
+    @if (_error is not null)
+    {
+        <p class="error">@_error</p>
+    }
+
+    @if (!_team.IsMember)
+    {
+        @* Non-members can see that a team exists and who's in it, but not its playlists. *@
+        <div class="emptystate">
+            <img src="img/pietjecow.png" alt="" />
+            <p>
+                @(_team.JoinPolicy switch
+                {
+                    TeamJoinPolicy.Open => "Subscribe to see this team's playlists and add to them.",
+                    TeamJoinPolicy.RequestToJoin => "Ask to join, and an owner can let you in.",
+                    _ => "This team is invite only. An owner has to invite you.",
+                })
+            </p>
+        </div>
+    }
+    else
+    {
+        <section>
+            <div class="sectionhead">
+                <h2>Playlists</h2>
+                <button class="linkbutton" @onclick="StartCreate">+ New team playlist</button>
+            </div>
+
+            @if (_creating)
+            {
+                <input class="teamform__inline" @ref="_nameInput" @bind="_newPlaylistName" @bind:event="oninput"
+                       @onkeydown="OnCreateKey" placeholder="Playlist name" />
+            }
+
+            @if (_playlists.Count == 0 && !_creating)
+            {
+                <p class="muted">No playlists yet. Anything the team requests can land in one of these.</p>
+            }
+            else
+            {
+                <ul class="teamplaylists">
+                    @foreach (var p in _playlists)
+                    {
+                        <li>
+                            <a href="@($"/playlist/{p.Id}")">
+                                <span>@p.Name</span>
+                                <span class="muted">@p.TrackCount track@(p.TrackCount == 1 ? "" : "s")</span>
+                            </a>
+                        </li>
+                    }
+                </ul>
+            }
+        </section>
+
+        <section>
+            <h2>Members</h2>
+            <ul class="memberlist">
+                @foreach (var m in _members)
+                {
+                    <li>
+                        <span>@m.DisplayName</span>
+                        @if (m.Role == TeamRole.Owner)
+                        {
+                            <span class="badge">owner</span>
+                        }
+                        else if (_team.IsOwner)
+                        {
+                            <button class="linkbutton" @onclick="() => Promote(m)">Make owner</button>
+                        }
+                    </li>
+                }
+            </ul>
+        </section>
+    }
+}
+
+@code {
+    [Parameter] public Guid TeamId { get; set; }
+
+    private TeamSummary? _team;
+    private List<PlaylistSummary> _playlists = [];
+    private List<TeamMemberInfo> _members = [];
+    private Guid _userId;
+    private string? _error;
+    private bool _creating;
+    private bool _focusPending;
+    private string _newPlaylistName = "";
+    private ElementReference _nameInput;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        _userId = await CurrentUser.GetRequiredIdAsync();
+        await LoadAsync();
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (_focusPending)
+        {
+            _focusPending = false;
+            await _nameInput.FocusAsync();
+        }
+    }
+
+    private async Task LoadAsync()
+    {
+        _team = await Teams.GetAsync(TeamId, _userId);
+        if (_team is null) return;
+
+        _members = await Teams.GetMembersAsync(TeamId);
+        _playlists = _team.IsMember ? await Playlists.GetForTeamAsync(TeamId) : [];
+    }
+
+    private void StartCreate()
+    {
+        _creating = true;
+        _newPlaylistName = "";
+        _focusPending = true;
+    }
+
+    private async Task OnCreateKey(KeyboardEventArgs e)
+    {
+        if (e.Key == "Escape")
+        {
+            _creating = false;
+            return;
+        }
+
+        if (e.Key != "Enter" || string.IsNullOrWhiteSpace(_newPlaylistName)) return;
+
+        var id = await Playlists.CreateAsync(_userId, _newPlaylistName, TeamId);
+        _creating = false;
+
+        if (id is null)
+        {
+            _error = "Couldn't create that playlist.";
+            return;
+        }
+
+        PlaylistEvents.NotifyChanged();
+        Nav.NavigateTo($"/playlist/{id}");
+    }
+
+    private async Task Join()
+    {
+        var (joined, _, error) = await Teams.RequestJoinAsync(_userId, TeamId);
+        _error = error;
+
+        await LoadAsync();
+        if (joined) PlaylistEvents.NotifyChanged();
+    }
+
+    private async Task AcceptInvite()
+    {
+        var invite = (await Teams.GetInvitesForUserAsync(_userId)).FirstOrDefault(i => i.TeamId == TeamId);
+        if (invite is null) return;
+
+        var (ok, error) = await Teams.AcceptAsync(_userId, invite.Id);
+        _error = ok ? null : error;
+
+        await LoadAsync();
+        PlaylistEvents.NotifyChanged();
+    }
+
+    private async Task Leave()
+    {
+        var (ok, error) = await Teams.LeaveAsync(_userId, TeamId);
+        _error = ok ? null : error;
+        await LoadAsync();
+        PlaylistEvents.NotifyChanged();
+    }
+
+    private async Task Promote(TeamMemberInfo member)
+    {
+        await Teams.PromoteAsync(_userId, TeamId, member.UserId);
+        await LoadAsync();
+    }
+}

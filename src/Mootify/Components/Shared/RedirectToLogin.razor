@@ -1,0 +1,13 @@
+@inject NavigationManager Nav
+
+@code {
+    protected override void OnInitialized()
+    {
+        var returnUrl = Nav.ToBaseRelativePath(Nav.Uri);
+        var query = string.IsNullOrEmpty(returnUrl) || returnUrl.StartsWith("login", StringComparison.OrdinalIgnoreCase)
+            ? ""
+            : $"?returnUrl={Uri.EscapeDataString("/" + returnUrl)}";
+
+        Nav.NavigateTo($"/login{query}", forceLoad: true);
+    }
+}

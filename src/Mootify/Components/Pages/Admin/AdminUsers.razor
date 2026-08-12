@@ -1,0 +1,190 @@
+@page "/admin/users"
+@attribute [Authorize(Policy = MootifyAuth.AdminPolicy)]
+@inject AdminService Admin
+@inject AccountService Accounts
+@inject CurrentUser CurrentUser
+@using Mootify.Services.Admin
+
+<PageTitle>Users · Admin · Mootify</PageTitle>
+
+<h1>Users</h1>
+<AdminNav />
+
+@if (_error is not null) { <p class="error">@_error</p> }
+@if (_status is not null) { <p class="success">@_status</p> }
+
+<table class="admintable">
+    <thead>
+        <tr>
+            <th>User</th><th>Playlists</th><th>Teams</th><th>Requests</th><th>Last seen</th><th></th>
+        </tr>
+    </thead>
+    <tbody>
+        @foreach (var u in _users)
+        {
+            <tr class="@(u.IsBanned ? "is-banned" : "")">
+                <td>
+                    <strong>@u.DisplayName</strong>
+                    @if (u.IsAdmin) { <span class="badge">admin</span> }
+                    @if (u.Id == _userId) { <span class="badge badge--quiet">you</span> }
+                    @if (u.IsBanned)
+                    {
+                        <span class="badge badge--danger">banned</span>
+                        @if (!string.IsNullOrWhiteSpace(u.BanReason))
+                        {
+                            <div class="muted">@u.BanReason</div>
+                        }
+                    }
+                </td>
+                <td>@u.PlaylistCount</td>
+                <td>@u.TeamCount</td>
+                <td>@u.RequestCount</td>
+                <td class="muted">@u.LastSeenAt.ToLocalTime().ToString("d MMM HH:mm")</td>
+                <td class="admintable__actions">
+                    @* You can't act on yourself here — a self-ban or self-demote is only ever
+                       an accident, and it could lock the panel for everybody. *@
+                    @if (u.Id != _userId)
+                    {
+                        @if (u.IsBanned)
+                        {
+                            <button class="linkbutton" @onclick="() => SetBanned(u, false)">Unban</button>
+                        }
+                        else
+                        {
+                            <button class="linkbutton" @onclick="() => StartBan(u)">Ban</button>
+                        }
+
+                        <button class="linkbutton" @onclick="() => SetAdmin(u, !u.IsAdmin)">
+                            @(u.IsAdmin ? "Remove admin" : "Make admin")
+                        </button>
+                    }
+
+                    <button class="linkbutton" @onclick="() => StartReset(u)">Reset password</button>
+
+                    @if (u.Id != _userId)
+                    {
+                        <button class="linkbutton linkbutton--danger" @onclick="() => StartDelete(u)">Delete</button>
+                    }
+                </td>
+            </tr>
+
+            @if (_banTarget == u.Id)
+            {
+                <tr class="admintable__inline">
+                    <td colspan="6">
+                        <div class="inviterow">
+                            <input placeholder="Why? (optional, shown to them at sign-in)" @bind="_banReason" maxlength="512" />
+                            <button class="button" @onclick="() => SetBanned(u, true)">Ban @u.DisplayName</button>
+                            <button class="linkbutton" @onclick="() => _banTarget = null">Cancel</button>
+                        </div>
+                    </td>
+                </tr>
+            }
+
+            @if (_resetTarget == u.Id)
+            {
+                <tr class="admintable__inline">
+                    <td colspan="6">
+                        <div class="inviterow">
+                            <input type="password" placeholder="New password" @bind="_newPassword" autocomplete="new-password" />
+                            <input type="password" placeholder="Again" @bind="_confirmPassword" autocomplete="new-password" />
+                            <button class="button" @onclick="() => ResetPassword(u)">Set password</button>
+                            <button class="linkbutton" @onclick="() => _resetTarget = null">Cancel</button>
+                        </div>
+                    </td>
+                </tr>
+            }
+
+            @if (_deleteTarget == u.Id)
+            {
+                <tr class="admintable__inline">
+                    <td colspan="6">
+                        <div class="inviterow">
+                            <span>
+                                Delete <strong>@u.DisplayName</strong>, their @u.PlaylistCount playlist@(u.PlaylistCount == 1 ? "" : "s"),
+                                memberships and request history? Team playlists they contributed to stay.
+                            </span>
+                            <button class="button" @onclick="() => Delete(u)">Yes, delete</button>
+                            <button class="linkbutton" @onclick="() => _deleteTarget = null">Cancel</button>
+                        </div>
+                    </td>
+                </tr>
+            }
+        }
+    </tbody>
+</table>
+
+@code {
+    private List<AdminUserRow> _users = [];
+    private Guid _userId;
+    private Guid? _banTarget, _resetTarget, _deleteTarget;
+    private string _banReason = "";
+    private string _newPassword = "", _confirmPassword = "";
+    private string? _error, _status;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _userId = await CurrentUser.GetRequiredIdAsync();
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync() => _users = await Admin.GetUsersAsync();
+
+    private void StartBan(AdminUserRow u)
+    {
+        _banTarget = u.Id;
+        _banReason = "";
+        Clear();
+    }
+
+    private void StartReset(AdminUserRow u)
+    {
+        _resetTarget = u.Id;
+        _newPassword = _confirmPassword = "";
+        Clear();
+    }
+
+    private void StartDelete(AdminUserRow u)
+    {
+        _deleteTarget = u.Id;
+        Clear();
+    }
+
+    private void Clear() => (_error, _status) = (null, null);
+
+    private async Task SetBanned(AdminUserRow u, bool banned)
+    {
+        var (ok, error) = await Admin.SetBannedAsync(_userId, u.Id, banned, _banReason);
+        _error = error;
+        _status = ok ? $"{u.DisplayName} is {(banned ? "banned" : "unbanned")}." : null;
+        _banTarget = null;
+        await LoadAsync();
+    }
+
+    private async Task SetAdmin(AdminUserRow u, bool isAdmin)
+    {
+        var (ok, error) = await Admin.SetAdminAsync(_userId, u.Id, isAdmin);
+        _error = error;
+        _status = ok ? $"{u.DisplayName} is {(isAdmin ? "an admin" : "a normal user")} now." : null;
+        await LoadAsync();
+    }
+
+    private async Task ResetPassword(AdminUserRow u)
+    {
+        var (ok, error) = await Accounts.AdminSetPasswordAsync(_userId, u.Id, _newPassword, _confirmPassword);
+        _error = error;
+        _status = ok ? $"Set a new password for {u.DisplayName}." : null;
+
+        if (ok) _resetTarget = null;
+        _newPassword = _confirmPassword = "";
+    }
+
+    private async Task Delete(AdminUserRow u)
+    {
+        var (ok, error) = await Admin.DeleteUserAsync(_userId, u.Id);
+        _error = error;
+        _status = ok ? $"Deleted {u.DisplayName}." : null;
+        _deleteTarget = null;
+        await LoadAsync();
+    }
+}

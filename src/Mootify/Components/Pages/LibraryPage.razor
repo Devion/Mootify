@@ -1,0 +1,61 @@
+@page "/library"
+@attribute [Authorize]
+@inject IDbContextFactory<MootifyDbContext> DbFactory
+
+<PageTitle>Library · Mootify</PageTitle>
+
+<h1>Library</h1>
+
+<input class="filterbox" type="search" placeholder="Filter artists…"
+       @bind="_filter" @bind:event="oninput" aria-label="Filter artists" />
+
+@if (_artists.Count == 0)
+{
+    <div class="emptystate">
+        <img src="img/pietjecow.png" alt="" />
+        <p>No artists yet. Scan the library from the home page.</p>
+    </div>
+}
+else
+{
+    <ul class="artistgrid">
+        @foreach (var a in Filtered)
+        {
+            <li>
+                <a href="@($"/artist/{a.Id}")">
+                    <span class="artistgrid__name">@a.Name</span>
+                    <span class="artistgrid__meta">@a.AlbumCount album@(a.AlbumCount == 1 ? "" : "s") &middot; @a.TrackCount tracks</span>
+                </a>
+            </li>
+        }
+    </ul>
+}
+
+@code {
+    private sealed record ArtistRow(Guid Id, string Name, string SortName, int AlbumCount, int TrackCount);
+
+    private List<ArtistRow> _artists = [];
+    private string _filter = "";
+
+    private IEnumerable<ArtistRow> Filtered =>
+        string.IsNullOrWhiteSpace(_filter)
+            ? _artists
+            : _artists.Where(a => a.Name.Contains(_filter, StringComparison.OrdinalIgnoreCase));
+
+    protected override async Task OnInitializedAsync()
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+
+        _artists = await db.Artists
+            .AsNoTracking()
+            .Where(a => a.Tracks.Any(t => t.IsPresent))
+            .OrderBy(a => a.SortName)
+            .Select(a => new ArtistRow(
+                a.Id,
+                a.Name,
+                a.SortName,
+                a.Albums.Count,
+                a.Tracks.Count(t => t.IsPresent)))
+            .ToListAsync();
+    }
+}

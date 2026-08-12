@@ -1,0 +1,87 @@
+@page "/register"
+@layout EmptyLayout
+@using Microsoft.AspNetCore.Antiforgery
+@using Microsoft.AspNetCore.Components.Endpoints
+@using Microsoft.Extensions.Options
+@using Mootify.Components.Layout
+@using Mootify.Services.Settings
+@attribute [AllowAnonymous]
+@attribute [ExcludeFromInteractiveRouting]
+@inject IAntiforgery Antiforgery
+@inject IHttpContextAccessor HttpContextAccessor
+@inject SettingsService Settings
+@inject IOptions<AuthOptions> AuthOptions
+@inject NavigationManager Nav
+
+<PageTitle>Sign up · Mootify</PageTitle>
+
+<div class="login">
+    <div class="login__art">
+        <img src="img/logo-big.png" alt="Mootify" />
+    </div>
+
+    <div class="login__form">
+        <img class="login__wordmark" src="img/logo-small.png" alt="Mootify" />
+
+        @if (!_registrationOpen)
+        {
+            <p class="login__error">Registration is closed. Ask an admin for an account.</p>
+            <p class="login__hint"><a href="/login">Back to sign in</a></p>
+        }
+        else
+        {
+            <form method="post" action="/auth/register">
+                <input type="hidden" name="__RequestVerificationToken" value="@_token" />
+
+                @if (!string.IsNullOrEmpty(Error))
+                {
+                    <p class="login__error" role="alert">@Error</p>
+                }
+
+                <label for="username">Pick a username</label>
+                <input id="username" name="username" autocomplete="username" required maxlength="64"
+                       placeholder="Your username" autofocus />
+                <p class="login__hint">Letters, numbers, dot, dash and underscore.</p>
+
+                <label for="password">Password</label>
+                <input id="password" name="password" type="password" autocomplete="new-password" required
+                       placeholder="At least @AuthOptions.Value.MinPasswordLength characters" />
+
+                <label for="confirmPassword">Password again</label>
+                <input id="confirmPassword" name="confirmPassword" type="password" autocomplete="new-password" required
+                       placeholder="The same one" />
+
+                <button type="submit">Create account</button>
+            </form>
+
+            <p class="login__hint">Already have one? <a href="/login">Sign in</a>.</p>
+        }
+    </div>
+</div>
+
+@code {
+    [SupplyParameterFromQuery] public string? Error { get; set; }
+
+    private string? _token;
+    private bool _registrationOpen;
+
+    protected override async Task OnInitializedAsync()
+    {
+        var http = HttpContextAccessor.HttpContext;
+
+        // Same reason as the login page: an antiforgery token minted for a signed-in user
+        // makes the post fail. Sign out first to make a second account.
+        if (http?.User.Identity?.IsAuthenticated == true)
+        {
+            Nav.NavigateTo("/", forceLoad: true);
+            return;
+        }
+
+        if (http is not null)
+        {
+            _token = Antiforgery.GetAndStoreTokens(http).RequestToken;
+        }
+
+        _registrationOpen = await Settings.GetRegistrationEnabledAsync();
+    }
+}

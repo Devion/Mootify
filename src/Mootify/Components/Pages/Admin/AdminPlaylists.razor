@@ -1,0 +1,140 @@
+@page "/admin/playlists"
+@attribute [Authorize(Policy = MootifyAuth.AdminPolicy)]
+@inject AdminService Admin
+@inject PlaylistEvents PlaylistEvents
+@inject CurrentUser CurrentUser
+@using Mootify.Services.Admin
+
+<PageTitle>Playlists · Admin · Mootify</PageTitle>
+
+<h1>Playlists</h1>
+<AdminNav />
+
+@if (_error is not null) { <p class="error">@_error</p> }
+@if (_status is not null) { <p class="success">@_status</p> }
+
+<input class="filterbox" type="search" placeholder="Filter by name, owner or team…"
+       @bind="_filter" @bind:event="oninput" aria-label="Filter playlists" />
+
+@if (_playlists.Count == 0)
+{
+    <p class="muted">No playlists yet.</p>
+}
+
+<table class="admintable">
+    <thead>
+        <tr><th>Playlist</th><th>Belongs to</th><th>Tracks</th><th>Updated</th><th></th></tr>
+    </thead>
+    <tbody>
+        @foreach (var p in Filtered)
+        {
+            <tr>
+                <td><a href="@($"/playlist/{p.Id}")"><strong>@p.Name</strong></a></td>
+                <td>
+                    @if (p.TeamId is { } teamId)
+                    {
+                        <a class="badge" href="@($"/team/{teamId}")">@p.TeamName</a>
+                    }
+                    else
+                    {
+                        <span class="muted">@(p.OwnerName ?? "nobody")</span>
+                    }
+                </td>
+                <td>@p.TrackCount</td>
+                <td class="muted">@p.UpdatedAt.ToLocalTime().ToString("d MMM HH:mm")</td>
+                <td class="admintable__actions">
+                    <button class="linkbutton" @onclick="() => StartRename(p)">Rename</button>
+                    <button class="linkbutton linkbutton--danger" @onclick="() => StartDelete(p)">Delete</button>
+                </td>
+            </tr>
+
+            @if (_renameTarget == p.Id)
+            {
+                <tr class="admintable__inline">
+                    <td colspan="5">
+                        <div class="inviterow">
+                            <input @bind="_name" placeholder="Playlist name" maxlength="256" />
+                            <button class="button" @onclick="() => Rename(p)">Save</button>
+                            <button class="linkbutton" @onclick="() => _renameTarget = null">Cancel</button>
+                        </div>
+                    </td>
+                </tr>
+            }
+
+            @if (_deleteTarget == p.Id)
+            {
+                <tr class="admintable__inline">
+                    <td colspan="5">
+                        <div class="inviterow">
+                            <span>Delete <strong>@p.Name</strong> and its @p.TrackCount entr@(p.TrackCount == 1 ? "y" : "ies")? The tracks stay in the library.</span>
+                            <button class="button" @onclick="() => Delete(p)">Yes, delete</button>
+                            <button class="linkbutton" @onclick="() => _deleteTarget = null">Cancel</button>
+                        </div>
+                    </td>
+                </tr>
+            }
+        }
+    </tbody>
+</table>
+
+@code {
+    private List<AdminPlaylistRow> _playlists = [];
+    private Guid _userId;
+    private Guid? _renameTarget, _deleteTarget;
+    private string _name = "";
+    private string _filter = "";
+    private string? _error, _status;
+
+    private IEnumerable<AdminPlaylistRow> Filtered =>
+        string.IsNullOrWhiteSpace(_filter)
+            ? _playlists
+            : _playlists.Where(p =>
+                p.Name.Contains(_filter, StringComparison.OrdinalIgnoreCase)
+                || (p.OwnerName ?? "").Contains(_filter, StringComparison.OrdinalIgnoreCase)
+                || (p.TeamName ?? "").Contains(_filter, StringComparison.OrdinalIgnoreCase));
+
+    protected override async Task OnInitializedAsync()
+    {
+        _userId = await CurrentUser.GetRequiredIdAsync();
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync() => _playlists = await Admin.GetPlaylistsAsync();
+
+    private void StartRename(AdminPlaylistRow p)
+    {
+        _renameTarget = p.Id;
+        _deleteTarget = null;
+        _name = p.Name;
+        (_error, _status) = (null, null);
+    }
+
+    private void StartDelete(AdminPlaylistRow p)
+    {
+        _deleteTarget = p.Id;
+        _renameTarget = null;
+        (_error, _status) = (null, null);
+    }
+
+    private async Task Rename(AdminPlaylistRow p)
+    {
+        var (ok, error) = await Admin.RenamePlaylistAsync(_userId, p.Id, _name);
+        _error = error;
+        _status = ok ? "Renamed." : null;
+
+        if (ok) _renameTarget = null;
+        await LoadAsync();
+        PlaylistEvents.NotifyChanged();
+    }
+
+    private async Task Delete(AdminPlaylistRow p)
+    {
+        var (ok, error) = await Admin.DeletePlaylistAsync(_userId, p.Id);
+        _error = error;
+        _status = ok ? $"Deleted {p.Name}." : null;
+        _deleteTarget = null;
+
+        await LoadAsync();
+        PlaylistEvents.NotifyChanged();
+    }
+}

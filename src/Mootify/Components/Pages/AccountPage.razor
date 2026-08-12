@@ -1,0 +1,52 @@
+@page "/account"
+@attribute [Authorize]
+@inject AccountService Accounts
+@inject CurrentUser CurrentUser
+
+<PageTitle>Account · Mootify</PageTitle>
+
+<h1>Account</h1>
+<p class="pagehead__meta">Signed in as <strong>@_displayName</strong>.</p>
+
+<section class="managebox">
+    <h2>Change password</h2>
+
+    @if (_error is not null) { <p class="error">@_error</p> }
+    @if (_status is not null) { <p class="success">@_status</p> }
+
+    <label for="current">Current password</label>
+    <input id="current" type="password" @bind="_current" autocomplete="current-password" />
+
+    <label for="new">New password</label>
+    <input id="new" type="password" @bind="_new" autocomplete="new-password" />
+
+    <label for="confirm">New password again</label>
+    <input id="confirm" type="password" @bind="_confirm" autocomplete="new-password" />
+
+    <div class="managebox__actions">
+        <button class="button" @onclick="Change">Change password</button>
+    </div>
+</section>
+
+@code {
+    private string _displayName = "";
+    private string _current = "", _new = "", _confirm = "";
+    private string? _error, _status;
+
+    protected override async Task OnInitializedAsync() =>
+        _displayName = await CurrentUser.GetDisplayNameAsync();
+
+    private async Task Change()
+    {
+        var userId = await CurrentUser.GetRequiredIdAsync();
+        var (ok, error) = await Accounts.ChangePasswordAsync(userId, _current, _new, _confirm);
+
+        _error = error;
+        _status = ok ? "Password changed." : null;
+
+        if (ok)
+        {
+            _current = _new = _confirm = "";
+        }
+    }
+}

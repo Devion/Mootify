@@ -1,0 +1,45 @@
+@inherits LayoutComponentBase
+@implements IDisposable
+@inject PlayerService Player
+@inject IOptionsMonitor<NotificationOptions> NotificationOptions
+@using Microsoft.Extensions.Options
+
+<div class="shell">
+    <TopBar />
+
+    <div class="shell__body">
+        <Sidebar />
+        <main class="shell__main">
+            @Body
+        </main>
+    </div>
+
+    <PlayBar />
+</div>
+
+@*  The two audio elements.
+
+    They live here, at the top of the layout, and nothing routed can destroy them.
+    Keeping them separate is not tidiness: playing the cowbell through the music element
+    would stop the song. player.js owns the first, notifications.js the second.  *@
+<audio id="mootify-audio" preload="metadata"></audio>
+<audio id="mootify-cowbell" preload="auto" src="@NotificationOptions.CurrentValue.SoundFile"></audio>
+
+@code {
+    protected override void OnInitialized()
+    {
+        Player.StateChanged += OnPlayerStateChanged;
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            await Player.EnsureInitializedAsync();
+        }
+    }
+
+    private async Task OnPlayerStateChanged() => await InvokeAsync(StateHasChanged);
+
+    public void Dispose() => Player.StateChanged -= OnPlayerStateChanged;
+}

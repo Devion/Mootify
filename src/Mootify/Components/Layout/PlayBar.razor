@@ -1,0 +1,114 @@
+@implements IDisposable
+@inject PlayerService Player
+
+@*  Rendered entirely from PlayerService. Nothing here keeps its own copy of "is playing" —
+    that's how you end up with a pause button that lies about what the audio element is doing. *@
+
+<footer class="playbar @(Player.Current is null ? "is-empty" : "")">
+    <div class="playbar__now">
+        @if (Player.Current is { } track)
+        {
+            <div class="playbar__art" aria-hidden="true">
+                <img src="img/pietjecow.png" alt="" />
+            </div>
+            <div class="playbar__meta">
+                <a class="playbar__title" href="@($"/album/{track.AlbumId}")">@track.Title</a>
+                <span class="playbar__artist">@track.ArtistName</span>
+            </div>
+        }
+        else
+        {
+            <div class="playbar__meta playbar__meta--idle">
+                <span class="playbar__title">Nothing playing</span>
+                <span class="playbar__artist">Pick something from your library</span>
+            </div>
+        }
+    </div>
+
+    <div class="playbar__transport">
+        <div class="playbar__buttons">
+            <button class="iconbutton @(Player.ShuffleEnabled ? "is-active" : "")"
+                    @onclick="Player.ToggleShuffleAsync" title="Shuffle" aria-pressed="@Player.ShuffleEnabled">
+                <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M17 3v2h1.6l-4.3 4.3 1.4 1.4L20 6.4V8h2V3ZM4 5v2h3.2l3 3 1.4-1.4-3.6-3.6Zm12.7 8.3-1.4 1.4 3.3 3.3H17v2h5v-5h-2v1.6ZM4 17v2h3.6l9.7-9.7-1.4-1.4L6.8 17Z"/></svg>
+            </button>
+
+            <button class="iconbutton" @onclick="Player.PreviousAsync" disabled="@(Player.Current is null)" title="Previous">
+                <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M6 6h2v12H6zm3.5 6L18 6v12z"/></svg>
+            </button>
+
+            <button class="iconbutton iconbutton--primary" @onclick="Player.TogglePlayPauseAsync"
+                    disabled="@(Player.Current is null)"
+                    title="@(Player.IsPlaying ? "Pause" : "Play")"
+                    aria-label="@(Player.IsPlaying ? "Pause" : "Play")">
+                @if (Player.IsPlaying)
+                {
+                    <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="currentColor" d="M7 5h4v14H7zm6 0h4v14h-4z"/></svg>
+                }
+                else
+                {
+                    <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>
+                }
+            </button>
+
+            <button class="iconbutton" @onclick="Player.NextAsync" disabled="@(!Player.HasNext)" title="Next">
+                <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M16 6h2v12h-2zM6 6l8.5 6L6 18z"/></svg>
+            </button>
+
+            <button class="iconbutton @(Player.Repeat != Data.RepeatMode.Off ? "is-active" : "")"
+                    @onclick="Player.CycleRepeatAsync" title="@($"Repeat: {Player.Repeat}")">
+                <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M7 7h10v3l4-4-4-4v3H5v6h2Zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2Z"/></svg>
+                @if (Player.Repeat == Data.RepeatMode.One)
+                {
+                    <span class="iconbutton__mark">1</span>
+                }
+            </button>
+        </div>
+
+        <div class="playbar__scrub">
+            <span class="playbar__time">@Format(Player.Position)</span>
+            <input type="range" min="0" max="@Math.Max(1, Player.Duration)" step="0.5"
+                   value="@Player.Position" @onchange="OnSeek"
+                   disabled="@(Player.Current is null)" aria-label="Seek" />
+            <span class="playbar__time">@Format(Player.Duration)</span>
+        </div>
+    </div>
+
+    <div class="playbar__right">
+        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" class="playbar__volicon">
+            <path fill="currentColor" d="M4 9h3l4-4v14l-4-4H4Zm12.5 3a4.5 4.5 0 0 0-2.5-4v8a4.5 4.5 0 0 0 2.5-4Z"/>
+        </svg>
+        <input class="playbar__volume" type="range" min="0" max="1" step="0.01"
+               value="@Player.Volume" @onchange="OnVolume" aria-label="Volume" />
+    </div>
+</footer>
+
+@code {
+    protected override void OnInitialized() => Player.StateChanged += OnChanged;
+
+    private async Task OnChanged() => await InvokeAsync(StateHasChanged);
+
+    private async Task OnSeek(ChangeEventArgs e)
+    {
+        if (double.TryParse(e.Value?.ToString(), out var seconds))
+        {
+            await Player.SeekAsync(seconds);
+        }
+    }
+
+    private async Task OnVolume(ChangeEventArgs e)
+    {
+        if (double.TryParse(e.Value?.ToString(), out var volume))
+        {
+            await Player.SetVolumeAsync(volume);
+        }
+    }
+
+    private static string Format(double seconds)
+    {
+        if (double.IsNaN(seconds) || double.IsInfinity(seconds) || seconds < 0) seconds = 0;
+        var t = TimeSpan.FromSeconds(seconds);
+        return t.TotalHours >= 1 ? t.ToString(@"h\:mm\:ss") : t.ToString(@"m\:ss");
+    }
+
+    public void Dispose() => Player.StateChanged -= OnChanged;
+}

@@ -1,0 +1,232 @@
+@page "/admin/teams"
+@attribute [Authorize(Policy = MootifyAuth.AdminPolicy)]
+@inject AdminService Admin
+@inject TeamService Teams
+@inject PlaylistEvents PlaylistEvents
+@inject CurrentUser CurrentUser
+@using Mootify.Services.Admin
+
+<PageTitle>Teams · Admin · Mootify</PageTitle>
+
+<h1>Teams</h1>
+<AdminNav />
+
+@if (_error is not null) { <p class="error">@_error</p> }
+@if (_status is not null) { <p class="success">@_status</p> }
+
+@if (_teams.Count == 0)
+{
+    <p class="muted">No teams yet.</p>
+}
+
+<table class="admintable">
+    <thead>
+        <tr><th>Team</th><th>Owners</th><th>Members</th><th>Playlists</th><th>Pending</th><th></th></tr>
+    </thead>
+    <tbody>
+        @foreach (var t in _teams)
+        {
+            <tr>
+                <td>
+                    <a href="@($"/team/{t.Id}")"><strong>@t.Name</strong></a>
+                    <div class="muted">@PolicyLabel(t.JoinPolicy)@(string.IsNullOrWhiteSpace(t.Description) ? "" : $" · {t.Description}")</div>
+                </td>
+                <td class="muted">@t.Owners</td>
+                <td>@t.MemberCount</td>
+                <td>@t.PlaylistCount</td>
+                <td>@(t.PendingCount == 0 ? "—" : t.PendingCount.ToString())</td>
+                <td class="admintable__actions">
+                    <button class="linkbutton" @onclick="() => StartEdit(t)">Edit</button>
+                    <button class="linkbutton" @onclick="() => StartMembers(t)">Members</button>
+                    <button class="linkbutton linkbutton--danger" @onclick="() => StartDelete(t)">Delete</button>
+                </td>
+            </tr>
+
+            @if (_editTarget == t.Id)
+            {
+                <tr class="admintable__inline">
+                    <td colspan="6">
+                        <div class="inviterow">
+                            <input @bind="_name" placeholder="Team name" maxlength="128" />
+                            <input @bind="_description" placeholder="Description (optional)" maxlength="512" />
+                            <select @bind="_policy">
+                                <option value="@TeamJoinPolicy.Open">Anyone — instantly</option>
+                                <option value="@TeamJoinPolicy.RequestToJoin">Ask to join</option>
+                                <option value="@TeamJoinPolicy.InviteOnly">Invite only</option>
+                            </select>
+                            <button class="button" @onclick="() => SaveEdit(t)">Save</button>
+                            <button class="linkbutton" @onclick="() => _editTarget = null">Cancel</button>
+                        </div>
+                    </td>
+                </tr>
+            }
+
+            @if (_membersTarget == t.Id)
+            {
+                <tr class="admintable__inline">
+                    <td colspan="6">
+                        <ul class="requestlist">
+                            @foreach (var m in _members)
+                            {
+                                <li>
+                                    <span class="requestlist__who">@m.DisplayName</span>
+                                    @if (m.Role == TeamRole.Owner) { <span class="badge">owner</span> }
+                                    <span class="requestlist__actions">
+                                        <button class="linkbutton" @onclick="() => SetRole(t, m.UserId, m.Role == TeamRole.Owner ? TeamRole.Member : TeamRole.Owner)">
+                                            @(m.Role == TeamRole.Owner ? "Make member" : "Make owner")
+                                        </button>
+                                        <button class="linkbutton linkbutton--danger" @onclick="() => RemoveMember(t, m.UserId)">Remove</button>
+                                    </span>
+                                </li>
+                            }
+                        </ul>
+
+                        @* No invite, no application, no waiting. This is the escape hatch for
+                           when somebody needs to be in a team and the normal flow is in the way. *@
+                        <div class="inviterow">
+                            <select @bind="_addUserId" aria-label="Person to add">
+                                <option value="">Add somebody&hellip;</option>
+                                @foreach (var u in _addable)
+                                {
+                                    <option value="@u.Id">@u.DisplayName</option>
+                                }
+                            </select>
+                            <button class="button" @onclick="() => ForceAdd(t)" disabled="@string.IsNullOrEmpty(_addUserId)">
+                                Add without invite
+                            </button>
+                            <button class="linkbutton" @onclick="() => _membersTarget = null">Close</button>
+                        </div>
+                    </td>
+                </tr>
+            }
+
+            @if (_deleteTarget == t.Id)
+            {
+                <tr class="admintable__inline">
+                    <td colspan="6">
+                        <div class="inviterow">
+                            <span>
+                                Delete <strong>@t.Name</strong> and its @t.PlaylistCount playlist@(t.PlaylistCount == 1 ? "" : "s")?
+                                Tracks stay in the library.
+                            </span>
+                            <button class="button" @onclick="() => Delete(t)">Yes, delete</button>
+                            <button class="linkbutton" @onclick="() => _deleteTarget = null">Cancel</button>
+                        </div>
+                    </td>
+                </tr>
+            }
+        }
+    </tbody>
+</table>
+
+@code {
+    private List<AdminTeamRow> _teams = [];
+    private List<TeamMemberInfo> _members = [];
+    private List<(Guid Id, string DisplayName)> _addable = [];
+    private Guid _userId;
+    private Guid? _editTarget, _membersTarget, _deleteTarget;
+    private string _name = "", _description = "";
+    private TeamJoinPolicy _policy;
+    private string? _addUserId;
+    private string? _error, _status;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _userId = await CurrentUser.GetRequiredIdAsync();
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync() => _teams = await Admin.GetTeamsAsync();
+
+    private void StartEdit(AdminTeamRow t)
+    {
+        _editTarget = t.Id;
+        _membersTarget = _deleteTarget = null;
+        _name = t.Name;
+        _description = t.Description ?? "";
+        _policy = t.JoinPolicy;
+        (_error, _status) = (null, null);
+    }
+
+    private async Task StartMembers(AdminTeamRow t)
+    {
+        _membersTarget = t.Id;
+        _editTarget = _deleteTarget = null;
+        _addUserId = null;
+        (_error, _status) = (null, null);
+
+        _members = await Teams.GetMembersAsync(t.Id);
+
+        var memberIds = _members.Select(m => m.UserId).ToHashSet();
+        _addable = [.. (await Admin.GetUserOptionsAsync()).Where(u => !memberIds.Contains(u.Id))];
+    }
+
+    private void StartDelete(AdminTeamRow t)
+    {
+        _deleteTarget = t.Id;
+        _editTarget = _membersTarget = null;
+        (_error, _status) = (null, null);
+    }
+
+    private async Task SaveEdit(AdminTeamRow t)
+    {
+        var (ok, error) = await Admin.UpdateTeamAsync(_userId, t.Id, _name, _description, _policy);
+        _error = error;
+        _status = ok ? "Saved." : null;
+
+        if (ok) _editTarget = null;
+        await LoadAsync();
+        PlaylistEvents.NotifyChanged();
+    }
+
+    private async Task ForceAdd(AdminTeamRow t)
+    {
+        if (!Guid.TryParse(_addUserId, out var userId)) return;
+
+        var (ok, error) = await Admin.ForceAddMemberAsync(_userId, t.Id, userId);
+        _error = error;
+        _status = ok ? "Added." : null;
+
+        await StartMembers(t);
+        await LoadAsync();
+        PlaylistEvents.NotifyChanged();
+    }
+
+    private async Task RemoveMember(AdminTeamRow t, Guid targetUserId)
+    {
+        var (ok, error) = await Admin.ForceRemoveMemberAsync(_userId, t.Id, targetUserId);
+        _error = error;
+        _status = ok ? "Removed." : null;
+
+        await StartMembers(t);
+        await LoadAsync();
+        PlaylistEvents.NotifyChanged();
+    }
+
+    private async Task SetRole(AdminTeamRow t, Guid targetUserId, TeamRole role)
+    {
+        var (ok, error) = await Admin.SetTeamRoleAsync(_userId, t.Id, targetUserId, role);
+        _error = error;
+        _status = ok ? "Role changed." : null;
+
+        await StartMembers(t);
+    }
+
+    private async Task Delete(AdminTeamRow t)
+    {
+        var (ok, error) = await Admin.DeleteTeamAsync(_userId, t.Id);
+        _error = error;
+        _status = ok ? $"Deleted {t.Name}." : null;
+        _deleteTarget = null;
+
+        await LoadAsync();
+        PlaylistEvents.NotifyChanged();
+    }
+
+    private static string PolicyLabel(TeamJoinPolicy policy) => policy switch
+    {
+        TeamJoinPolicy.Open => "open to anyone",
+        TeamJoinPolicy.RequestToJoin => "ask to join",
+        _ => "invite only",
+    };
+}

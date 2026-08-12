@@ -1,0 +1,49 @@
+@inject NavigationManager Nav
+@inject CurrentUser CurrentUser
+
+<header class="topbar">
+    <a class="topbar__brand" href="/">
+        <img src="img/logo-small.png" alt="Mootify" />
+    </a>
+
+    <div class="topbar__search">
+        <input type="search" placeholder="Search your library…" aria-label="Search"
+               @bind="_query" @bind:event="oninput" @onkeydown="OnKeyDown" />
+    </div>
+
+    <div class="topbar__actions">
+        <NotificationBell />
+
+        <div class="topbar__user">
+            @if (_isAdmin)
+            {
+                <a href="/admin" class="badge">admin</a>
+            }
+            <span>@_displayName</span>
+            <a href="/account" class="linkbutton">Account</a>
+            <form method="post" action="/auth/logout">
+                <button type="submit" class="linkbutton" title="Sign out">Sign out</button>
+            </form>
+        </div>
+    </div>
+</header>
+
+@code {
+    private string _query = "";
+    private string _displayName = "";
+    private bool _isAdmin;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _displayName = await CurrentUser.GetDisplayNameAsync();
+        _isAdmin = await CurrentUser.IsAdminAsync();
+    }
+
+    private void OnKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter" && !string.IsNullOrWhiteSpace(_query))
+        {
+            Nav.NavigateTo($"/search?q={Uri.EscapeDataString(_query)}");
+        }
+    }
+}

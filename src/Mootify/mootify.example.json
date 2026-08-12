@@ -1,0 +1,53 @@
+{
+  "//": "Copy to mootify.json and fill in. mootify.json is gitignored — never commit the API key.",
+
+  "Auth": {
+    "AdminUsername": "mooadmin",
+    "MinPasswordLength": 8,
+    "AllowRegistration": true,
+    "SessionLifetime": "30.00:00:00"
+  },
+
+  "Lidarr": {
+    "//": "ApiKey also reads from the Lidarr__ApiKey environment variable or a Docker secret.",
+    "BaseUrl": "http://lidarr:8686",
+    "ApiKey": "",
+    "//QualityProfileId": "Pick one WITHOUT FLAC. Lidarr's stock 'Standard' profile is usually id 3.",
+    "QualityProfileId": 3,
+    "MetadataProfileId": 1,
+    "RootFolderPath": "/music",
+    "SearchOnAdd": true,
+    "PollInterval": "00:10:00"
+  },
+
+  "Library": {
+    "//MusicRoot": "The path THIS app can see. Lidarr's root folder is a path inside its own container, so it is usually a different string. A UNC share works: \\\\\\\\host\\\\Data\\\\MediaMusic",
+    "MusicRoot": "",
+    "FullScanInterval": "06:00:00",
+    "WatchFileSystem": true,
+    "WatchDebounce": "00:00:10",
+    "ScanOnStartup": true
+  },
+
+  "Requests": {
+    "MaxOpenPerUser": 5
+  },
+
+  "Notifications": {
+    "SoundFile": "/audio/cowbell.mp3",
+    "DefaultSoundEnabled": true,
+    "DuckMusicWhilePlaying": true,
+    "DuckToVolume": 0.3
+  },
+
+  "Transcode": {
+    "FfmpegPath": "ffmpeg",
+    "Bitrate": "320k",
+    "DeleteSourceAfterTranscode": false,
+    "MaxConcurrent": 1
+  },
+
+  "ConnectionStrings": {
+    "Default": "Data Source=data/mootify.db"
+  }
+}

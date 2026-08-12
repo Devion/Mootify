@@ -1,0 +1,71 @@
+@page "/album/{AlbumId:guid}"
+@attribute [Authorize]
+@inject IDbContextFactory<MootifyDbContext> DbFactory
+@inject PlayerService Player
+
+<PageTitle>@(_title ?? "Album") · Mootify</PageTitle>
+
+@if (_title is null)
+{
+    <p>Loading&hellip;</p>
+}
+else
+{
+    <div class="pagehead">
+        <div>
+            <h1>@_title</h1>
+            <p class="pagehead__meta">
+                <a href="@($"/artist/{_artistId}")">@_artistName</a>
+                @if (_year is { } y) { <text> &middot; @y</text> }
+                <text> &middot; @_tracks.Count tracks</text>
+            </p>
+        </div>
+        <div class="pagehead__actions">
+            <button class="button" @onclick="PlayAll" disabled="@(_tracks.Count == 0)">Play</button>
+            <AddToPlaylistButton TrackIds="@(_tracks.Select(t => t.TrackId).ToList())" />
+        </div>
+    </div>
+
+    <TrackList Rows="_tracks" ShowArtist="false" EmptyMessage="No playable tracks on this album." />
+}
+
+@code {
+    [Parameter] public Guid AlbumId { get; set; }
+
+    private string? _title;
+    private string _artistName = "";
+    private Guid _artistId;
+    private int? _year;
+    private List<TrackList.Row> _tracks = [];
+
+    protected override async Task OnParametersSetAsync()
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+
+        var album = await db.Albums
+            .AsNoTracking()
+            .Where(a => a.Id == AlbumId)
+            .Select(a => new { a.Title, a.Year, a.ArtistId, ArtistName = a.Artist!.Name })
+            .FirstOrDefaultAsync();
+
+        if (album is null) return;
+
+        _title = album.Title;
+        _year = album.Year;
+        _artistId = album.ArtistId;
+        _artistName = album.ArtistName;
+
+        var tracks = await db.Tracks
+            .AsNoTracking()
+            .Where(t => t.AlbumId == AlbumId && t.IsPresent)
+            .OrderBy(t => t.DiscNumber).ThenBy(t => t.TrackNumber)
+            .Select(t => new { t.Id, t.Title, ArtistName = t.Artist!.Name, t.DurationTicks })
+            .ToListAsync();
+
+        _tracks = [.. tracks.Select(t => new TrackList.Row(
+            t.Id, t.Title, t.ArtistName, TimeSpan.FromTicks(t.DurationTicks)))];
+    }
+
+    private async Task PlayAll() =>
+        await Player.PlayQueueAsync([.. _tracks.Select(t => t.TrackId)], 0);
+}

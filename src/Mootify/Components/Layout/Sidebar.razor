@@ -1,0 +1,149 @@
+@implements IDisposable
+@inject PlaylistService Playlists
+@inject PlaylistEvents PlaylistEvents
+@inject CurrentUser CurrentUser
+@inject NavigationManager Nav
+
+<nav class="sidebar">
+    <ul class="sidebar__nav">
+        <li><NavLink href="/" Match="NavLinkMatch.All">Home</NavLink></li>
+        <li><NavLink href="/library">Library</NavLink></li>
+        <li><NavLink href="/teams">Teams</NavLink></li>
+        <li><NavLink href="/requests">Requests</NavLink></li>
+    </ul>
+
+    <div class="sidebar__section">
+        <div class="sidebar__heading">
+            <span>Playlists</span>
+            <button class="linkbutton" @onclick="StartCreate" title="New playlist">+ New</button>
+        </div>
+
+        @* Inline row, not a modal. Name it, hit Enter, done. *@
+        @if (_creating)
+        {
+            <input class="sidebar__newinput" @ref="_newInput" @bind="_newName" @bind:event="oninput"
+                   @onkeydown="OnCreateKeyDown" @onblur="CancelCreate" placeholder="Playlist name" />
+        }
+
+        <ul class="sidebar__playlists">
+            @foreach (var p in _personal)
+            {
+                <li>
+                    <NavLink href="@($"/playlist/{p.Id}")">
+                        <span class="sidebar__plname">@p.Name</span>
+                        <span class="sidebar__plcount">@p.TrackCount</span>
+                    </NavLink>
+                </li>
+            }
+        </ul>
+
+        @if (_personal.Count == 0 && !_creating)
+        {
+            <p class="sidebar__empty">No playlists yet.</p>
+        }
+    </div>
+
+    @* Team playlists are grouped under their team so it's obvious which ones are shared —
+       adding to one is visible to everybody in it. *@
+    @foreach (var team in _byTeam)
+    {
+        <div class="sidebar__section">
+            <div class="sidebar__heading">
+                <a href="@($"/team/{team.Key.Id}")" class="sidebar__teamlink">@team.Key.Name</a>
+            </div>
+            <ul class="sidebar__playlists">
+                @foreach (var p in team)
+                {
+                    <li>
+                        <NavLink href="@($"/playlist/{p.Id}")">
+                            <span class="sidebar__plname">@p.Name</span>
+                            <span class="sidebar__plcount">@p.TrackCount</span>
+                        </NavLink>
+                    </li>
+                }
+            </ul>
+        </div>
+    }
+</nav>
+
+@code {
+    private sealed record TeamKey(Guid Id, string Name);
+
+    private List<PlaylistSummary> _personal = [];
+    private List<IGrouping<TeamKey, PlaylistSummary>> _byTeam = [];
+    private bool _creating;
+    private string _newName = "";
+    private ElementReference _newInput;
+    private bool _focusPending;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await ReloadAsync();
+        PlaylistEvents.Changed += OnPlaylistsChanged;
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (_focusPending)
+        {
+            _focusPending = false;
+            await _newInput.FocusAsync();
+        }
+    }
+
+    private async Task ReloadAsync()
+    {
+        var userId = await CurrentUser.GetRequiredIdAsync();
+        var all = await Playlists.GetForUserAsync(userId);
+
+        _personal = [.. all.Where(p => !p.IsTeamPlaylist)];
+        _byTeam =
+        [
+            .. all.Where(p => p.IsTeamPlaylist)
+                  .GroupBy(p => new TeamKey(p.TeamId!.Value, p.TeamName ?? "Team"))
+                  .OrderBy(g => g.Key.Name)
+        ];
+    }
+
+    private void OnPlaylistsChanged() =>
+        _ = InvokeAsync(async () => { await ReloadAsync(); StateHasChanged(); });
+
+    private void StartCreate()
+    {
+        _creating = true;
+        _newName = "";
+        _focusPending = true;
+    }
+
+    private async Task OnCreateKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Escape")
+        {
+            CancelCreate();
+            return;
+        }
+
+        if (e.Key != "Enter" || string.IsNullOrWhiteSpace(_newName)) return;
+
+        var userId = await CurrentUser.GetRequiredIdAsync();
+        var id = await Playlists.CreateAsync(userId, _newName);
+
+        _creating = false;
+        _newName = "";
+        await ReloadAsync();
+        PlaylistEvents.NotifyChanged();
+
+        if (id is not null)
+        {
+            Nav.NavigateTo($"/playlist/{id}");
+        }
+    }
+
+    private void CancelCreate()
+    {
+        _creating = false;
+        _newName = "";
+    }
+
+    public void Dispose() => PlaylistEvents.Changed -= OnPlaylistsChanged;
+}
