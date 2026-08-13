@@ -484,8 +484,15 @@ $RECYCLE.BIN/
 # Local config: holds the Lidarr API key.
 mootify.json
 
-# SQLite dev database
-src/Mootify/data/
+# The SQLite database and the on-disk caches. Ignored as files rather than as a folder: the
+# database lives in the same directory as the EF code (Windows is case-insensitive, so `data/` and
+# `Data/` are one folder), and ignoring the directory quietly kept Entities.cs, MootifyDbContext.cs
+# and SchemaPatch.cs out of version control.
+src/Mootify/Data/*.db
+src/Mootify/Data/*.db-shm
+src/Mootify/Data/*.db-wal
+src/Mootify/Data/transcode-cache/
+src/Mootify/Data/art-cache/
 
 # Publish output when published into the project folder
 src/Mootify/publish/

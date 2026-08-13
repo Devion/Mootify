@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Declares Mootify as a media app to Android Auto. "media" is the whole of it: the car draws the
+  browse tree and the now-playing screen from the media session, so there is no car UI in this app
+  to describe here.
+-->
+<automotiveApp>
+    <uses name="media" />
+</automotiveApp>

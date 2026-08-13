@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The UI is Compose, so this theme only decides what the window looks like before the first frame.
+  Parented to the platform Material theme rather than a Material Components one, which keeps the
+  com.google.android.material dependency out of a project that has no use for it.
+-->
+<resources>
+    <style name="Theme.Mootify" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/mootify_ink</item>
+        <item name="android:statusBarColor">@color/mootify_ink</item>
+        <item name="android:navigationBarColor">@color/mootify_ink</item>
+    </style>
+</resources>

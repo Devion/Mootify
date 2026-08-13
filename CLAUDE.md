@@ -8,6 +8,10 @@ Mootify is a self-hosted music player for a small group of people who share one 
 on disk. It plays what's already there, and when somebody wants something that isn't, it asks
 Lidarr to fetch it and drops the result into the playlist they were looking at.
 
+There are two clients: the Blazor website in `src/Mootify`, and an Android app in `android/` that
+exists mainly to be an Android Auto media app. They share one server, one library and one set of
+accounts — see **The Android app and its API** below.
+
 `Plan/Plan.md` is the design document. It carries the reasoning behind most of the decisions
 below — read it before changing anything architectural.
 
@@ -16,10 +20,22 @@ below — read it before changing anything architectural.
 ```bash
 dotnet run --project src/Mootify        # http://localhost:5199 (or the launchSettings port)
 dotnet build                            # whole solution
-dotnet test                             # 26 tests, ~1s
+dotnet test                             # 274 tests, ~3s
 dotnet test --filter "FullyQualifiedName~PlaylistServiceTests"     # one class
 dotnet test --filter "DisplayName~Adding_the_same_request_twice"   # one test
+
+# The Android client. Builds with Android Studio's own JDK; from a terminal:
+#   export JAVA_HOME="/c/Program Files/Android/Android Studio/jbr"
+cd android && ./gradlew assembleDebug
 ```
+
+The Android toolchain is pinned **current** rather than conservative, and that isn't a preference:
+Studio ships a JDK 25 runtime, Gradle refuses to start on it before 9.x, AGP 9 follows from Gradle 9,
+and `compileSdk 37` follows from the AndroidX versions. `android/README.md` lists the three AGP 9
+gotchas (no `kotlin.android` plugin, `resValues` off by default, `kotlinOptions` removed).
+
+Production server: **moo.lazy.kiwi**. That's the URL the Android build defaults to
+(`mootifyServerUrl` in `android/gradle.properties`).
 
 Config lives in `src/Mootify/mootify.json` (gitignored — it holds the Lidarr API key and any
 share password). `mootify.example.json` is the committed template. Environment variables
@@ -35,9 +51,13 @@ to know nothing about it. It reconnects before each scan, so a NAS reboot heals 
 **Windows-only**: on Linux the mount belongs to the OS (fstab or a Docker volume), and the
 connector says so rather than failing silently.
 
-There are no EF migrations yet: startup calls `EnsureCreated()`. **Any change to
-`Data/Entities.cs` means deleting `src/Mootify/data/mootify.db` before the app will start.**
-Add migrations before this reaches real data.
+There are no EF migrations yet: startup calls `EnsureCreated()`, which only ever builds an empty
+file. A **brand-new table** added to `Data/Entities.cs` can be created at boot by adding its DDL to
+`Data/SchemaPatch.cs` — that's how `ApiTokens` reached installs that already had accounts and
+playlists in them, without anybody losing a library. It is a stopgap, not a migration system: no
+version table, no down path, and no support for changing an existing column. **Any other change to
+`Data/Entities.cs` still means deleting `src/Mootify/data/mootify.db`.** Add real migrations before
+the next one.
 
 ## Architecture
 
@@ -88,7 +108,12 @@ relevance but needs a further call per result at 1 req/s. The reasoning is in `P
 ### Importing playlists
 
 `/import` reads an Exportify CSV: the file name becomes the playlist name, matches go straight
-in, and the rest can be requested into it.
+in, and the rest can be requested into it. The destination can instead be a playlist that
+already exists — personal or any team playlist the user can see, which is the same thing as
+being able to write to one. `AppendAsync` skips songs the target already has: adding a song
+twice by hand is deliberate, but an import is a bulk action nobody reviews row by row, so
+re-importing an export you already merged would otherwise double every song in it. Either way
+the chosen playlist is what the missing-song requests then land in.
 
 The matching is the whole job (`PlaylistImportService.Normalize`). Spotify titles carry
 decoration the files don't — `(2011 Remaster)`, `- Radio Edit`, `feat. X` — so an exact
@@ -138,6 +163,80 @@ deliberate: it can't write into playlists the requester can't see, and it correc
 they left the team while the download was in flight. When the target is a team playlist, the
 reconciler notifies the rest of the team as well as the requester — with different wording, and
 skipping the requester so they don't get two cowbells.
+
+### The Android app and its API
+
+`android/` is a Kotlin/Media3 app whose reason to exist is Android Auto. `android/README.md` covers
+building it and testing it against the Desktop Head Unit; what follows is the part that constrains
+the server.
+
+**Everything it needs is `/api/v1`, and nothing there is shared with the website's rendering path.**
+The endpoints are thin: `Endpoints/Api/*Endpoints.cs` parse the request and hand off to the same
+services the Razor components use. `PlaylistService` is still the only thing that decides who may
+read or write a playlist — the API is explicitly not allowed its own ownership checks.
+
+**Two authentication schemes, one set of claims.** The website keeps its cookie; the app gets a
+bearer token (`ApiToken`, `ApiTokenService`, `ApiTokenAuthenticationHandler`). Both produce the same
+`ClaimsPrincipal` shape, so nothing below the endpoint layer knows which door was used. Three
+consequences that were each deliberate:
+
+- **The API policy excludes cookies** (`MootifyAuth.ApiPolicy`). That is what makes it safe for the
+  API to turn antiforgery off — a token client can't mint an antiforgery token, and with cookies
+  refused there is no CSRF left to prevent. If you ever add the cookie scheme back to that policy,
+  antiforgery has to come back with it.
+- **Streaming accepts either** (`MootifyAuth.MediaPolicy` on `/media`), because the website plays
+  through a cookie and the app through a token, and it's a GET of the user's own library either way.
+- **The token scheme 401s instead of redirecting.** A phone handed the HTML login page reads a 200
+  full of markup and has nothing to tell its user, which is the failure that makes token clients
+  hang rather than re-authenticate. For the same reason `SetupMiddleware` answers `/api` with a 503
+  and a JSON sentence instead of bouncing it to `/setup`, and `UseStatusCodePagesWithReExecute` is
+  wrapped in a `UseWhen` that skips `/api`, `/media` and `/art`.
+
+Tokens are stored as a plain SHA-256, not PBKDF2: the secret is 32 bytes from a CSPRNG, so there is
+no dictionary to run, and it is verified on every request including every range request of every
+stream. `LastUsedAt` is stamped at most once every 15 minutes for the same reason — a car seeking
+through an album is hundreds of requests and none of them need a write. Signing in goes through the
+same `AccountService` and `LoginThrottle` as the web form, so the API isn't a second unlimited door
+to the same accounts. Devices are listed and revoked on `/account`.
+
+**`/art/album/{albumId}` is anonymous, and that is the one deliberate hole.** Android Auto renders
+browse items from a `MediaMetadata` carrying an `artworkUri`, and the head unit fetches that URI from
+its own process — our OkHttp client, and therefore our token, is not involved. The alternatives were
+pushing every cover through a browse parcel with a kilobyte-scale size limit, or a car full of grey
+squares. So the album GUID is the capability, and what leaks if one escapes is a picture that is also
+on the front of the record. **Audio is not treated this way.** `AlbumArtService` finds art the way
+the library actually stores it: an adjacent `cover.jpg` is served straight off disk, embedded ID3 art
+is extracted once into a cache, and albums with no art get an empty marker file so the miss is as
+cheap as the hit (a car scrolling 800 albums asks 800 times).
+
+**Durations are milliseconds and URLs are relative** across the whole API. A `TimeSpan` serializes as
+`"00:03:41.2340000"`, and a proxied server doesn't reliably know its own public name, so the client
+resolves `/media/…` and `/art/…` against the URL it signed in against. Enums go over the wire as
+names (`ConfigureHttpJsonOptions` + `JsonStringEnumConverter`) so a client built before a new enum
+member fails to match rather than silently picking the wrong state.
+
+`LibraryQueries` holds every library read the API does, out of the endpoint lambdas, because the two
+persistence gotchas below are *translation* failures that only appear when a real provider compiles
+the query — and now they have tests.
+
+Three things on the app side worth knowing before changing the server:
+
+- **A track's media id carries the list it came from** (`track:<id>@album:<id>`). Android Auto sends
+  only the item that was tapped, so the parent is what lets the app rebuild the album around it.
+  Nothing on the server depends on this, but `/library/albums/{id}`, `/playlists/{id}` and
+  `/library/artists/{id}/tracks` exist to make it cheap.
+- **The app reads ahead, so `/media` sees requests for tracks nobody played.** A rolling three tracks
+  are pulled into the phone's cache while the current one plays (`MediaPrefetcher`), bounded to 24MB
+  a pass. Play counts are unaffected — those come from `POST /api/v1/plays`, which only the player
+  writes, never a media GET. It does mean `/media` throughput is not a listening statistic.
+- **Playback resumption reads `PlaybackState`.** `PlaybackState` and `PlayEvent` were in the schema
+  from the start and unused; the app writes them (`PUT /api/v1/playback`, `POST /api/v1/plays`), so
+  getting in the car continues what was playing in the kitchen. The website still doesn't.
+- **Requests work exactly as they do on the website**, and for the same reason: Lidarr fetches albums
+  and has no song index, so `/requests/search` is a Lidarr album lookup and `/requests/albums/{mbid}/tracks`
+  is MusicBrainz. Lidarr can't hand back an album it hasn't adopted, so the search result is cached
+  for 30 minutes and the create call falls back to re-running the client's search term and matching
+  on MBID.
 
 ### Persistence gotchas (SQLite)
 
@@ -200,10 +299,27 @@ users as one; wire up forwarded headers before putting this behind one.
 `tests/Mootify.Tests` uses real SQLite in memory, not the EF InMemory provider — the bugs worth
 catching here are translation failures that InMemory would happily let through.
 
+`ApiIntegrationTests` boots the whole app in-process (`WebApplicationFactory`) and drives it over
+HTTP the way the phone will. That exists because the risky part of the API is the wiring, not the
+logic: that `/api` refuses a request with no token, that a bearer token gets through both the API and
+the audio stream, that turning antiforgery off didn't also turn authentication off, and that a
+revoked device stops working at the door. Each of those is one line in `Program.cs` that would fail
+silently in the direction of "let it through".
+
+**The isolation in that fixture is load-bearing.** `mootify.json` is copied into the test output, so
+a test host that doesn't override it picks up the real connection string, the real Lidarr key and a
+music root pointing at the NAS — and then scans it. `UseSetting` is *not* enough: it lands in host
+configuration, which `Program.cs` layers `mootify.json` on top of. Worse, `Program.cs` reads the
+connection string **eagerly** while composing the container, so even a late in-memory source changes
+`IConfiguration` without changing the database the `DbContext` was registered with. The connection
+string is therefore overridden with an environment variable, and `AssertIsolated()` checks the
+context's *actual* connection string rather than what configuration claims.
+
 ## Not built yet
 
-Drag-reorder in the UI (`PlaylistService.MoveAsync` is ready), the Lidarr webhook receiver,
-playback state persistence across sessions, and EF migrations.
+Drag-reorder in the UI (`PlaylistService.MoveAsync` is ready), the Lidarr webhook receiver, playback
+state on the *website* (the Android app writes it — see `/api/v1/playback`), offline downloads in the
+app, and EF migrations.
 
 ## Razor gotcha
 

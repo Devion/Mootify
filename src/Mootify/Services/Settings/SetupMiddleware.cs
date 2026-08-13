@@ -35,6 +35,19 @@ public sealed class SetupMiddleware(RequestDelegate next, SetupState state)
             return;
         }
 
+        // A redirect to an HTML page is a useless answer for the Android app: it would read a
+        // 200 full of markup and have nothing to say to the user. Tell it the truth instead —
+        // the server is up, but nobody has finished setting it up yet.
+        if (path.StartsWith("/api/", StringComparison.OrdinalIgnoreCase))
+        {
+            context.Response.StatusCode = StatusCodes.Status503ServiceUnavailable;
+            await context.Response.WriteAsJsonAsync(new
+            {
+                error = "This Mootify hasn't been set up yet. Open it in a browser to create the admin account.",
+            });
+            return;
+        }
+
         context.Response.Redirect(MootifyAuth.SetupPath);
     }
 }

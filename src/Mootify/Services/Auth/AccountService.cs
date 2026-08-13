@@ -263,9 +263,49 @@ public static class MootifyAuth
     public const string SetupPath = "/setup";
     public const string RegisterPath = "/register";
 
+    /// <summary>Bearer tokens for the Android app. See <see cref="ApiTokenAuthenticationHandler"/>.</summary>
+    public const string ApiScheme = "MootifyApi";
+
     public const string UserRole = "user";
     public const string AdminRole = "admin";
 
     /// <summary>Authorization policy name for everything under /admin.</summary>
     public const string AdminPolicy = "RequireAdmin";
+
+    /// <summary>
+    /// Token-only. Cookies are excluded on purpose: a cookie-authenticated POST to /api is a
+    /// CSRF target, and the API disables antiforgery because token clients can't mint a token.
+    /// </summary>
+    public const string ApiPolicy = "RequireApiToken";
+
+    /// <summary>
+    /// Streaming accepts either door — the website's cookie and the app's token both have to be
+    /// able to fetch audio, and it's a GET, so there's nothing for a forged one to achieve.
+    /// </summary>
+    public const string MediaPolicy = "AllowCookieOrToken";
+
+    /// <summary>Which device token a request arrived on, so it can list and revoke itself.</summary>
+    public const string TokenIdClaim = "mootify:token";
+
+    /// <summary>
+    /// Same claim shape the cookie path builds, so <see cref="Playlists.PlaylistService"/> and
+    /// friends can't tell a phone from a browser.
+    /// </summary>
+    public static ClaimsPrincipal BuildApiPrincipal(ApiIdentity identity)
+    {
+        var claims = new List<Claim>
+        {
+            new(ClaimTypes.NameIdentifier, identity.UserId.ToString()),
+            new(ClaimTypes.Name, identity.DisplayName),
+            new(ClaimTypes.Role, UserRole),
+            new(TokenIdClaim, identity.TokenId.ToString()),
+        };
+
+        if (identity.IsAdmin)
+        {
+            claims.Add(new Claim(ClaimTypes.Role, AdminRole));
+        }
+
+        return new ClaimsPrincipal(new ClaimsIdentity(claims, ApiScheme));
+    }
 }

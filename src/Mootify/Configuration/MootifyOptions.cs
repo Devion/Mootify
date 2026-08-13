@@ -42,6 +42,52 @@ public sealed class AuthOptions
     public TimeSpan SessionLifetime { get; set; } = TimeSpan.FromDays(30);
 }
 
+/// <summary>
+/// The token-authenticated JSON API the Android app talks to. Nothing here turns the API off:
+/// it authenticates the same accounts the website does, so an install that has no phones simply
+/// never issues a token.
+/// </summary>
+public sealed class ApiOptions
+{
+    public const string Section = "Api";
+
+    /// <summary>
+    /// How long a device token lives. Long by default — a car stereo asking for a password is
+    /// worse than useless, and revoking a device is one click on the account page.
+    /// Zero or less means it never expires on its own.
+    /// </summary>
+    public TimeSpan TokenLifetime { get; set; } = TimeSpan.FromDays(365);
+
+    /// <summary>
+    /// Tokens kept per account. Signing in again from the same phone mints a new row, so
+    /// without a cap the table would grow for the lifetime of the install; the oldest is
+    /// dropped instead.
+    /// </summary>
+    [Range(1, 100)]
+    public int MaxTokensPerUser { get; set; } = 10;
+
+    /// <summary>
+    /// Ceiling on any paged list. A car client asking for the whole library in one response is
+    /// how you find out the head unit has 200MB of RAM.
+    /// </summary>
+    [Range(10, 2000)]
+    public int MaxPageSize { get; set; } = 500;
+
+    /// <summary>
+    /// Where extracted cover art is cached. Empty puts it next to the transcode cache, under
+    /// the app's data folder — never inside the music root, which the scanner walks.
+    /// </summary>
+    /// <summary>
+    /// Where extracted cover art is cached. Empty puts it under the app's data folder — never
+    /// inside the music root, which the scanner walks.
+    ///
+    /// Art is served at whatever size the file embeds it. Resizing would mean an image library
+    /// on the server, and the clients that ask for art (Coil on Android, the browser) already
+    /// downsample to the slot they're drawing into.
+    /// </summary>
+    public string ArtCacheDirectory { get; set; } = "";
+}
+
 public sealed class LidarrOptions
 {
     public const string Section = "Lidarr";

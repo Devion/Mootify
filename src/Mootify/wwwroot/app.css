@@ -691,6 +691,21 @@ a.badge:hover { text-decoration: none; filter: brightness(1.2); }
 .managebox__actions { margin-top: 1rem; display: flex; align-items: center; gap: .75rem; }
 .managebox__hint { margin: .4rem 0 0; font-size: .8rem; color: var(--text-dim); }
 
+/* Signed-in phones and tablets, on the account page. */
+.devicelist { list-style: none; margin: 0; padding: 0; }
+
+.devicelist li {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: .6rem 0;
+    border-bottom: 1px solid var(--line);
+}
+
+.devicelist li:last-child { border-bottom: none; }
+.devicelist .muted { display: block; font-size: .8rem; }
+
 .inviterow { display: flex; gap: .75rem; align-items: center; flex-wrap: wrap; }
 .inviterow select { max-width: 280px; }
 

@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using System.Text.Json.Serialization;
 using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
@@ -9,6 +10,7 @@ using Mootify.Components;
 using Mootify.Configuration;
 using Mootify.Data;
 using Mootify.Endpoints;
+using Mootify.Endpoints.Api;
 using Mootify.Services.Admin;
 using Mootify.Services.Auth;
 using Mootify.Services.Import;
@@ -78,6 +80,18 @@ builder.Services.AddOptions<TranscodeOptions>()
     .ValidateDataAnnotations()
     .ValidateOnStart();
 
+builder.Services.AddOptions<ApiOptions>()
+    .Bind(builder.Configuration.GetSection(ApiOptions.Section))
+    .ValidateDataAnnotations()
+    .ValidateOnStart();
+
+// Enums as names, not numbers. Only Minimal APIs read this — Blazor renders server-side and
+// never serializes these types — so it changes the JSON the Android app sees and nothing else.
+// `"status": "Downloading"` survives a client that hasn't been rebuilt after a new enum member;
+// `"status": 3` silently becomes a different state.
+builder.Services.ConfigureHttpJsonOptions(options =>
+    options.SerializerOptions.Converters.Add(new JsonStringEnumConverter()));
+
 // ---- data ---------------------------------------------------------------
 var connectionString = builder.Configuration.GetConnectionString("Default")
     ?? "Data Source=data/mootify.db";
@@ -102,6 +116,8 @@ builder.Services.AddScoped<SettingsService>();
 builder.Services.AddScoped<AccountService>();
 builder.Services.AddScoped<AdminService>();
 builder.Services.AddScoped<CurrentUser>();
+builder.Services.AddScoped<ApiTokenService>();
+builder.Services.AddScoped<ServerInfoProvider>();
 builder.Services.AddHttpContextAccessor();
 
 builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationScheme)
@@ -167,10 +183,25 @@ builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationSc
                 context.ShouldRenew = true;
             }
         };
-    });
+    })
+    // The second door, for the Android app. A separate scheme rather than a second cookie:
+    // it 401s instead of redirecting to /login, which is the difference between a phone that
+    // re-authenticates and a phone that hangs on an HTML page it can't read.
+    .AddScheme<AuthenticationSchemeOptions, ApiTokenAuthenticationHandler>(
+        MootifyAuth.ApiScheme, _ => { });
 
 builder.Services.AddAuthorizationBuilder()
-    .AddPolicy(MootifyAuth.AdminPolicy, policy => policy.RequireRole(MootifyAuth.AdminRole));
+    .AddPolicy(MootifyAuth.AdminPolicy, policy => policy.RequireRole(MootifyAuth.AdminRole))
+    // Token only. Excluding the cookie is what lets the API turn antiforgery off: a
+    // cookie-authenticated POST from a browser page would otherwise be forgeable.
+    .AddPolicy(MootifyAuth.ApiPolicy, policy => policy
+        .AddAuthenticationSchemes(MootifyAuth.ApiScheme)
+        .RequireAuthenticatedUser())
+    // Streaming takes either. The website plays through a cookie and the app through a token,
+    // and it's a GET of the user's own library either way.
+    .AddPolicy(MootifyAuth.MediaPolicy, policy => policy
+        .AddAuthenticationSchemes(CookieAuthenticationDefaults.AuthenticationScheme, MootifyAuth.ApiScheme)
+        .RequireAuthenticatedUser());
 
 builder.Services.AddCascadingAuthenticationState();
 
@@ -191,6 +222,7 @@ builder.Services.AddSingleton<LibraryScanner>();
 builder.Services.AddHostedService<LibraryScanService>();
 
 builder.Services.AddSingleton<NotificationDispatcher>();
+builder.Services.AddSingleton<AlbumArtService>();
 builder.Services.AddSingleton<Transcoder>();
 builder.Services.AddSingleton<LibraryTranscodeService>();
 builder.Services.AddSingleton<TranscodeCache>();
@@ -233,7 +265,13 @@ if (!app.Environment.IsDevelopment())
     app.UseHsts();
 }
 
-app.UseStatusCodePagesWithReExecute("/not-found", createScopeForStatusCodePages: true);
+// Pages get the friendly not-found page; machines don't. Re-executing an API 401 into a Razor
+// render hands a phone 40KB of HTML in place of an empty body, and the same middleware turns a
+// missing cover art file into a rendered web page. Excluded by prefix rather than by content type
+// because the status code is decided long before anything writes a body.
+app.UseWhen(
+    context => !IsMachineFacing(context.Request.Path),
+    branch => branch.UseStatusCodePagesWithReExecute("/not-found", createScopeForStatusCodePages: true));
 app.UseHttpsRedirection();
 app.UseAntiforgery();
 app.UseRateLimiter();
@@ -248,7 +286,19 @@ app.MapStaticAssets();
 app.MapAuthEndpoints();
 app.MapMediaEndpoints();
 
+// The Android app's whole surface: /api/v1/** plus the unauthenticated /art path a car head
+// unit can actually fetch. See Endpoints/Api/ArtEndpoints.cs for why that one is open.
+app.MapApi();
+
 app.MapRazorComponents<App>()
     .AddInteractiveServerRenderMode();
 
 app.Run();
+
+/// <summary>
+/// Paths whose callers want a status code, not a page: the JSON API, audio streams and cover art.
+/// </summary>
+static bool IsMachineFacing(PathString path) =>
+    path.StartsWithSegments("/api")
+    || path.StartsWithSegments("/media")
+    || path.StartsWithSegments("/art");

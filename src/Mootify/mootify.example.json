@@ -55,6 +55,16 @@
     "DuckToVolume": 0.3
   },
 
+  "Api": {
+    "//": "The token-authenticated API the Android app uses. There is nothing to enable — it authenticates the same accounts the website does.",
+    "//TokenLifetime": "How long a signed-in phone stays signed in. 0 means never expires. A car stereo asking for a password is worse than useless; devices are revoked from /account.",
+    "TokenLifetime": "365.00:00:00",
+    "MaxTokensPerUser": 10,
+    "MaxPageSize": 500,
+    "//ArtCacheDirectory": "Extracted cover art. Empty means data/art-cache — never put it inside MusicRoot, which the scanner walks.",
+    "ArtCacheDirectory": ""
+  },
+
   "Transcode": {
     "FfmpegPath": "ffmpeg",
     "Bitrate": "320k",

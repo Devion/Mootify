@@ -28,6 +28,11 @@ public static class StartupChecks
         await using (var db = await dbFactory.CreateDbContextAsync())
         {
             await db.Database.EnsureCreatedAsync();
+
+            // EnsureCreated only ever builds an empty file. Tables added after an install exists
+            // have to be created by hand until there are migrations — see SchemaPatch.
+            await SchemaPatch.ApplyAsync(db, log);
+
             anyUsers = await db.Users.AnyAsync();
         }
 

@@ -4,6 +4,9 @@ Self-hosted music player for a small group sharing one library on disk. Plays wh
 there; when somebody wants something that isn't, Lidarr fetches it and it lands in the playlist
 they were looking at — with a cowbell.
 
+There's a website and an Android app. The app is an Android Auto media app, so the same library and
+the same playlists show up in the car — see [`android/README.md`](android/README.md).
+
 ## Running it
 
 ```bash
@@ -39,19 +42,36 @@ Two settings need real thought:
 FFmpeg must be on `PATH`. Startup logs whether it found it, along with the Lidarr version and
 the music root, so a misconfiguration is visible in the first ten lines of output.
 
+## In the car
+
+The Android app (`android/`) signs in once against your server — `https://moo.lazy.kiwi` by default —
+and then appears in Android Auto as a media app: playlists, recently added, albums, artists, and
+voice search. It streams from the same `/media` endpoint the website plays through, and it can ask
+Lidarr for something new without getting your phone out.
+
+Signing in registers the phone as a device, listed on **Account** with a Revoke button beside it. No
+password is ever stored on the phone; the token is, and revoking it takes effect on the next request.
+
+Build it with `cd android && ./gradlew assembleDebug` (Android Studio supplies the JDK and the
+SDK). [`android/README.md`](android/README.md) has the Desktop Head Unit steps for testing the car
+integration without a car.
+
 ## Requirements
 
 .NET 10 SDK, FFmpeg, and optionally a reachable Lidarr (without one, everything except
-requesting new music still works).
+requesting new music still works). For the Android app: Android Studio, which brings its own JDK and
+the Android SDK.
 
 ## Layout
 
 ```
-src/Mootify/          the app
+src/Mootify/          the server and website
   Components/         Blazor pages, layout, shared UI
+  Endpoints/          /auth, /media, and Api/ — the JSON API the Android app uses
   Services/           auth, library scanning, playback, playlists, Lidarr, requests, transcoding
   Data/               EF Core entities and DbContext
   wwwroot/js/         player.js (music) and notifications.js (cowbell)
+android/              the Android Auto client (Kotlin, Media3, Compose)
 tests/Mootify.Tests/  dotnet test
 Plan/Plan.md          the design document and the reasoning behind it
 ```

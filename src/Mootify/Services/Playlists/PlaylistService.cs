@@ -82,6 +82,26 @@ public sealed class PlaylistService(
         ];
     }
 
+    /// <summary>
+    /// Whether the user may write to this playlist. <see cref="AddTracksAsync"/> answers 0 both
+    /// when it was refused and when there was nothing to add, so callers that have to tell those
+    /// apart — the importer, which reports one as an error and the other as "already in there" —
+    /// ask here first.
+    /// </summary>
+    public async Task<bool> CanEditAsync(Guid playlistId, Guid userId, CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
+
+        var playlist = await db.Playlists
+            .AsNoTracking()
+            .FirstOrDefaultAsync(p => p.Id == playlistId, ct);
+
+        if (playlist is null) return false;
+
+        var teamIds = await TeamService.GetTeamIdsAsync(db, userId, ct);
+        return PlaylistAccess.CanEdit(playlist, userId, teamIds);
+    }
+
     public async Task<Playlist?> GetAsync(Guid playlistId, Guid userId, CancellationToken ct = default)
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct);

@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using Mootify.Data;
+using Mootify.Services.Auth;
 using Mootify.Services.Transcoding;
 
 namespace Mootify.Endpoints;
@@ -8,7 +9,9 @@ public static class MediaEndpoints
 {
     public static void MapMediaEndpoints(this IEndpointRouteBuilder app)
     {
-        var media = app.MapGroup("/media").RequireAuthorization();
+        // Cookie or bearer token: the website streams through a circuit's cookie, the Android app
+        // through the token it signed in with. Same files, same authorization, two doors.
+        var media = app.MapGroup("/media").RequireAuthorization(MootifyAuth.MediaPolicy);
 
         // Range processing is not optional: without it seeking silently breaks and Safari
         // refuses to play at all.

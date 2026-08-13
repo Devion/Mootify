@@ -8,6 +8,12 @@ namespace Mootify.Services.Import;
 
 public sealed record ImportMatch(ImportedTrack Source, Guid? TrackId);
 
+/// <summary>
+/// What appending an import to an existing playlist did. <c>Ok</c> is false only when the user
+/// couldn't write there — zero added is a normal outcome when they already own every song.
+/// </summary>
+public sealed record ImportAppendResult(bool Ok, int Added, int AlreadyThere);
+
 public sealed record ImportPreview(
     string PlaylistName,
     IReadOnlyList<ImportMatch> Matched,
@@ -199,5 +205,47 @@ public sealed class PlaylistImportService(
         }
 
         return playlistId;
+    }
+
+    /// <summary>
+    /// Adds everything that matched to a playlist that already exists — the user's own or one
+    /// belonging to a team they're in; <see cref="PlaylistService.CanEditAsync"/> decides which.
+    ///
+    /// Songs already in the target are skipped. Adding the same song twice by hand is allowed
+    /// deliberately, but an import is a bulk action nobody reviews row by row: re-importing an
+    /// export you've already merged, or one that overlaps a list you keep, would otherwise
+    /// double every song in it.
+    /// </summary>
+    public async Task<ImportAppendResult> AppendAsync(
+        Guid userId, ImportPreview preview, Guid playlistId, CancellationToken ct = default)
+    {
+        if (!await playlists.CanEditAsync(playlistId, userId, ct))
+        {
+            log.LogWarning("{User} was refused an import append into playlist {Playlist}", userId, playlistId);
+            return new ImportAppendResult(false, 0, 0);
+        }
+
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
+
+        var already = (await db.PlaylistItems
+                .Where(i => i.PlaylistId == playlistId)
+                .Select(i => i.TrackId)
+                .ToListAsync(ct))
+            .ToHashSet();
+
+        var trackIds = preview.Matched
+            .Select(m => m.TrackId!.Value)
+            .Where(id => !already.Contains(id))
+            .ToList();
+
+        var added = trackIds.Count == 0
+            ? 0
+            : await playlists.AddTracksAsync(playlistId, userId, trackIds, ct: ct);
+
+        log.LogInformation(
+            "Import appended {Added} track(s) to playlist {Playlist}, {Skipped} already there",
+            added, playlistId, preview.Matched.Count - trackIds.Count);
+
+        return new ImportAppendResult(true, added, preview.Matched.Count - trackIds.Count);
     }
 }

@@ -6,6 +6,7 @@
 @inject RequestService Requests
 @inject LidarrClient Lidarr
 @inject TeamService Teams
+@inject PlaylistService Playlists
 @inject PlaylistEvents PlaylistEvents
 @inject CurrentUser CurrentUser
 @inject NavigationManager Nav
@@ -19,8 +20,8 @@
 <h1>Import a playlist</h1>
 <p class="pagehead__meta">
     Drop in a CSV from <a href="https://exportify.net" target="_blank" rel="noopener">Exportify</a>.
-    The file name becomes the playlist name. Anything already in the library goes straight in;
-    the rest can be requested.
+    It becomes a new playlist named after the file, or goes into one you already have. Anything
+    already in the library goes straight in; the rest can be requested.
 </p>
 
 @if (_error is not null) { <p class="error">@_error</p> }
@@ -52,27 +53,60 @@
         {
             <p class="error">No tracks in that file. Is it an Exportify export?</p>
         }
-        else if (_createdPlaylistId is null)
+        else if (_targetPlaylistId is null)
         {
-            <label for="team">Where should it live?</label>
-            <select id="team" @bind="_teamId">
-                <option value="">My playlists</option>
-                @foreach (var team in _teams)
+            <label for="destination">Where should these songs go?</label>
+            <select id="destination" @bind="_destination">
+                <option value="@NewPlaylist">Into a new playlist called @preview.PlaylistName</option>
+                @if (_playlists.Count > 0)
                 {
-                    <option value="@team.Id">@team.Name (shared with the team)</option>
+                    <optgroup label="Add to a playlist you already have">
+                        @foreach (var playlist in _playlists)
+                        {
+                            <option value="@playlist.Id">@playlist.Name@(playlist.IsTeamPlaylist ? $" · {playlist.TeamName}" : "")</option>
+                        }
+                    </optgroup>
                 }
             </select>
 
+            @if (_destination == NewPlaylist)
+            {
+                <label for="team">Who should own it?</label>
+                <select id="team" @bind="_teamId">
+                    <option value="">My playlists</option>
+                    @foreach (var team in _teams)
+                    {
+                        <option value="@team.Id">@team.Name (shared with the team)</option>
+                    }
+                </select>
+            }
+            else
+            {
+                @* Songs already in there are left alone, which is not what "add 40 songs"
+                   implies on its own. *@
+                <p class="muted">
+                    Anything already in <strong>@(AppendTarget?.Name)</strong> stays as it is.
+                </p>
+            }
+
             <div class="managebox__actions">
-                <button class="button" @onclick="Create" disabled="@_working">
-                    Create with @preview.Matched.Count song@(preview.Matched.Count == 1 ? "" : "s")
+                <button class="button" @onclick="Go" disabled="@_working">
+                    @if (_destination == NewPlaylist)
+                    {
+                        <text>Create with @preview.Matched.Count song@(preview.Matched.Count == 1 ? "" : "s")</text>
+                    }
+                    else
+                    {
+                        <text>Add @preview.Matched.Count song@(preview.Matched.Count == 1 ? "" : "s") to @(AppendTarget?.Name)</text>
+                    }
                 </button>
             </div>
         }
         else
         {
             <p class="success">
-                Created &mdash; <a href="@($"/playlist/{_createdPlaylistId}")">open @preview.PlaylistName</a>.
+                @_doneMessage
+                <a href="@($"/playlist/{_targetPlaylistId}")">open @_targetPlaylistName</a>.
             </p>
         }
     </section>
@@ -84,9 +118,9 @@
 
             @{ var queue = Queue.Progress; }
 
-            @if (_createdPlaylistId is null)
+            @if (_targetPlaylistId is null)
             {
-                <p class="muted">Create the playlist first, then these can be requested into it.</p>
+                <p class="muted">Pick a destination above first, then these can be requested into it.</p>
             }
             else if (!Lidarr.IsConfigured)
             {
@@ -124,7 +158,7 @@
                 <p class="muted">
                     These @preview.Missing.Count songs live on <strong>@_albumCount album@(_albumCount == 1 ? "" : "s")</strong>,
                     and Lidarr fetches whole albums. Requests go out a few seconds apart and land in
-                    <strong>@preview.PlaylistName</strong> as they arrive. You can stop it at any point.
+                    <strong>@_targetPlaylistName</strong> as they arrive. You can stop it at any point.
                 </p>
                 <div class="managebox__actions">
                     <button class="button" @onclick="RequestMissing">
@@ -154,19 +188,38 @@
 }
 
 @code {
+    /// <summary>Sentinel for the destination select; every other value is a playlist id.</summary>
+    private const string NewPlaylist = "new";
+
     private ImportPreview? _preview;
     private List<TeamSummary> _teams = [];
+    private List<PlaylistSummary> _playlists = [];
     private Guid _userId;
-    private Guid? _createdPlaylistId;
+
+    // Set once the songs have somewhere to go, by either route. Everything downstream — the
+    // request queue, the link, the progress copy — reads these rather than caring which it was.
+    private Guid? _targetPlaylistId;
+    private string? _targetPlaylistName;
+    private string? _doneMessage;
+
+    private string _destination = NewPlaylist;
     private string? _teamId;
     private string? _error;
     private int _albumCount;
     private bool _reading, _working, _showAllMissing;
 
+    private PlaylistSummary? AppendTarget =>
+        Guid.TryParse(_destination, out var id) ? _playlists.FirstOrDefault(p => p.Id == id) : null;
+
     protected override async Task OnInitializedAsync()
     {
         _userId = await CurrentUser.GetRequiredIdAsync();
         _teams = await Teams.GetForUserAsync(_userId);
+
+        // Everything this returns is writable: for playlists, being able to see one is being
+        // able to add to it. PlaylistImportService re-checks on the way in regardless.
+        _playlists = await Playlists.GetForUserAsync(_userId);
+
         Queue.Changed += OnQueueChanged;
     }
 
@@ -178,7 +231,9 @@
     {
         _error = null;
         _preview = null;
-        _createdPlaylistId = null;
+        _targetPlaylistId = null;
+        _targetPlaylistName = null;
+        _doneMessage = null;
         _albumCount = 0;
         _showAllMissing = false;
         _reading = true;
@@ -208,21 +263,61 @@
         }
     }
 
-    private async Task Create()
+    private async Task Go()
     {
         if (_preview is null) return;
 
+        _error = null;
         _working = true;
-        Guid? teamId = Guid.TryParse(_teamId, out var id) ? id : null;
 
-        _createdPlaylistId = await Importer.CreateAsync(_userId, _preview, teamId);
-        if (_createdPlaylistId is null)
+        try
         {
-            _error = "Couldn't create that playlist.";
+            if (_destination == NewPlaylist) await CreateAsync();
+            else await AppendAsync();
+        }
+        finally
+        {
+            _working = false;
         }
 
         PlaylistEvents.NotifyChanged();
-        _working = false;
+    }
+
+    private async Task CreateAsync()
+    {
+        Guid? teamId = Guid.TryParse(_teamId, out var id) ? id : null;
+
+        var created = await Importer.CreateAsync(_userId, _preview!, teamId);
+        if (created is null)
+        {
+            _error = "Couldn't create that playlist.";
+            return;
+        }
+
+        _targetPlaylistId = created;
+        _targetPlaylistName = _preview!.PlaylistName;
+        _doneMessage = "Created — ";
+    }
+
+    private async Task AppendAsync()
+    {
+        if (AppendTarget is not { } target) return;
+
+        var result = await Importer.AppendAsync(_userId, _preview!, target.Id);
+        if (!result.Ok)
+        {
+            // Someone left the team between loading the page and pressing the button.
+            _error = $"Couldn't add anything to {target.Name}.";
+            return;
+        }
+
+        _targetPlaylistId = target.Id;
+        _targetPlaylistName = target.Name;
+
+        _doneMessage = result.AlreadyThere == 0
+            ? $"Added {result.Added} song{(result.Added == 1 ? "" : "s")} — "
+            : $"Added {result.Added} song{(result.Added == 1 ? "" : "s")}, "
+              + $"{result.AlreadyThere} already there — ";
     }
 
     /// <summary>
@@ -232,9 +327,9 @@
     /// </summary>
     private void RequestMissing()
     {
-        if (_preview is null || _createdPlaylistId is null) return;
+        if (_preview is null || _targetPlaylistId is null) return;
 
-        if (!Queue.Start(_userId, _createdPlaylistId.Value, _preview.Missing))
+        if (!Queue.Start(_userId, _targetPlaylistId.Value, _preview.Missing))
         {
             _error = "Another import is still being requested. Let that finish first.";
         }

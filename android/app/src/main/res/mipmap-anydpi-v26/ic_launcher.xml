@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The cow, on the website's ink background. The foreground PNGs are the artwork inset to about 78% of
+  the 108dp canvas, so whatever mask the launcher applies — circle, squircle, rounded square — crops
+  ink rather than the animal.
+
+  Pre-Android-8 devices don't parse this file at all and fall back to the density-specific
+  mipmap-*/ic_launcher.png, which is the same artwork at full bleed.
+-->
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@color/ic_launcher_background" />
+    <foreground android:drawable="@mipmap/ic_launcher_foreground" />
+</adaptive-icon>

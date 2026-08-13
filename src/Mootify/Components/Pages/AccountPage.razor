@@ -1,6 +1,7 @@
 @page "/account"
 @attribute [Authorize]
 @inject AccountService Accounts
+@inject ApiTokenService ApiTokens
 @inject CurrentUser CurrentUser
 
 <PageTitle>Account · Mootify</PageTitle>
@@ -28,13 +29,70 @@
     </div>
 </section>
 
+@* The phone app signs in once and keeps a token. This is the only way to take one back — there is
+   no email, so a lost phone has to be revocable from wherever you happen to be signed in. *@
+<section class="managebox">
+    <h2>Devices</h2>
+
+    @if (_devices.Count == 0)
+    {
+        <p class="muted">No phones or tablets are signed in. The Android app adds itself here.</p>
+    }
+    else
+    {
+        <ul class="devicelist">
+            @foreach (var device in _devices)
+            {
+                <li>
+                    <div>
+                        <strong>@device.DeviceName</strong>
+                        <span class="muted">
+                            last used @Ago(device.LastUsedAt)@(device.ExpiresAt is { } expiry ? $" · expires {expiry.LocalDateTime:d MMM yyyy}" : "")
+                        </span>
+                    </div>
+                    <button class="linkbutton linkbutton--danger" @onclick="() => Revoke(device.Id)">Revoke</button>
+                </li>
+            }
+        </ul>
+    }
+</section>
+
 @code {
     private string _displayName = "";
     private string _current = "", _new = "", _confirm = "";
     private string? _error, _status;
+    private List<ApiTokenInfo> _devices = [];
 
-    protected override async Task OnInitializedAsync() =>
+    protected override async Task OnInitializedAsync()
+    {
         _displayName = await CurrentUser.GetDisplayNameAsync();
+        await LoadDevicesAsync();
+    }
+
+    private async Task LoadDevicesAsync() =>
+        _devices = await ApiTokens.ListAsync(await CurrentUser.GetRequiredIdAsync());
+
+    private async Task Revoke(Guid tokenId)
+    {
+        await ApiTokens.RevokeAsync(tokenId, await CurrentUser.GetRequiredIdAsync());
+        await LoadDevicesAsync();
+    }
+
+    /// <summary>Rough is enough here — the question being asked is "is this one still in use".</summary>
+    private static string Ago(DateTimeOffset when)
+    {
+        var elapsed = DateTimeOffset.UtcNow - when;
+
+        return elapsed switch
+        {
+            // Never "just now": the timestamp is only written every quarter of an hour, on purpose,
+            // so that a car seeking through an album isn't a write per range request.
+            { TotalMinutes: < 60 } => "within the hour",
+            { TotalHours: < 24 } => $"{(int)elapsed.TotalHours}h ago",
+            { TotalDays: < 30 } => $"{(int)elapsed.TotalDays}d ago",
+            _ => when.LocalDateTime.ToString("d MMM yyyy"),
+        };
+    }
 
     private async Task Change()
     {

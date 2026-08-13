@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- app_name lives in build.gradle.kts as a resValue, so the debug build can rename itself. -->
+<resources>
+    <string name="sign_in">Sign in</string>
+    <string name="server_url">Server</string>
+    <string name="username">Username</string>
+    <string name="password">Password</string>
+    <string name="playlists">Playlists</string>
+    <string name="artists">Artists</string>
+    <string name="albums">Albums</string>
+    <string name="search">Search</string>
+    <string name="requests">Requests</string>
+
+    <!-- Browse-tree labels. The car reads these, so they are short on purpose. -->
+    <string name="browse_playlists">Playlists</string>
+    <string name="browse_artists">Artists</string>
+    <string name="browse_albums">Albums</string>
+    <string name="browse_recent">Recently added</string>
+    <string name="browse_sign_in">Sign in on your phone</string>
+    <string name="browse_offline">Can\'t reach Mootify</string>
+
+    <!-- Shown in the system's notification settings, so it names what it controls. -->
+    <string name="playback_channel_name">Playback</string>
+</resources>

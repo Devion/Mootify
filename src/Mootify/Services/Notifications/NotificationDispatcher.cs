@@ -91,4 +91,18 @@ public sealed class NotificationDispatcher(
             .Where(n => n.Id == notificationId && n.ReadAt == null)
             .ExecuteUpdateAsync(s => s.SetProperty(n => n.ReadAt, DateTimeOffset.UtcNow), ct);
     }
+
+    /// <summary>
+    /// Same, scoped to the owner. The API takes the notification id from a client that could
+    /// have made it up, so "mark read" has to be a statement about your own bell.
+    /// </summary>
+    public async Task<bool> MarkReadAsync(Guid notificationId, Guid userId, CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
+        var affected = await db.Notifications
+            .Where(n => n.Id == notificationId && n.UserId == userId && n.ReadAt == null)
+            .ExecuteUpdateAsync(s => s.SetProperty(n => n.ReadAt, DateTimeOffset.UtcNow), ct);
+
+        return affected > 0;
+    }
 }

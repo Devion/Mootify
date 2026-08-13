@@ -69,6 +69,60 @@ public sealed class TestDatabase : IAsyncDisposable, IDbContextFactory<MootifyDb
         await db.SaveChangesAsync();
     }
 
+    /// <summary>
+    /// A named album with named tracks. <see cref="AddTracksAsync"/> covers "some tracks exist";
+    /// this is for the query tests, where the titles, the year and the arrival time are the thing
+    /// being asserted on.
+    /// </summary>
+    public async Task<Album> AddAlbumAsync(
+        string artistName,
+        string albumTitle,
+        string[] trackTitles,
+        DateTimeOffset? addedAt = null,
+        int? year = null,
+        TimeSpan? trackDuration = null,
+        bool present = true)
+    {
+        await using var db = CreateDbContext();
+
+        var artist = await db.Artists.FirstOrDefaultAsync(a => a.Name == artistName);
+        if (artist is null)
+        {
+            artist = new Artist { Id = Guid.NewGuid(), Name = artistName, SortName = artistName };
+            db.Artists.Add(artist);
+        }
+
+        var album = new Album
+        {
+            Id = Guid.NewGuid(),
+            Title = albumTitle,
+            ArtistId = artist.Id,
+            Year = year,
+        };
+        db.Albums.Add(album);
+
+        var number = 1;
+        foreach (var title in trackTitles)
+        {
+            db.Tracks.Add(new Track
+            {
+                Id = Guid.NewGuid(),
+                Path = $@"C:\music\{artistName}\{albumTitle}\{number:00} {title}.mp3",
+                Title = title,
+                ArtistId = artist.Id,
+                AlbumId = album.Id,
+                TrackNumber = number++,
+                Duration = trackDuration ?? TimeSpan.FromMinutes(3),
+                AddedAt = addedAt ?? DateTimeOffset.UtcNow,
+                Bitrate = 320,
+                IsPresent = present,
+            });
+        }
+
+        await db.SaveChangesAsync();
+        return album;
+    }
+
     public async Task<List<Guid>> AddTracksAsync(int count, string artistName = "The Cowbells")
     {
         await using var db = CreateDbContext();
