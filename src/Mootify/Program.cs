@@ -155,7 +155,7 @@ builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationSc
             var user = await db.Users
                 .AsNoTracking()
                 .Where(u => u.Id == userId)
-                .Select(u => new { u.IsBanned, u.IsAdmin })
+                .Select(u => new { u.IsBanned, u.IsAdmin, u.MustChangePassword })
                 .FirstOrDefaultAsync(context.HttpContext.RequestAborted);
 
             if (user is null || user.IsBanned)
@@ -178,6 +178,27 @@ builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationSc
                 {
                     var claim = identity.FindFirst(c => c.Type == ClaimTypes.Role && c.Value == MootifyAuth.AdminRole);
                     if (claim is not null) identity.RemoveClaim(claim);
+                }
+
+                context.ShouldRenew = true;
+            }
+
+            // Same treatment for the forced-password-change flag, and this one is load-bearing
+            // rather than a convenience: an admin resetting a signed-in user has to bite on
+            // their next request, and the page that clears it runs in a circuit that can't
+            // write a cookie. Reconciling here is the only thing that moves it in either
+            // direction after sign-in.
+            var hasResetClaim = MootifyAuth.MustChangePassword(context.Principal);
+            if (hasResetClaim != user.MustChangePassword && context.Principal!.Identity is ClaimsIdentity id)
+            {
+                if (user.MustChangePassword)
+                {
+                    id.AddClaim(new Claim(MootifyAuth.MustChangePasswordClaim, "true"));
+                }
+                else
+                {
+                    var claim = id.FindFirst(MootifyAuth.MustChangePasswordClaim);
+                    if (claim is not null) id.RemoveClaim(claim);
                 }
 
                 context.ShouldRenew = true;
@@ -273,14 +294,23 @@ app.UseWhen(
     context => !IsMachineFacing(context.Request.Path),
     branch => branch.UseStatusCodePagesWithReExecute("/not-found", createScopeForStatusCodePages: true));
 app.UseHttpsRedirection();
-app.UseAntiforgery();
 app.UseRateLimiter();
 app.UseAuthentication();
 app.UseAuthorization();
 
+// After authentication, not before. An antiforgery token is bound to the identity it was
+// rendered for, so the middleware has to be able to see who is asking — put it above
+// UseAuthentication and every authenticated form post is validated against an anonymous user
+// and fails with a raw 400.
+app.UseAntiforgery();
+
 // After auth so it can't be bypassed, before the endpoints so nothing else answers while
 // the instance has no admin.
 app.UseMiddleware<SetupMiddleware>();
+
+// After authentication, so there's a principal to read the flag off — and after the setup gate,
+// because a server with no admin has a bigger problem than one user's password.
+app.UseMiddleware<PasswordChangeMiddleware>();
 
 app.MapStaticAssets();
 app.MapAuthEndpoints();

@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc.Testing;
@@ -212,6 +213,67 @@ public sealed class MootifyApiFixture : IsolatedMootifyFixture, IAsyncLifetime
         return json!.RootElement.GetProperty("token").GetString()!;
     }
 
+    /// <summary>
+    /// Request rows straight into the table. Lidarr is deliberately unconfigured in this fixture,
+    /// so the real create path can't run — and the wiring these tests are about (paging envelope,
+    /// who may delete what) doesn't involve it.
+    /// </summary>
+    public async Task<List<Guid>> SeedRequestsAsync(int count, bool forSomeoneElse = false)
+    {
+        var factory = Services.GetRequiredService<IDbContextFactory<MootifyDbContext>>();
+        await using var db = await factory.CreateDbContextAsync();
+
+        var requesterId = UserId;
+
+        if (forSomeoneElse)
+        {
+            var other = new AppUser
+            {
+                Id = Guid.NewGuid(),
+                DisplayName = $"housemate-{Guid.NewGuid():n}",
+                NormalizedName = $"housemate-{Guid.NewGuid():n}",
+                CreatedAt = DateTimeOffset.UtcNow,
+                LastSeenAt = DateTimeOffset.UtcNow,
+            };
+            db.Users.Add(other);
+            requesterId = other.Id;
+        }
+
+        var ids = new List<Guid>();
+
+        for (var i = 0; i < count; i++)
+        {
+            var request = new Request
+            {
+                Id = Guid.NewGuid(),
+                RequesterId = requesterId,
+                Kind = RequestKind.Track,
+                Status = RequestStatus.Searching,
+                Query = $"Song {i}",
+                ArtistName = "The Cowbells",
+                AlbumTitle = "Pasture Sounds",
+                TrackTitle = $"Song {i}",
+                CreatedAt = DateTimeOffset.UtcNow.AddMinutes(-i),
+                UpdatedAt = DateTimeOffset.UtcNow.AddMinutes(-i),
+            };
+
+            db.Requests.Add(request);
+            ids.Add(request.Id);
+        }
+
+        await db.SaveChangesAsync();
+        return ids;
+    }
+
+    /// <summary>The fixture is shared, so a test that seeds rows takes them away again.</summary>
+    public async Task RemoveRequestsAsync(List<Guid> ids)
+    {
+        var factory = Services.GetRequiredService<IDbContextFactory<MootifyDbContext>>();
+        await using var db = await factory.CreateDbContextAsync();
+
+        await db.Requests.Where(r => ids.Contains(r.Id)).ExecuteDeleteAsync();
+    }
+
     public new Task DisposeAsync() => CleanUpAsync();
 }
 
@@ -284,6 +346,115 @@ public sealed class ApiIntegrationTests(MootifyApiFixture fixture) : IClassFixtu
         // rather than discovering it through a 503.
         Assert.False(body.GetProperty("server").GetProperty("lidarrConfigured").GetBoolean());
         Assert.Equal(1, body.GetProperty("server").GetProperty("apiVersion").GetInt32());
+    }
+
+    // ---- the forced password change ---------------------------------------
+
+    [Fact]
+    public async Task A_one_time_password_lands_on_the_change_page_and_nothing_else()
+    {
+        // Four separate lines of wiring have to agree for this to work: the claim goes into the
+        // cookie, the login endpoint redirects on it, the middleware holds the rest of the site
+        // shut, and OnValidatePrincipal drops the claim once the password is replaced. Any one of
+        // them failing open looks exactly like success from inside a unit test.
+        await SeedUserAsync(fixture, "resetweb", "one-time-web", mustChange: true);
+
+        using var client = fixture.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            AllowAutoRedirect = false,
+        });
+
+        var login = await PostFormAsync(client, "/login", "/auth/login", new()
+        {
+            ["username"] = "resetweb",
+            ["password"] = "one-time-web",
+            // Ignored on purpose — the change screen comes first.
+            ["returnUrl"] = "/library",
+        });
+
+        Assert.Equal(HttpStatusCode.Found, login.StatusCode);
+        Assert.Equal("/password", login.Headers.Location?.OriginalString);
+
+        var blocked = await client.GetAsync("/library");
+        Assert.Equal(HttpStatusCode.Found, blocked.StatusCode);
+        Assert.Equal("/password", blocked.Headers.Location?.OriginalString);
+
+        var changed = await PostFormAsync(client, "/password", "/auth/password", new()
+        {
+            ["currentPassword"] = "one-time-web",
+            ["newPassword"] = "chosen-by-me",
+            ["confirmPassword"] = "chosen-by-me",
+        });
+
+        Assert.Equal(HttpStatusCode.Found, changed.StatusCode);
+        Assert.Equal("/", changed.Headers.Location?.OriginalString);
+
+        // The cookie still carries the claim at this point; the gate lifts because
+        // OnValidatePrincipal reconciles it against the row on the very next request.
+        var after = await client.GetAsync("/library");
+        Assert.Equal(HttpStatusCode.OK, after.StatusCode);
+    }
+
+    /// <summary>
+    /// Fetches a static-SSR page for its antiforgery token and posts the form it carries. The
+    /// token is bound to a cookie the same client picked up, which is the point — a hand-built
+    /// POST would prove nothing about the pages a person actually goes through.
+    /// </summary>
+    private static async Task<HttpResponseMessage> PostFormAsync(
+        HttpClient client, string page, string action, Dictionary<string, string> fields)
+    {
+        var pageResponse = await client.GetAsync(page);
+        var html = await pageResponse.Content.ReadAsStringAsync();
+        var token = Regex.Match(html, """name="__RequestVerificationToken" value="([^"]+)""");
+
+        Assert.True(token.Success, $"No antiforgery token on {page}. status={pageResponse.StatusCode}");
+        fields["__RequestVerificationToken"] = token.Groups[1].Value;
+
+        return await client.PostAsync(action, new FormUrlEncodedContent(fields));
+    }
+
+    private static async Task SeedUserAsync(
+        MootifyApiFixture fixture, string name, string password, bool mustChange)
+    {
+        var factory = fixture.Services.GetRequiredService<IDbContextFactory<MootifyDbContext>>();
+        await using var db = await factory.CreateDbContextAsync();
+
+        var user = new AppUser
+        {
+            Id = Guid.NewGuid(),
+            DisplayName = name,
+            NormalizedName = name,
+            MustChangePassword = mustChange,
+            CreatedAt = DateTimeOffset.UtcNow,
+            LastSeenAt = DateTimeOffset.UtcNow,
+        };
+        user.PasswordHash = new PasswordHasher<AppUser>().HashPassword(user, password);
+
+        db.Users.Add(user);
+        await db.SaveChangesAsync();
+    }
+
+    [Fact]
+    public async Task An_account_on_a_one_time_password_gets_no_device_token()
+    {
+        // The password is right, so this isn't a 401 — but there is nowhere on a phone to choose
+        // a new one, and a token issued here would outlive the reset that revoked the last batch.
+        // A sentence the app can show, not a redirect to a login page it can't read.
+        await SeedUserAsync(fixture, "resetme", "one-time-only", mustChange: true);
+
+        using var client = fixture.CreateClient();
+
+        var response = await client.PostAsJsonAsync("/api/v1/auth/token", new
+        {
+            username = "resetme",
+            password = "one-time-only",
+            deviceName = "Pixel 8",
+        });
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+
+        var body = await response.Content.ReadFromJsonAsync<JsonDocument>();
+        Assert.Contains("website", body!.RootElement.GetProperty("error").GetString());
     }
 
     [Fact]
@@ -477,5 +648,69 @@ public sealed class ApiIntegrationTests(MootifyApiFixture fixture) : IClassFixtu
         var response = await client.GetAsync("/api/v1/requests/search?q=nirvana");
 
         Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task The_request_list_is_paged_and_carries_its_own_total()
+    {
+        // An import leaves hundreds of these behind, and a phone handed all of them has nothing
+        // useful to do with the tail. Same envelope as every other list here.
+        using var client = await fixture.SignedInClientAsync();
+
+        var ids = await fixture.SeedRequestsAsync(5);
+
+        try
+        {
+            var page = (await client.GetFromJsonAsync<JsonDocument>("/api/v1/requests?skip=0&take=2"))!.RootElement;
+
+            Assert.Equal(5, page.GetProperty("total").GetInt32());
+            Assert.Equal(2, page.GetProperty("take").GetInt32());
+            Assert.Equal(2, page.GetProperty("items").GetArrayLength());
+        }
+        finally
+        {
+            await fixture.RemoveRequestsAsync(ids);
+        }
+    }
+
+    [Fact]
+    public async Task A_client_can_take_a_request_back_off_the_list()
+    {
+        using var client = await fixture.SignedInClientAsync();
+
+        var ids = await fixture.SeedRequestsAsync(2);
+
+        try
+        {
+            Assert.Equal(HttpStatusCode.NoContent, (await client.DeleteAsync($"/api/v1/requests/{ids[0]}")).StatusCode);
+
+            var page = (await client.GetFromJsonAsync<JsonDocument>("/api/v1/requests"))!.RootElement;
+            Assert.Equal(1, page.GetProperty("total").GetInt32());
+
+            // Asking twice is a 404 rather than a second success, which is what a retry after a
+            // dropped response should see.
+            Assert.Equal(HttpStatusCode.NotFound, (await client.DeleteAsync($"/api/v1/requests/{ids[0]}")).StatusCode);
+        }
+        finally
+        {
+            await fixture.RemoveRequestsAsync(ids);
+        }
+    }
+
+    [Fact]
+    public async Task Somebody_elses_request_is_not_yours_to_delete()
+    {
+        using var client = await fixture.SignedInClientAsync();
+
+        var ids = await fixture.SeedRequestsAsync(1, forSomeoneElse: true);
+
+        try
+        {
+            Assert.Equal(HttpStatusCode.NotFound, (await client.DeleteAsync($"/api/v1/requests/{ids[0]}")).StatusCode);
+        }
+        finally
+        {
+            await fixture.RemoveRequestsAsync(ids);
+        }
     }
 }

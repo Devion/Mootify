@@ -19,7 +19,9 @@
     "MetadataProfileId": 1,
     "RootFolderPath": "/music",
     "SearchOnAdd": true,
-    "PollInterval": "00:10:00"
+    "PollInterval": "00:10:00",
+    "//MaxSearchesPerPass": "Albums one poll may re-ask Lidarr to search for. The brake is your indexers' rate limits, not Lidarr. Passes work the backlog oldest-first, so a lower number is slower rather than incomplete.",
+    "MaxSearchesPerPass": 50
   },
 
   "MusicBrainz": {
@@ -45,6 +47,7 @@
   },
 
   "Requests": {
+    "//MaxOpenPerUser": "The starting quota. An admin can change it at /admin, and that number then wins over this one until they clear it.",
     "MaxOpenPerUser": 5
   },
 

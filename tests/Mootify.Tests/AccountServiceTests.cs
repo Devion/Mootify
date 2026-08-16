@@ -19,7 +19,7 @@ public sealed class AccountServiceTests : IAsyncLifetime
     {
         _db = new TestDatabase();
         var monitor = new StaticOptionsMonitor<AuthOptions>(_options);
-        _settings = new SettingsService(_db, monitor);
+        _settings = new SettingsService(_db, monitor, new StaticOptionsMonitor<RequestOptions>(new RequestOptions()));
         _setup = new SetupState();
         _accounts = new AccountService(_db, monitor, _settings, _setup, NullLogger<AccountService>.Instance);
         return Task.CompletedTask;
@@ -203,5 +203,99 @@ public sealed class AccountServiceTests : IAsyncLifetime
         Assert.True((await _accounts.AdminSetPasswordAsync(adminId, userId, "rescued1", "rescued1")).Ok);
 
         Assert.True((await _accounts.SignInAsync("housemate", "rescued1")).Succeeded);
+    }
+
+    // ---- one-time passwords ----------------------------------------------
+
+    [Fact]
+    public async Task What_an_admin_sets_is_a_one_time_password()
+    {
+        // Two people know it the moment it's spoken, so it buys exactly one sign-in. The claim
+        // is what every gate downstream reads.
+        var (adminId, userId) = await AdminAndHousemateAsync();
+
+        Assert.True((await _accounts.AdminSetPasswordAsync(adminId, userId, "rescued1", "rescued1")).Ok);
+        Assert.True(await MustChangeAsync(userId));
+
+        var signIn = await _accounts.SignInAsync("housemate", "rescued1");
+
+        Assert.True(signIn.Succeeded, signIn.Error);
+        Assert.True(MootifyAuth.MustChangePassword(signIn.Principal));
+    }
+
+    [Fact]
+    public async Task Choosing_your_own_password_lifts_the_flag()
+    {
+        var (adminId, userId) = await AdminAndHousemateAsync();
+        await _accounts.AdminSetPasswordAsync(adminId, userId, "rescued1", "rescued1");
+
+        Assert.True((await _accounts.ChangePasswordAsync(userId, "rescued1", "myownpw1", "myownpw1")).Ok);
+        Assert.False(await MustChangeAsync(userId));
+
+        var signIn = await _accounts.SignInAsync("housemate", "myownpw1");
+
+        Assert.True(signIn.Succeeded, signIn.Error);
+        Assert.False(MootifyAuth.MustChangePassword(signIn.Principal));
+    }
+
+    [Fact]
+    public async Task The_one_time_password_cant_be_kept_as_the_new_one()
+    {
+        // Otherwise the forced change is a form to click through and the password an admin
+        // knows stays live.
+        var (adminId, userId) = await AdminAndHousemateAsync();
+        await _accounts.AdminSetPasswordAsync(adminId, userId, "rescued1", "rescued1");
+
+        var (ok, error) = await _accounts.ChangePasswordAsync(userId, "rescued1", "rescued1", "rescued1");
+
+        Assert.False(ok);
+        Assert.Contains("already have", error);
+        Assert.True(await MustChangeAsync(userId));
+    }
+
+    [Fact]
+    public async Task Resetting_a_password_signs_the_phones_out_too()
+    {
+        // A live device token is credentials the reset was meant to retire, and it would sail
+        // straight past the change screen the website puts up.
+        var (adminId, userId) = await AdminAndHousemateAsync();
+
+        var tokens = new ApiTokenService(
+            _db, new StaticOptionsMonitor<ApiOptions>(new ApiOptions()), NullLogger<ApiTokenService>.Instance);
+        var issued = await tokens.IssueAsync(userId, "Pixel 8");
+
+        Assert.NotNull(await tokens.ValidateAsync(issued.Secret));
+
+        await _accounts.AdminSetPasswordAsync(adminId, userId, "rescued1", "rescued1");
+
+        Assert.Null(await tokens.ValidateAsync(issued.Secret));
+    }
+
+    [Fact]
+    public async Task An_admin_cant_hand_themselves_a_one_time_password()
+    {
+        // It would lock them into the change screen to solve a problem they don't have.
+        var (adminId, _) = await AdminAndHousemateAsync();
+
+        var (ok, error) = await _accounts.AdminSetPasswordAsync(adminId, adminId, "newpass1", "newpass1");
+
+        Assert.False(ok);
+        Assert.Contains("account page", error);
+        Assert.False(await MustChangeAsync(adminId));
+    }
+
+    private async Task<(Guid AdminId, Guid UserId)> AdminAndHousemateAsync()
+    {
+        var setup = await SetupAdminAsync();
+        var registration = await _accounts.RegisterAsync("housemate", "password1", "password1");
+
+        return (Guid.Parse(setup.Principal!.FindFirstValue(ClaimTypes.NameIdentifier)!),
+                Guid.Parse(registration.Principal!.FindFirstValue(ClaimTypes.NameIdentifier)!));
+    }
+
+    private async Task<bool> MustChangeAsync(Guid userId)
+    {
+        await using var db = _db.CreateDbContext();
+        return await db.Users.Where(u => u.Id == userId).Select(u => u.MustChangePassword).SingleAsync();
     }
 }

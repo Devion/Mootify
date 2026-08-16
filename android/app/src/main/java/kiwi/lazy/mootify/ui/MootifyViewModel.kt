@@ -309,6 +309,21 @@ class MootifyViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    /**
+     * Takes a request back off the list. Cancelling the last one wanted off a release also stops
+     * Lidarr chasing it — the server works that out, because it's the one that knows who else is
+     * still waiting on the same album.
+     */
+    fun cancelRequest(request: ApiRequest) {
+        viewModelScope.launch {
+            repository.cancelRequest(request.id).fold(
+                onSuccess = { message(null) },
+                onFailure = { message(it.message) },
+            )
+            refreshRequests()
+        }
+    }
+
     private fun refreshRequests() {
         viewModelScope.launch {
             _library.value = _library.value.copy(requests = repository.requests().getOrNull().orEmpty())

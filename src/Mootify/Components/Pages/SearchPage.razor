@@ -73,7 +73,10 @@
             @* Team playlists are listed here too: requesting into one is how a team gets music
                without everybody asking separately. *@
             <div class="lookup__target">
-                <select @bind="_targetPlaylistId" aria-label="Add to playlist when it arrives">
+                @* Changing the destination changes what counts as a duplicate — the same song
+                   for a different playlist is a different request — so this re-reads the keys. *@
+                <select @bind="_targetPlaylistId" @bind:after="ReloadRequestedAsync"
+                        aria-label="Add to playlist when it arrives">
                     <option value="">Don't add to a playlist</option>
                     @foreach (var p in _playlists)
                     {
@@ -103,12 +106,17 @@
                                 </span>
                             </div>
 
+                            @{ var albumRequested = AlreadyRequested(album, RequestKind.Album, null, null); }
+
                             <div class="result__actions" @onclick:stopPropagation="true">
                                 <button class="linkbutton" @onclick="() => Toggle(album)">
                                     @(isOpen ? "Hide songs" : "Songs")
                                 </button>
-                                <button class="button" @onclick="() => RequestAlbum(album)" disabled="@_submitting">
-                                    Request
+                                @* Saying so up front beats letting somebody click and be refused —
+                                   a refusal reads as a bug, a greyed-out button reads as an answer. *@
+                                <button class="button" @onclick="() => RequestAlbum(album)"
+                                        disabled="@(_submitting || albumRequested)">
+                                    @(albumRequested ? "Requested" : "Request")
                                 </button>
                             </div>
                         </div>
@@ -132,15 +140,25 @@
                                         <tbody>
                                             @foreach (var track in _tracks)
                                             {
-                                                <tr>
+                                                var requested = albumRequested
+                                                    || AlreadyRequested(album, RequestKind.Track, track.Title, track.RecordingId);
+
+                                                <tr class="@(requested ? "is-requested" : "")">
                                                     <td class="tracklist__num">@track.Position</td>
                                                     <td class="tracklist__title">@track.Title</td>
                                                     <td class="tracklist__dur">@Format(track.Duration)</td>
                                                     <td class="tracklist__actions">
-                                                        <button class="linkbutton" disabled="@_submitting"
-                                                                @onclick="() => RequestTrack(album, track)">
-                                                            Request this song
-                                                        </button>
+                                                        @if (requested)
+                                                        {
+                                                            <span class="muted">Already requested</span>
+                                                        }
+                                                        else
+                                                        {
+                                                            <button class="linkbutton" disabled="@_submitting"
+                                                                    @onclick="() => RequestTrack(album, track)">
+                                                                Request this song
+                                                            </button>
+                                                        }
                                                     </td>
                                                 </tr>
                                             }
@@ -177,13 +195,35 @@
     private IReadOnlyList<AlbumTrack> _tracks = [];
     private bool _loadingTracks;
 
+    /// <summary>
+    /// Duplicate keys for everything already asked for, built by <see cref="RequestService.DuplicateKey"/>
+    /// so this page and the service can't disagree about what a duplicate is.
+    /// </summary>
+    private HashSet<string> _requested = [];
+
     private CancellationTokenSource? _debounceCts;
 
     protected override async Task OnInitializedAsync()
     {
-        var userId = await CurrentUser.GetRequiredIdAsync();
-        _playlists = await Playlists.GetForUserAsync(userId);
+        _userId = await CurrentUser.GetRequiredIdAsync();
+        _playlists = await Playlists.GetForUserAsync(_userId);
+        _requested = await Requests.GetActiveKeysAsync(_userId);
     }
+
+    private async Task ReloadRequestedAsync() =>
+        _requested = await Requests.GetActiveKeysAsync(_userId);
+
+    private bool AlreadyRequested(LidarrAlbum album, RequestKind kind, string? trackTitle, string? recordingMbid)
+    {
+        if (album.MusicBrainzId is not { } mbid) return false;
+
+        return _requested.Contains(RequestService.DuplicateKey(
+            kind, mbid, trackTitle, recordingMbid, TargetPlaylistId, _userId));
+    }
+
+    private Guid? TargetPlaylistId => Guid.TryParse(_targetPlaylistId, out var id) ? id : null;
+
+    private Guid _userId;
 
     protected override async Task OnParametersSetAsync()
     {
@@ -300,14 +340,16 @@
         _submitting = true;
         _message = null;
 
-        var userId = await CurrentUser.GetRequiredIdAsync();
-        Guid? playlistId = Guid.TryParse(_targetPlaylistId, out var pid) ? pid : null;
-
-        var result = await Requests.CreateAsync(userId, album, kind, trackTitle, recordingMbid, playlistId);
+        var result = await Requests.CreateAsync(
+            _userId, album, kind, trackTitle, recordingMbid, TargetPlaylistId);
 
         _messageIsError = !result.Ok;
         _message = result.Ok ? success : result.Error;
         _submitting = false;
+
+        // Whether it worked or was refused as a duplicate, the answer is the same: that one is
+        // spoken for now, and the button that produced this should say so.
+        await ReloadRequestedAsync();
     }
 
     private static string Format(TimeSpan t) =>

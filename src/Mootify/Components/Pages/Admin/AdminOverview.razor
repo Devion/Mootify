@@ -42,6 +42,46 @@
 </section>
 
 <section class="managebox">
+    <h2>Requests</h2>
+    <p class="muted">
+        How many requests one person can have in flight at once. It's there to stop somebody
+        queueing a discography and filling the disk &mdash; an import is exempt, because that
+        shows you the number before you agree to it.
+    </p>
+
+    <label for="maxrequests">Open requests per user</label>
+    <input id="maxrequests" class="numberbox" type="number" @bind="_maxRequests" @bind:event="oninput"
+           min="@SettingsService.MinOpenRequests" max="@SettingsService.MaxOpenRequests" />
+
+    <p class="managebox__hint">
+        @if (_maxRequestsOverridden)
+        {
+            <text>Set here, which wins over <code>Requests:MaxOpenPerUser</code> (@_configuredMax) in mootify.json.</text>
+        }
+        else
+        {
+            <text>Coming from <code>Requests:MaxOpenPerUser</code> in mootify.json. Saving a number here overrides it.</text>
+        }
+    </p>
+
+    <div class="managebox__actions">
+        <button class="button" @onclick="SaveMaxRequests"
+                disabled="@(_maxRequestsOverridden && _maxRequests == _effectiveMax)">
+            Save limit
+        </button>
+        @if (_maxRequestsOverridden)
+        {
+            <button class="linkbutton" @onclick="ResetMaxRequests">Go back to the configured @_configuredMax</button>
+        }
+    </div>
+
+    @if (_requestMessage is not null)
+    {
+        <p class="success">@_requestMessage</p>
+    }
+</section>
+
+<section class="managebox">
     <h2>Library</h2>
     <ul class="statuslist">
         <li>
@@ -174,6 +214,11 @@
     private AdminStats _stats = new(0, 0, 0, 0, 0, 0, 0);
     private int _convertible;
     private bool _registrationOpen;
+    private int _maxRequests;
+    private int _effectiveMax;
+    private int _configuredMax;
+    private bool _maxRequestsOverridden;
+    private string? _requestMessage;
     private string? _musicRoot;
     private bool _musicRootOk;
     private bool _isNetworkShare;
@@ -186,6 +231,7 @@
     private Guid _userId;
 
     [Inject] private IOptionsMonitor<LibraryOptions> LibraryOptions { get; set; } = default!;
+    [Inject] private IOptionsMonitor<RequestOptions> RequestOptions { get; set; } = default!;
 
     protected override async Task OnInitializedAsync()
     {
@@ -207,6 +253,13 @@
     {
         _stats = await Admin.GetStatsAsync();
         _registrationOpen = await Settings.GetRegistrationEnabledAsync();
+
+        var overridden = await Settings.GetMaxOpenRequestsOverrideAsync();
+        _configuredMax = RequestOptions.CurrentValue.MaxOpenPerUser;
+        _maxRequestsOverridden = overridden is not null;
+        _effectiveMax = overridden ?? _configuredMax;
+        _maxRequests = _effectiveMax;
+
         _musicRoot = LibraryOptions.CurrentValue.MusicRoot;
         _musicRootOk = !string.IsNullOrWhiteSpace(_musicRoot) && Directory.Exists(_musicRoot);
         _isNetworkShare = !string.IsNullOrWhiteSpace(_musicRoot) && NetworkShareConnector.IsUncPath(_musicRoot);
@@ -246,6 +299,24 @@
         await Settings.SetRegistrationEnabledAsync(!_registrationOpen);
         await LoadAsync();
         _message = _registrationOpen ? "Registration is open." : "Registration is closed.";
+    }
+
+    private async Task SaveMaxRequests()
+    {
+        // The input is a number box, so the only way past the min/max is typing; clamp rather
+        // than refuse, since the intent ("a lot", "one") is still clear.
+        var wanted = Math.Clamp(_maxRequests, SettingsService.MinOpenRequests, SettingsService.MaxOpenRequests);
+
+        await Settings.SetMaxOpenRequestsAsync(wanted);
+        await LoadAsync();
+        _requestMessage = $"Everyone can now have {wanted} request{(wanted == 1 ? "" : "s")} open at a time.";
+    }
+
+    private async Task ResetMaxRequests()
+    {
+        await Settings.ClearMaxOpenRequestsAsync();
+        await LoadAsync();
+        _requestMessage = $"Back to the configured limit of {_effectiveMax}.";
     }
 
     private async Task Rescan()

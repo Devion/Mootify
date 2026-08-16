@@ -101,7 +101,14 @@ interface MootifyApi {
     // ---- requests ---------------------------------------------------------
 
     @GET("api/v1/requests")
-    suspend fun requests(): Response<List<ApiRequest>>
+    suspend fun requests(
+        @Query("filter") filter: String? = null,
+        @Query("skip") skip: Int = 0,
+        @Query("take") take: Int = 100,
+    ): Response<ApiPage<ApiRequest>>
+
+    @DELETE("api/v1/requests/{id}")
+    suspend fun cancelRequest(@Path("id") id: String): Response<Unit>
 
     @GET("api/v1/requests/search")
     suspend fun searchRemote(@Query("q") query: String): Response<List<ApiRemoteAlbum>>

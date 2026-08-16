@@ -32,6 +32,13 @@ public sealed class AppUser
 
     public DateTimeOffset? BannedAt { get; set; }
 
+    /// <summary>
+    /// Set when an admin resets the password to a one-time one, cleared the moment the user
+    /// picks their own. While it's set the whole site funnels to /password and the API refuses
+    /// to issue a device token, so the only thing the account can do is finish the change.
+    /// </summary>
+    public bool MustChangePassword { get; set; }
+
     public DateTimeOffset CreatedAt { get; set; }
     public DateTimeOffset LastSeenAt { get; set; }
 
@@ -411,6 +418,19 @@ public sealed class Request
 
     [MaxLength(1024)]
     public string? FailureReason { get; set; }
+
+    /// <summary>
+    /// When Lidarr was last told to go looking. A search that finds nothing leaves no trace in
+    /// Lidarr, so without this the reconciler cannot tell "asked once an hour ago and still
+    /// nothing" from "never asked" — and 500 requests queued in one import are mostly the former.
+    /// </summary>
+    public DateTimeOffset? LastSearchAt { get; set; }
+
+    /// <summary>
+    /// How many times we've asked. Bounded, because an album no indexer carries would otherwise
+    /// be re-searched every ten minutes for a week.
+    /// </summary>
+    public int SearchAttempts { get; set; }
 
     public DateTimeOffset CreatedAt { get; set; }
     public DateTimeOffset UpdatedAt { get; set; }

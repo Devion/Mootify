@@ -688,6 +688,9 @@ a.badge:hover { text-decoration: none; filter: brightness(1.2); }
     color: var(--text);
 }
 
+/* A limit is two digits; a 420px box for it reads as if it wants a sentence. */
+.managebox input.numberbox { max-width: 6rem; }
+
 .managebox__actions { margin-top: 1rem; display: flex; align-items: center; gap: .75rem; }
 .managebox__hint { margin: .4rem 0 0; font-size: .8rem; color: var(--text-dim); }
 
@@ -805,6 +808,22 @@ a.badge:hover { text-decoration: none; filter: brightness(1.2); }
 .requests { width: 100%; border-collapse: collapse; }
 .requests th { text-align: left; padding: .5rem .6rem; border-bottom: 1px solid var(--line); color: var(--text-dim); font-size: .72rem; text-transform: uppercase; letter-spacing: .06em; }
 .requests td { padding: .7rem .6rem; border-bottom: 1px solid #ffffff08; vertical-align: top; }
+.requests__rowaction { text-align: right; white-space: nowrap; width: 1%; }
+
+/* Filter chips carry the counts for the whole list, which is the number a paged table hides. */
+.filterchips { display: flex; flex-wrap: wrap; gap: .4rem; margin: 0 0 1rem; }
+.chip { display: inline-flex; align-items: center; gap: .4rem; padding: .3rem .7rem; border-radius: 999px; border: 1px solid var(--line); background: transparent; color: var(--text-dim); font: inherit; font-size: .82rem; cursor: pointer; }
+.chip:hover:not(:disabled) { color: var(--text); border-color: var(--text-dim); }
+.chip.is-active { background: var(--accent-soft); border-color: transparent; color: var(--accent); }
+.chip:disabled { opacity: .4; cursor: default; }
+.chip__count { font-variant-numeric: tabular-nums; opacity: .7; }
+.chip--quiet { margin-left: auto; border-style: dashed; }
+
+.pager { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: .9rem .6rem 0; }
+.pager__where { font-size: .85rem; color: var(--text-dim); }
+
+/* An album already spoken for still shows its tracklist — it just can't be asked for again. */
+.tracklist tr.is-requested .tracklist__title { color: var(--text-dim); }
 
 .status { display: inline-block; padding: .15rem .55rem; border-radius: 999px; font-size: .78rem; background: var(--bg-hover); color: var(--text-dim); }
 .status--available { background: #46c47c22; color: var(--ok); }

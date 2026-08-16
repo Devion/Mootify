@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
@@ -62,6 +63,7 @@ fun RequestsScreen(
     onTargetPlaylist: (String?) -> Unit,
     onRequestAlbum: (ApiRemoteAlbum) -> Unit,
     onRequestTrack: (ApiRemoteAlbum, ApiRemoteTrack) -> Unit,
+    onCancelRequest: (ApiRequest) -> Unit,
 ) {
     if (!lidarrConfigured) {
         EmptyState("Lidarr isn't configured on this server, so nothing new can be fetched.")
@@ -124,27 +126,43 @@ fun RequestsScreen(
             item { SectionHeader("In flight") }
 
             items(requests, key = { it.id }) { request ->
-                Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
-                    Text(
-                        request.trackTitle ?: request.albumTitle ?: request.query,
-                        style = MaterialTheme.typography.bodyLarge,
-                    )
-                    Text(
-                        buildString {
-                            append(request.artistName)
-                            append(" · ")
-                            append(request.status)
-                            request.targetPlaylistName?.let { append(" → ").append(it) }
-                        },
-                        style = MaterialTheme.typography.bodySmall,
-                        color = if (request.status == "Failed" || request.status == "NotFound") {
-                            MaterialTheme.colorScheme.error
-                        } else {
-                            MaterialTheme.colorScheme.onSurfaceVariant
-                        },
-                    )
-                    request.failureReason?.let {
-                        Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                Row(
+                    Modifier.fillMaxWidth().padding(start = 16.dp, end = 4.dp, top = 8.dp, bottom = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            request.trackTitle ?: request.albumTitle ?: request.query,
+                            style = MaterialTheme.typography.bodyLarge,
+                        )
+                        Text(
+                            buildString {
+                                append(request.artistName)
+                                append(" · ")
+                                append(request.status)
+                                request.targetPlaylistName?.let { append(" → ").append(it) }
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (request.status == "Failed" || request.status == "NotFound") {
+                                MaterialTheme.colorScheme.error
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                        )
+                        request.failureReason?.let {
+                            Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                        }
+                    }
+
+                    IconButton(onClick = { onCancelRequest(request) }) {
+                        Icon(
+                            Icons.Filled.Close,
+                            contentDescription = if (request.isOpen) {
+                                "Cancel this request"
+                            } else {
+                                "Remove from the list"
+                            },
+                        )
                     }
                 }
             }

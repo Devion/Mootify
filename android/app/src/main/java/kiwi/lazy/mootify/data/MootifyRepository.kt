@@ -152,7 +152,9 @@ class MootifyRepository(
 
     // ---- requests ---------------------------------------------------------
 
-    suspend fun requests(): Result<List<ApiRequest>> = io { api()?.requests() }
+    suspend fun requests(): Result<List<ApiRequest>> = page { api()?.requests() }
+
+    suspend fun cancelRequest(id: String): Result<Unit> = io { api()?.cancelRequest(id) }
 
     suspend fun searchRemote(query: String): Result<List<ApiRemoteAlbum>> =
         io { api()?.searchRemote(query) }

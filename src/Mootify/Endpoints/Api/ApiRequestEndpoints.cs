@@ -29,13 +29,34 @@ public static class ApiRequestEndpoints
     {
         var requests = app.MapApiGroup("/api/v1/requests");
 
+        // Paged like every other list here. An import can leave several hundred rows behind, and
+        // a phone that gets handed all of them has nothing useful to do with the tail.
         requests.MapGet("", async (
-            HttpContext http, RequestService service, CancellationToken ct) =>
+            HttpContext http,
+            RequestService service,
+            RequestFilter? filter,
+            int? skip,
+            int? take,
+            CancellationToken ct) =>
         {
             var userId = ApiPrincipal.GetRequiredUserId(http.User);
-            var rows = await service.GetForUserAsync(userId, ct);
+            var (s, t) = ApiSetup.Page(skip, take, RequestService.MaxPageSize, RequestService.DefaultPageSize);
 
-            return Results.Ok(rows.Select(Map).ToList());
+            var page = await service.GetForUserAsync(userId, filter ?? RequestFilter.All, s, t, ct);
+
+            return Results.Ok(new ApiPage<ApiRequest>(
+                page.Total, page.Skip, page.Take, [.. page.Rows.Select(Map)]));
+        });
+
+        // Cancel one, or take a finished one off the list. Idempotent from the client's side:
+        // asking twice gets the same 404 as asking about somebody else's, which is deliberate.
+        requests.MapDelete("/{id:guid}", async (
+            HttpContext http, Guid id, RequestService service, CancellationToken ct) =>
+        {
+            var userId = ApiPrincipal.GetRequiredUserId(http.User);
+            var (ok, error) = await service.CancelAsync(userId, id, asAdmin: false, ct);
+
+            return ok ? Results.NoContent() : Results.Problem(error, statusCode: 404);
         });
 
         // Album search against Lidarr. Not the library — /library/search is that.

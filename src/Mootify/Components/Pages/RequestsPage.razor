@@ -25,30 +25,70 @@
     </div>
     <div class="pagehead__actions">
         <a class="button" href="/search">Request something</a>
-        <button class="linkbutton" @onclick="Refresh" disabled="@_checking">Check now</button>
+        <button class="linkbutton" @onclick="Refresh" disabled="@_checking">
+            @(_checking ? "Checking…" : "Check now")
+        </button>
     </div>
 </div>
 
-@if (_requests.Count == 0)
+@if (_page.Counts.All > 0)
+{
+    @* Counts for the whole list, not the page — the number in flight is the one worth seeing. *@
+    <div class="filterchips" role="group" aria-label="Filter requests">
+        @foreach (var (filter, label) in Chips)
+        {
+            var count = _page.Counts.For(filter);
+
+            <button type="button"
+                    class="chip @(_filter == filter ? "is-active" : "")"
+                    disabled="@(count == 0 && _filter != filter)"
+                    @onclick="() => SetFilter(filter)">
+                @label <span class="chip__count">@count</span>
+            </button>
+        }
+
+        @if (_page.Counts.Ready + _page.Counts.Problem > 0)
+        {
+            <button type="button" class="chip chip--quiet" @onclick="ClearFinished" disabled="@_clearing">
+                @(_clearing ? "Clearing…" : "Clear finished")
+            </button>
+        }
+    </div>
+}
+
+@if (_notice is not null)
+{
+    <p class="@(_noticeIsError ? "error" : "muted")">@_notice</p>
+}
+
+@if (_page.Total == 0)
 {
     <div class="emptystate">
         <img src="img/pietjecow-sm.png" alt="" />
-        <p>No requests yet. Search for something that isn't in the library.</p>
+        <p>
+            @(_page.Counts.All == 0
+                ? "No requests yet. Search for something that isn't in the library."
+                : "Nothing here under that filter.")
+        </p>
     </div>
 }
 else
 {
     <table class="requests">
         <thead>
-            <tr><th>What</th><th>Status</th><th>Playlist</th><th>Asked</th></tr>
+            <tr><th>What</th><th>Status</th><th>Playlist</th><th>Asked</th><th class="requests__rowaction"></th></tr>
         </thead>
         <tbody>
-            @foreach (var r in _requests)
+            @foreach (var r in _page.Rows)
             {
                 <tr>
                     <td>
                         <strong>@(r.Kind == Data.RequestKind.Track ? r.TrackTitle : r.AlbumTitle)</strong>
                         <span class="muted"> &mdash; @r.ArtistName</span>
+                        @if (r.Kind == Data.RequestKind.Track && !string.IsNullOrWhiteSpace(r.AlbumTitle))
+                        {
+                            <div class="muted">from @r.AlbumTitle</div>
+                        }
                     </td>
                     <td>
                         <span class="status status--@r.Status.ToString().ToLowerInvariant()">@Describe(r.Status)</span>
@@ -56,6 +96,12 @@ else
                         {
                             @* "It didn't work" with no detail is what generates support messages. *@
                             <div class="muted">@r.FailureReason</div>
+                        }
+                        else if (r.Status == Data.RequestStatus.Searching && r.SearchAttempts > 1)
+                        {
+                            @* Otherwise a row that's been asked for six times looks identical to
+                               one asked for a minute ago, and only one of those is worth waiting on. *@
+                            <div class="muted">asked @r.SearchAttempts times</div>
                         }
                     </td>
                     <td>
@@ -69,18 +115,57 @@ else
                         }
                     </td>
                     <td class="muted">@r.CreatedAt.ToLocalTime().ToString("d MMM HH:mm")</td>
+                    <td class="requests__rowaction">
+                        <button class="linkbutton linkbutton--danger"
+                                title="@(r.IsOpen ? "Cancel this request" : "Remove from the list")"
+                                disabled="@(_removing == r.Id)"
+                                @onclick="() => Remove(r)">
+                            @(r.IsOpen ? "Cancel" : "Remove")
+                        </button>
+                    </td>
                 </tr>
             }
         </tbody>
     </table>
+
+    @if (_page.PageCount > 1)
+    {
+        <nav class="pager" aria-label="Requests pages">
+            <button class="linkbutton" disabled="@(!_page.HasPrevious)" @onclick="() => GoTo(_page.Skip - _page.Take)">
+                &larr; Newer
+            </button>
+            <span class="pager__where">
+                Page @_page.PageNumber of @_page.PageCount
+                <span class="muted">(@_page.Total @(_page.Total == 1 ? "request" : "requests"))</span>
+            </span>
+            <button class="linkbutton" disabled="@(!_page.HasNext)" @onclick="() => GoTo(_page.Skip + _page.Take)">
+                Older &rarr;
+            </button>
+        </nav>
+    }
 }
 
 @code {
-    private List<Data.Request> _requests = [];
+    private static readonly (RequestFilter Filter, string Label)[] Chips =
+    [
+        (RequestFilter.All, "All"),
+        (RequestFilter.Open, "In flight"),
+        (RequestFilter.Ready, "Ready"),
+        (RequestFilter.Problem, "Problems"),
+    ];
+
+    private RequestPage _page = RequestPage.Empty;
+    private RequestFilter _filter = RequestFilter.All;
+    private int _skip;
+
     private bool? _lidarrOk;
     private string? _lidarrVersion;
     private string? _lidarrError;
-    private bool _checking;
+    private bool _checking, _clearing;
+    private Guid? _removing;
+
+    private string? _notice;
+    private bool _noticeIsError;
 
     protected override async Task OnInitializedAsync()
     {
@@ -95,16 +180,103 @@ else
     private async Task LoadAsync()
     {
         var userId = await CurrentUser.GetRequiredIdAsync();
-        _requests = await Requests.GetForUserAsync(userId);
+        _page = await Requests.GetForUserAsync(userId, _filter, _skip);
+
+        // The service clamps a skip that ran off the end of a shrinking list; take its answer
+        // back, or the next page click computes from a position that no longer exists.
+        _skip = _page.Skip;
     }
 
-    /// <summary>Manual poke at the reconciler. It runs on a timer anyway; this is for impatience.</summary>
+    private async Task SetFilter(RequestFilter filter)
+    {
+        _filter = filter;
+        _skip = 0;
+        _notice = null;
+        await LoadAsync();
+    }
+
+    private async Task GoTo(int skip)
+    {
+        _skip = Math.Max(0, skip);
+        await LoadAsync();
+    }
+
+    /// <summary>
+    /// Manual poke at the reconciler. It runs on a timer anyway; this is for impatience — and
+    /// it now says what it did, because a pass that re-searches fifty of a hundred and eighty
+    /// backlogged albums is working correctly and looks like it isn't.
+    /// </summary>
     private async Task Refresh()
     {
         _checking = true;
-        await Reconciler.ReconcileAllAsync();
+        _notice = null;
+        _noticeIsError = false;
+
+        try
+        {
+            var summary = await Reconciler.ReconcileAllAsync();
+            _notice = Summarise(summary);
+        }
+        catch (Exception ex)
+        {
+            _noticeIsError = true;
+            _notice = $"That check didn't finish: {ex.Message}";
+        }
+
         await LoadAsync();
         _checking = false;
+    }
+
+    private static string Summarise(ReconcileSummary s)
+    {
+        if (s.Open == 0) return "Nothing in flight — everything's landed or been given up on.";
+
+        var parts = new List<string>();
+
+        if (s.Downloading > 0) parts.Add($"{s.Downloading} downloading");
+        if (s.Completed > 0) parts.Add($"{s.Completed} just landed");
+        if (s.Searched > 0) parts.Add($"asked Lidarr again for {s.Searched} album{(s.Searched == 1 ? "" : "s")}");
+        if (s.AwaitingSearch > 0) parts.Add($"{s.AwaitingSearch} queued for the next pass");
+        if (s.GaveUp > 0) parts.Add($"{s.GaveUp} gave up");
+
+        var what = parts.Count == 0
+            ? "nothing to do this pass"
+            : string.Join(", ", parts);
+
+        return $"Checked {s.Open} open request{(s.Open == 1 ? "" : "s")} across {s.Albums} album{(s.Albums == 1 ? "" : "s")}: {what}.";
+    }
+
+    private async Task Remove(Data.Request request)
+    {
+        _removing = request.Id;
+        _notice = null;
+
+        var userId = await CurrentUser.GetRequiredIdAsync();
+        var (ok, error) = await Requests.CancelAsync(userId, request.Id);
+
+        _noticeIsError = !ok;
+        _notice = ok ? null : error;
+
+        _removing = null;
+        await LoadAsync();
+    }
+
+    private async Task ClearFinished()
+    {
+        _clearing = true;
+
+        var userId = await CurrentUser.GetRequiredIdAsync();
+        var removed = await Requests.ClearFinishedAsync(userId);
+
+        _noticeIsError = false;
+        _notice = removed == 0 ? null : $"Cleared {removed} finished request{(removed == 1 ? "" : "s")}.";
+
+        // Whatever was being looked at may have just emptied.
+        if (_filter is RequestFilter.Ready or RequestFilter.Problem) _filter = RequestFilter.All;
+        _skip = 0;
+
+        _clearing = false;
+        await LoadAsync();
     }
 
     private static string Describe(Data.RequestStatus status) => status switch

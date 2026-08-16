@@ -65,6 +65,16 @@ public static class ApiAuthEndpoints
 
             throttle.RecordSuccess(body.Username, ip);
 
+            // The password was right, so this isn't a 401 and mustn't be counted as a failure —
+            // but an admin has retired it, and there is nowhere in the app to choose a new one.
+            // Say where to go rather than handing out a token that outlives the reset.
+            if (MootifyAuth.MustChangePassword(result.Principal))
+            {
+                return Results.Json(
+                    new { error = "An admin reset this password. Sign in on the website to choose a new one." },
+                    statusCode: StatusCodes.Status403Forbidden);
+            }
+
             var userId = ApiPrincipal.GetRequiredUserId(result.Principal!);
             var issued = await tokens.IssueAsync(userId, body.DeviceName, ct);
 

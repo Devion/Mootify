@@ -188,12 +188,25 @@ public sealed class AccountService(
             return (false, "That's not your current password.");
         }
 
-        return await SetPasswordCoreAsync(db, user, newPassword, confirmPassword, ct);
+        // The whole point of a one-time password is that it stops working. Typing it back in as
+        // the new one would satisfy the gate and change nothing, so this is refused for every
+        // password change rather than only the forced one — nobody means to do it deliberately.
+        if (_hasher.VerifyHashedPassword(user, user.PasswordHash, newPassword ?? "") != PasswordVerificationResult.Failed)
+        {
+            return (false, "That's the password you already have. Pick a different one.");
+        }
+
+        return await SetPasswordCoreAsync(db, user, newPassword!, confirmPassword, mustChangeNext: false, ct);
     }
 
     /// <summary>
     /// Admin override — no current password required. There's no email here, so somebody has
     /// to be able to rescue a locked-out account.
+    ///
+    /// What the admin types is a <i>one-time</i> password: it's a secret two people now know, so
+    /// the account is flagged and can do nothing but choose a new one at the next sign-in. Any
+    /// device tokens go with it, because a phone holding a live token would otherwise sail past
+    /// the gate on credentials the reset was meant to retire.
     /// </summary>
     public async Task<(bool Ok, string? Error)> AdminSetPasswordAsync(
         Guid actingAdminId, Guid targetUserId, string newPassword, string confirmPassword, CancellationToken ct = default)
@@ -202,20 +215,30 @@ public sealed class AccountService(
 
         if (!await IsAdminAsync(db, actingAdminId, ct)) return (false, "Admins only.");
 
+        // Resetting your own would lock you into the change screen to solve a problem you don't
+        // have — you know the password, you just typed it.
+        if (actingAdminId == targetUserId)
+        {
+            return (false, "Change your own password from your account page.");
+        }
+
         var user = await db.Users.FirstOrDefaultAsync(u => u.Id == targetUserId, ct);
         if (user is null) return (false, "No such account.");
 
-        var result = await SetPasswordCoreAsync(db, user, newPassword, confirmPassword, ct);
+        var result = await SetPasswordCoreAsync(db, user, newPassword, confirmPassword, mustChangeNext: true, ct);
         if (result.Ok)
         {
-            log.LogWarning("Admin {Admin} reset the password for {User}", actingAdminId, user.DisplayName);
+            log.LogWarning(
+                "Admin {Admin} reset the password for {User} — they must change it at next sign-in",
+                actingAdminId, user.DisplayName);
         }
 
         return result;
     }
 
     private async Task<(bool Ok, string? Error)> SetPasswordCoreAsync(
-        MootifyDbContext db, AppUser user, string newPassword, string confirmPassword, CancellationToken ct)
+        MootifyDbContext db, AppUser user, string newPassword, string confirmPassword, bool mustChangeNext,
+        CancellationToken ct)
     {
         if (newPassword != confirmPassword) return (false, "Those passwords don't match.");
 
@@ -226,7 +249,17 @@ public sealed class AccountService(
         }
 
         user.PasswordHash = _hasher.HashPassword(user, newPassword!);
+        user.MustChangePassword = mustChangeNext;
         await db.SaveChangesAsync(ct);
+
+        if (mustChangeNext)
+        {
+            var userId = user.Id;
+            await db.ApiTokens
+                .Where(t => t.UserId == userId && t.RevokedAt == null)
+                .ExecuteUpdateAsync(s => s.SetProperty(t => t.RevokedAt, DateTimeOffset.UtcNow), ct);
+        }
+
         return (true, null);
     }
 
@@ -246,6 +279,14 @@ public sealed class AccountService(
         if (user.IsAdmin)
         {
             claims.Add(new Claim(ClaimTypes.Role, MootifyAuth.AdminRole));
+        }
+
+        // Carried in the cookie so the gate costs nothing per request, and reconciled by
+        // OnValidatePrincipal — which is what lifts it, since the page that clears the flag
+        // runs in a circuit and can't rewrite a cookie.
+        if (user.MustChangePassword)
+        {
+            claims.Add(new Claim(MootifyAuth.MustChangePasswordClaim, "true"));
         }
 
         return new ClaimsPrincipal(new ClaimsIdentity(claims, MootifyAuth.Scheme));
@@ -286,6 +327,18 @@ public static class MootifyAuth
 
     /// <summary>Which device token a request arrived on, so it can list and revoke itself.</summary>
     public const string TokenIdClaim = "mootify:token";
+
+    /// <summary>
+    /// An admin reset this account to a one-time password. Only ever on a cookie principal:
+    /// the reset revokes every device token and the API refuses to issue a new one while the
+    /// flag is set, so a token holder can't be in this state.
+    /// </summary>
+    public const string MustChangePasswordClaim = "mootify:mustchangepw";
+
+    public const string ChangePasswordPath = "/password";
+
+    public static bool MustChangePassword(ClaimsPrincipal? principal) =>
+        principal?.HasClaim(MustChangePasswordClaim, "true") == true;
 
     /// <summary>
     /// Same claim shape the cookie path builds, so <see cref="Playlists.PlaylistService"/> and

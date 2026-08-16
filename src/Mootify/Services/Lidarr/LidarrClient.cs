@@ -75,6 +75,9 @@ public sealed class LidarrClient(
 {
     public bool IsConfigured => options.CurrentValue.IsConfigured;
 
+    /// <summary>Whether <see cref="AddAlbumAsync"/> kicks off a search of its own.</summary>
+    public bool SearchesOnAdd => options.CurrentValue.SearchOnAdd;
+
     /// <summary>
     /// The key is read per call rather than captured at construction, so editing
     /// mootify.json actually takes effect without a restart.
@@ -170,17 +173,79 @@ public sealed class LidarrClient(
     public async Task<LidarrAlbum?> GetAlbumAsync(int albumId, CancellationToken ct = default) =>
         await SendAsync<LidarrAlbum>(Request(HttpMethod.Get, $"api/v1/album/{albumId}"), ct);
 
+    /// <summary>
+    /// The whole queue, not the first page of it. An import can put several hundred albums in
+    /// flight at once, and a request whose queue record fell off page one looks to the reconciler
+    /// exactly like a request Lidarr never grabbed — which is how it ends up being re-searched
+    /// while it is already downloading.
+    /// </summary>
     public async Task<List<LidarrQueueItem>> GetQueueAsync(CancellationToken ct = default)
     {
-        var page = await SendAsync<JsonElement>(
-            Request(HttpMethod.Get, "api/v1/queue?pageSize=200&includeAlbum=true"), ct);
+        const int PageSize = 200;
+        // A stop so a Lidarr that ignores paging can't spin this forever.
+        const int MaxPages = 25;
 
-        if (page.ValueKind != JsonValueKind.Object || !page.TryGetProperty("records", out var records))
+        var all = new List<LidarrQueueItem>();
+
+        for (var pageNumber = 1; pageNumber <= MaxPages; pageNumber++)
         {
-            return [];
+            var page = await SendAsync<JsonElement>(
+                Request(HttpMethod.Get, $"api/v1/queue?page={pageNumber}&pageSize={PageSize}&includeAlbum=true"), ct);
+
+            if (page.ValueKind != JsonValueKind.Object || !page.TryGetProperty("records", out var records))
+            {
+                break;
+            }
+
+            var batch = records.Deserialize<List<LidarrQueueItem>>() ?? [];
+            all.AddRange(batch);
+
+            if (batch.Count < PageSize) break;
+
+            var total = page.TryGetProperty("totalRecords", out var t) && t.TryGetInt32(out var n) ? n : 0;
+            if (total > 0 && all.Count >= total) break;
         }
 
-        return records.Deserialize<List<LidarrQueueItem>>() ?? [];
+        return all;
+    }
+
+    /// <summary>
+    /// Asks Lidarr to go looking for an album it already has monitored. This is the call that
+    /// "Check now" is really about: <c>AddAlbumAsync</c> searches once at request time, and a
+    /// search that came back empty leaves nothing behind to retry it.
+    /// </summary>
+    public async Task<bool> SearchAlbumAsync(int albumId, CancellationToken ct = default) =>
+        await SearchAlbumsAsync([albumId], ct);
+
+    /// <summary>
+    /// One command for many albums. Lidarr runs commands one at a time, so 200 separate
+    /// AlbumSearch commands is 200 queue entries it works through in series; batched, it is one.
+    /// </summary>
+    public async Task<bool> SearchAlbumsAsync(IReadOnlyCollection<int> albumIds, CancellationToken ct = default)
+    {
+        if (!IsConfigured || albumIds.Count == 0) return false;
+
+        var command = Request(HttpMethod.Post, "api/v1/command");
+        command.Content = JsonContent.Create(new { name = "AlbumSearch", albumIds });
+
+        var result = await SendAsync<JsonElement>(command, ct);
+        return result.ValueKind == JsonValueKind.Object;
+    }
+
+    /// <summary>
+    /// Monitor state for albums. Cancelling a request unmonitors, so Lidarr stops chasing
+    /// something nobody is waiting for any more.
+    /// </summary>
+    public async Task<bool> SetAlbumsMonitoredAsync(
+        IReadOnlyCollection<int> albumIds, bool monitored, CancellationToken ct = default)
+    {
+        if (!IsConfigured || albumIds.Count == 0) return false;
+
+        var monitor = Request(HttpMethod.Put, "api/v1/album/monitor");
+        monitor.Content = JsonContent.Create(new { albumIds, monitored });
+
+        var result = await SendAsync<JsonElement>(monitor, ct);
+        return result.ValueKind is JsonValueKind.Object or JsonValueKind.Array;
     }
 
     public async Task<List<LidarrTrackFile>> GetTrackFilesAsync(int albumId, CancellationToken ct = default)
@@ -250,15 +315,11 @@ public sealed class LidarrClient(
             return (artist.Id, null, "Lidarr added the artist but doesn't list that album yet. Try again shortly.");
         }
 
-        var monitor = Request(HttpMethod.Put, "api/v1/album/monitor");
-        monitor.Content = JsonContent.Create(new { albumIds = new[] { target.Id }, monitored = true });
-        await SendAsync<JsonElement>(monitor, ct);
+        await SetAlbumsMonitoredAsync([target.Id], true, ct);
 
         if (opts.SearchOnAdd)
         {
-            var command = Request(HttpMethod.Post, "api/v1/command");
-            command.Content = JsonContent.Create(new { name = "AlbumSearch", albumIds = new[] { target.Id } });
-            await SendAsync<JsonElement>(command, ct);
+            await SearchAlbumAsync(target.Id, ct);
         }
 
         return (artist.Id, target.Id, null);

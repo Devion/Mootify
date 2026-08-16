@@ -12,10 +12,11 @@ namespace Mootify.Data;
 /// being one the moment there were accounts, playlists and a merged 600-row import in there, and
 /// adding the Android app's token table shouldn't cost anybody their library.
 ///
-/// So: additive, idempotent DDL for tables added after the fact, run at boot. It is deliberately
-/// not a migration system — there is no version table, no down path, and no support for changing
-/// an existing column. <b>The next schema change that isn't a brand-new table needs real EF
-/// migrations, and this file should go away when they arrive.</b>
+/// So: additive, idempotent DDL for tables and columns added after the fact, run at boot. It is
+/// deliberately not a migration system — there is no version table, no down path, and no support
+/// for <i>changing</i> an existing column, only for appending a new nullable-or-defaulted one.
+/// <b>Anything beyond that needs real EF migrations, and this file should go away when they
+/// arrive.</b>
 /// </summary>
 public static class SchemaPatch
 {
@@ -48,11 +49,30 @@ public static class SchemaPatch
         ]),
     ];
 
+    /// <summary>
+    /// Columns appended to a table that already exists. SQLite's <c>ADD COLUMN</c> only rewrites
+    /// the header, so this stays cheap on a big table — but it also means the DDL has to carry a
+    /// default for every existing row, which is why every entry here is NOT NULL DEFAULT or
+    /// nullable. There is no <c>IF NOT EXISTS</c> for columns, hence the pragma check.
+    /// </summary>
+    private static readonly (string Table, string Column, string Ddl)[] AddedColumns =
+    [
+        ("Users", "MustChangePassword",
+            """ALTER TABLE "Users" ADD COLUMN "MustChangePassword" INTEGER NOT NULL DEFAULT 0"""),
+
+        // Null on every existing row means "never re-searched", which is exactly what the
+        // reconciler should assume about requests made before it could re-search at all.
+        ("Requests", "LastSearchAt",
+            """ALTER TABLE "Requests" ADD COLUMN "LastSearchAt" INTEGER NULL"""),
+        ("Requests", "SearchAttempts",
+            """ALTER TABLE "Requests" ADD COLUMN "SearchAttempts" INTEGER NOT NULL DEFAULT 0"""),
+    ];
+
     public static async Task ApplyAsync(MootifyDbContext db, ILogger log, CancellationToken ct = default)
     {
         foreach (var (table, statements) in AddedTables)
         {
-            if (await ExistsAsync(db, table, ct)) continue;
+            if (await TableExistsAsync(db, table, ct)) continue;
 
             foreach (var statement in statements)
             {
@@ -63,14 +83,39 @@ public static class SchemaPatch
                 "Added the {Table} table to an existing database. This is the no-migrations " +
                 "stopgap in SchemaPatch, not a migration — see the comment there.", table);
         }
+
+        foreach (var (table, column, ddl) in AddedColumns)
+        {
+            // A table this patch just created already has its columns; one that doesn't exist at
+            // all would make ALTER TABLE throw rather than no-op.
+            if (!await TableExistsAsync(db, table, ct)) continue;
+            if (await ColumnExistsAsync(db, table, column, ct)) continue;
+
+            await db.Database.ExecuteSqlRawAsync(ddl, ct);
+
+            log.LogWarning(
+                "Added the {Table}.{Column} column to an existing database. This is the " +
+                "no-migrations stopgap in SchemaPatch, not a migration — see the comment there.",
+                table, column);
+        }
     }
 
-    private static async Task<bool> ExistsAsync(MootifyDbContext db, string table, CancellationToken ct)
+    private static async Task<bool> TableExistsAsync(MootifyDbContext db, string table, CancellationToken ct)
     {
         // sqlite_master rather than a probe query: a failed SELECT would already have logged an
         // error by the time we caught it.
         var found = await db.Database
             .SqlQuery<string>($"SELECT name AS Value FROM sqlite_master WHERE type = 'table' AND name = {table}")
+            .ToListAsync(ct);
+
+        return found.Count > 0;
+    }
+
+    private static async Task<bool> ColumnExistsAsync(
+        MootifyDbContext db, string table, string column, CancellationToken ct)
+    {
+        var found = await db.Database
+            .SqlQuery<string>($"SELECT name AS Value FROM pragma_table_info({table}) WHERE name = {column}")
             .ToListAsync(ct);
 
         return found.Count > 0;

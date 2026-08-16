@@ -1,3 +1,4 @@
+using System.Security.Claims;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Mvc;
@@ -57,8 +58,47 @@ public static class AuthEndpoints
 
             throttle.RecordSuccess(username, ip);
             await SignInAsync(http, result);
+
+            // Straight to the change screen rather than wherever they were headed. The
+            // middleware would send them there anyway; doing it here is what makes the reason
+            // obvious instead of looking like a bounced navigation.
+            if (MootifyAuth.MustChangePassword(result.Principal))
+            {
+                return Results.Redirect(MootifyAuth.ChangePasswordPath);
+            }
+
             return Results.Redirect(SafeReturnUrl(returnUrl));
         }).RequireRateLimiting("login");
+
+        // The forced change, and only that: it needs the current password like any other change,
+        // which the user has — they just signed in with it. A static SSR post rather than the
+        // interactive /account page because the whole app is gated while the flag is set.
+        app.MapPost("/auth/password", async (
+            HttpContext http,
+            [FromForm] string currentPassword,
+            [FromForm] string newPassword,
+            [FromForm] string confirmPassword,
+            AccountService accounts,
+            CancellationToken ct) =>
+        {
+            var raw = http.User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            if (!Guid.TryParse(raw, out var userId))
+            {
+                return Results.Redirect(MootifyAuth.LoginPath);
+            }
+
+            var (ok, error) = await accounts.ChangePasswordAsync(
+                userId, currentPassword, newPassword, confirmPassword, ct);
+
+            if (!ok)
+            {
+                return Redirect(MootifyAuth.ChangePasswordPath, error!, null);
+            }
+
+            // The cookie still carries the claim. OnValidatePrincipal drops it on the next
+            // request — which this redirect is — so there's nothing to re-issue here.
+            return Results.Redirect("/");
+        }).RequireAuthorization().RequireRateLimiting("login");
 
         app.MapPost("/auth/register", async (
             HttpContext http,

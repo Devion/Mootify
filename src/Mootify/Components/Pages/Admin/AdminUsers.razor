@@ -27,6 +27,7 @@
                     <strong>@u.DisplayName</strong>
                     @if (u.IsAdmin) { <span class="badge">admin</span> }
                     @if (u.Id == _userId) { <span class="badge badge--quiet">you</span> }
+                    @if (u.MustChangePassword) { <span class="badge badge--quiet">one-time password</span> }
                     @if (u.IsBanned)
                     {
                         <span class="badge badge--danger">banned</span>
@@ -57,12 +58,11 @@
                         <button class="linkbutton" @onclick="() => SetAdmin(u, !u.IsAdmin)">
                             @(u.IsAdmin ? "Remove admin" : "Make admin")
                         </button>
-                    }
 
-                    <button class="linkbutton" @onclick="() => StartReset(u)">Reset password</button>
+                        @* Not for yourself: you know your password, and being handed a one-time
+                           one would only lock you into the change screen. /account is the door. *@
+                        <button class="linkbutton" @onclick="() => StartReset(u)">Reset password</button>
 
-                    @if (u.Id != _userId)
-                    {
                         <button class="linkbutton linkbutton--danger" @onclick="() => StartDelete(u)">Delete</button>
                     }
                 </td>
@@ -86,11 +86,16 @@
                 <tr class="admintable__inline">
                     <td colspan="6">
                         <div class="inviterow">
-                            <input type="password" placeholder="New password" @bind="_newPassword" autocomplete="new-password" />
+                            <input type="password" placeholder="One-time password" @bind="_newPassword" autocomplete="new-password" />
                             <input type="password" placeholder="Again" @bind="_confirmPassword" autocomplete="new-password" />
-                            <button class="button" @onclick="() => ResetPassword(u)">Set password</button>
+                            <button class="button" @onclick="() => ResetPassword(u)">Set one-time password</button>
                             <button class="linkbutton" @onclick="() => _resetTarget = null">Cancel</button>
                         </div>
+                        <p class="muted">
+                            Tell @u.DisplayName this password. Signing in with it lands them on a page
+                            that asks for a new one, and nothing else works until they pick it. Their
+                            phones and other devices are signed out.
+                        </p>
                     </td>
                 </tr>
             }
@@ -173,10 +178,13 @@
     {
         var (ok, error) = await Accounts.AdminSetPasswordAsync(_userId, u.Id, _newPassword, _confirmPassword);
         _error = error;
-        _status = ok ? $"Set a new password for {u.DisplayName}." : null;
+        _status = ok
+            ? $"Set a one-time password for {u.DisplayName}. They have to change it when they sign in."
+            : null;
 
         if (ok) _resetTarget = null;
         _newPassword = _confirmPassword = "";
+        await LoadAsync();
     }
 
     private async Task Delete(AdminUserRow u)

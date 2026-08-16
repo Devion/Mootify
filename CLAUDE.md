@@ -20,7 +20,7 @@ below — read it before changing anything architectural.
 ```bash
 dotnet run --project src/Mootify        # http://localhost:5199 (or the launchSettings port)
 dotnet build                            # whole solution
-dotnet test                             # 274 tests, ~3s
+dotnet test                             # 343 tests, ~3s
 dotnet test --filter "FullyQualifiedName~PlaylistServiceTests"     # one class
 dotnet test --filter "DisplayName~Adding_the_same_request_twice"   # one test
 
@@ -52,12 +52,19 @@ to know nothing about it. It reconnects before each scan, so a NAS reboot heals 
 connector says so rather than failing silently.
 
 There are no EF migrations yet: startup calls `EnsureCreated()`, which only ever builds an empty
-file. A **brand-new table** added to `Data/Entities.cs` can be created at boot by adding its DDL to
-`Data/SchemaPatch.cs` — that's how `ApiTokens` reached installs that already had accounts and
-playlists in them, without anybody losing a library. It is a stopgap, not a migration system: no
-version table, no down path, and no support for changing an existing column. **Any other change to
-`Data/Entities.cs` still means deleting `src/Mootify/data/mootify.db`.** Add real migrations before
-the next one.
+file. Two kinds of addition to `Data/Entities.cs` can reach an existing install at boot by being
+listed in `Data/SchemaPatch.cs`: a **brand-new table** (`AddedTables` — that's how `ApiTokens`
+arrived) and a **new column appended to an existing one** (`AddedColumns` — that's how
+`Users.MustChangePassword` and `Requests.LastSearchAt` did — note the latter's DDL says `INTEGER`,
+because the `DateTimeOffset` convention below stores a converted long, not text). Both are guarded
+by a `sqlite_master` / `pragma_table_info` check,
+so they're idempotent and cost nothing on a current database. `SchemaPatchTests` is the only test
+that runs against the *old* shape, because every other fixture starts from a schema that already
+has everything.
+
+It is still a stopgap, not a migration system: no version table, no down path, and nothing that
+can **change** a column that already exists. **Any other change to `Data/Entities.cs` still means
+deleting `src/Mootify/data/mootify.db`.** Add real migrations before the next one.
 
 ## Architecture
 
@@ -93,6 +100,44 @@ rescan finds nothing, intermittently, and only on a fast disk.
 Polling is the source of truth; a webhook (not yet built) would only be the fast path. The
 reconciler is idempotent — `PlaylistItem.RequestId` makes the append safe to run twice, which
 it will be.
+
+**A pass works albums, not requests, and re-searching is part of it.** Both halves of that came
+from the same 504-request import:
+
+- **Grouping.** 504 rows point at maybe 180 releases, and Lidarr fetches releases. One
+  `GetAlbumAsync`, one track-file listing, one transcode and one rescan per release; only the
+  track match, the playlist append and the cowbell are per request. Ungrouped it was 504 HTTP
+  calls to learn 180 facts, and a pass took longer than the interval between passes.
+- **Re-searching.** `AddAlbumAsync` searches once, when the request is made. A search that comes
+  back empty — which is most of them when several hundred land on somebody's indexers at once —
+  **leaves no trace anywhere in Lidarr**. The grabs that worked appear in the queue; the rest sat
+  at "Searching" with nothing in the system that would ever ask again. `Request.LastSearchAt` and
+  `SearchAttempts` are what make "never asked" distinguishable from "asked an hour ago", and
+  `RequestReconciler.DueForSearch` backs off (0, 30m, 2h, 6h, then daily) to eight attempts before
+  the seven-day timeout calls it. Searches are batched into one `AlbumSearch` command — Lidarr
+  runs commands in series — and capped at `Lidarr:MaxSearchesPerPass`, oldest-asked first, so a
+  low cap is slower rather than incomplete.
+
+`GetQueueAsync` pages through the whole queue. It used to read page one of 200, and a request
+whose queue record fell off that page is indistinguishable from one Lidarr never grabbed — which
+would now get it re-searched while it is already downloading.
+
+**Creating a request reuses the Lidarr ids of one already made for the same release.** Five songs
+off one album are five `Request` rows but one album Lidarr needs to hear about; re-adding cost a
+full artist list and another `AlbumSearch` each time. Rows that ride in on somebody else's add get
+`LastSearchAt = null`, which is exactly what tells the reconciler to search them on its next pass.
+
+**What counts as a duplicate lives in one function**, `RequestService.DuplicateKey`: recording MBID
+where MusicBrainz gave us one and normalised title otherwise, scoped to the target playlist — or
+to the requester when there is no playlist, since without a shared destination there is nothing to
+collide with. `SearchPage` greys out what's already spoken for using the same function, because a
+UI and a service that disagree about duplicates is worse than no check at all.
+
+The list is paged with the counts for the whole thing (`RequestPage`, `RequestCounts`), not capped
+at 50 — after an import the 450 rows a cap hides are the ones worth seeing. Rows can be cancelled
+(`CancelAsync`, `DELETE /api/v1/requests/{id}`), which deletes rather than marking: nothing holds a
+foreign key to a `Request`, so music that already landed keeps its playlist entry and its cowbell.
+Cancelling unmonitors the album in Lidarr only once the last request for that release is gone.
 
 Lidarr cannot fetch a single track, and has no song index at all: `album/lookup` returns a
 track *count* with no titles, `/track` only answers for albums already in the library, and the
@@ -236,7 +281,9 @@ Three things on the app side worth knowing before changing the server:
   and has no song index, so `/requests/search` is a Lidarr album lookup and `/requests/albums/{mbid}/tracks`
   is MusicBrainz. Lidarr can't hand back an album it hasn't adopted, so the search result is cached
   for 30 minutes and the create call falls back to re-running the client's search term and matching
-  on MBID.
+  on MBID. `GET /requests` is an `ApiPage` like every other list — it was a bare array until an
+  import made that several hundred rows — and `DELETE /requests/{id}` cancels one, answering 404
+  for both a missing row and somebody else's so the API doesn't leak whose requests exist.
 
 ### Persistence gotchas (SQLite)
 
@@ -261,15 +308,50 @@ creates the one account named by `Auth:AdminUsername` (`mooadmin`) and makes it 
 `CompleteSetupAsync` refuses once anybody exists, so it can't be used later to mint a second
 admin. After that, self-registration is on unless an admin closes it from `/admin`.
 
-`OnValidatePrincipal` re-checks the account on every request. That covers three things a
+**Two settings are the admin's rather than the file's**, and both work the same way:
+`SettingsService` reads a row out of `AppSetting` and falls back to `mootify.json` when there
+isn't one. Registration is one; the request quota (`Requests:MaxOpenPerUser`) is the other, so
+whoever is watching the disk fill can change the number without a redeploy. **The fallback is the
+point** — a missing row means the file is still in charge, which is why the quota is cleared by
+*deleting* the row rather than by writing the configured number into it: writing it would freeze
+today's file value into the database and silently ignore the file from then on. `RequestService`
+therefore asks `SettingsService`, never `IOptionsMonitor<RequestOptions>`, and imports still skip
+the check entirely (`enforceQuota: false`).
+
+`OnValidatePrincipal` re-checks the account on every request. That covers four things a
 cookie can't know: the row is gone (wiped database), the account was **banned** since sign-in,
-or admin rights changed — the last one patches the claim in place rather than forcing a
-re-login. A ban has to bite immediately, not whenever the cookie expires.
+admin rights changed, or an admin **reset the password** — the last two patch the claim in place
+rather than forcing a re-login. A ban has to bite immediately, not whenever the cookie expires.
+
+**An admin reset is a one-time password.** `AccountService.AdminSetPasswordAsync` sets
+`AppUser.MustChangePassword` and revokes the user's device tokens, because the secret is now
+known to two people and a phone holding a live token would sail past everything below. The flag
+rides in the cookie as a claim, so the gate costs no database round trip:
+`PasswordChangeMiddleware` sends every request to `/password` until it clears, and `/auth/login`
+redirects there directly so the reason is obvious rather than looking like a bounced navigation.
+`ChangePasswordAsync` refuses a new password equal to the current one — otherwise the forced
+change is a form to click through and the password the admin knows stays live.
+
+Three consequences of the flag living in a claim. **`/password` is static SSR** (`[ExcludeFrom
+InteractiveRouting]`, a form post to `/auth/password`) because the interactive app is exactly
+what's gated. **Nothing re-issues the cookie after the change** — `OnValidatePrincipal` drops the
+claim on the next request, which is the redirect, and that's also what makes the interactive
+`/account` page work: a circuit can't write a cookie. And **the API refuses to issue a token to a
+flagged account** with a 403 and a sentence, since a phone has nowhere to choose a new password;
+`MootifyAuth.BuildApiPrincipal` therefore never carries the claim.
+
+**`UseAntiforgery()` goes after `UseAuthentication()`/`UseAuthorization()`**, and that ordering is
+load-bearing rather than stylistic: antiforgery tokens are identity-bound, so a middleware that
+can't see who is asking validates every authenticated form post against an anonymous user and
+answers a raw 400. It was in the wrong place until `/auth/password` became the first
+antiforgery-protected form an authenticated user posts.
 
 **Admin operations all re-check `IsAdmin` against the database.** `[Authorize(Policy = ...)]`
 on the page is for the UI; `AdminService` is the boundary. Three guards exist because each one
 would otherwise create an unrecoverable state: you can't ban/delete yourself, you can't remove
-the last active admin, and you can't delete a user who solely owns a team.
+the last active admin, and you can't delete a user who solely owns a team. Resetting your own
+password is refused for a softer reason — it would lock you into the change screen to solve a
+problem you don't have; `/account` is the door.
 
 **Login and register pages redirect away if you're already signed in.** Antiforgery tokens are
 bound to the requesting identity, so a form rendered for one user and posted as another fails

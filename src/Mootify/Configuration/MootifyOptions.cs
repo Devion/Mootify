@@ -105,6 +105,16 @@ public sealed class LidarrOptions
     /// <summary>Reconciliation interval. Webhooks are the fast path; this poll is the source of truth.</summary>
     public TimeSpan PollInterval { get; set; } = TimeSpan.FromMinutes(10);
 
+    /// <summary>
+    /// How many albums one reconciliation pass may re-ask Lidarr to search for.
+    ///
+    /// The brake is not Lidarr, it's the indexers behind it: a 500-song import is a couple of
+    /// hundred albums, and asking for all of them at once earns a rate limit and a run of empty
+    /// searches. Passes work through the backlog oldest-first, so a low number is slower rather
+    /// than incomplete.
+    /// </summary>
+    public int MaxSearchesPerPass { get; set; } = 50;
+
     public bool IsConfigured =>
         !string.IsNullOrWhiteSpace(BaseUrl) && !string.IsNullOrWhiteSpace(ApiKey);
 }

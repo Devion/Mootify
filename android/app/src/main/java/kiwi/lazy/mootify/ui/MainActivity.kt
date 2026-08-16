@@ -261,6 +261,7 @@ private fun MootifyRoot(player: PlayerController) {
                         onTargetPlaylist = viewModel::onTargetPlaylistChanged,
                         onRequestAlbum = viewModel::requestAlbum,
                         onRequestTrack = viewModel::requestTrack,
+                        onCancelRequest = viewModel::cancelRequest,
                     )
                 }
 
