@@ -43,7 +43,12 @@
     "FullScanInterval": "06:00:00",
     "WatchFileSystem": true,
     "WatchDebounce": "00:00:10",
-    "ScanOnStartup": true
+    "ScanOnStartup": true,
+    "//ImportFolder": "A drop folder inside MusicRoot. Everything left in it is filed under Artist/Album before each scan, and it is never itself indexed. Blank turns it off.",
+    "ImportFolder": "import",
+    "//UnsortedFolder": "Where a file whose artist can't be worked out lands. It stays in the library so somebody can find it and tag it.",
+    "UnsortedFolder": "generic",
+    "FileImportsOnScan": true
   },
 
   "Requests": {

@@ -25,6 +25,13 @@ public sealed record TrackInfo(
 }
 
 /// <summary>
+/// One row of the queue drawer. <paramref name="OrderIndex"/> is a position in the *play
+/// order*, not in the queue: with shuffle on those are different numbers, and the play order
+/// is the one a jump has to be expressed in.
+/// </summary>
+public sealed record QueueEntry(int OrderIndex, TrackInfo Track);
+
+/// <summary>
 /// Owns playback state for one circuit. The play bar and every in-list play button render
 /// from this — two components each holding their own "is playing" flag is how you get a
 /// pause button that lies.
@@ -331,9 +338,68 @@ public sealed class PlayerService(
         await NotifyAsync();
     }
 
+    // ---- queue preview ---------------------------------------------------
+    //
+    // The drawer walks _order, never _queue. Shuffle is a seeded permutation generated once
+    // and then walked, so the next N positions in _order *are* the next N tracks — a preview
+    // that listed the queue array instead would be confidently wrong the moment shuffle is on,
+    // which is exactly when somebody wants to look at it.
+
+    /// <summary>How many tracks are still to come, so the drawer can own up to what it cut off.</summary>
+    public int UpNextTotal() => UpNextTotal(_order.Count, _cursor, Repeat);
+
     /// <summary>Up next, in play order, for the queue drawer.</summary>
-    public IEnumerable<TrackInfo> UpNext(int take = 50) =>
-        _order.Skip(_cursor + 1).Take(take).Select(i => _queue[i]);
+    public IReadOnlyList<QueueEntry> UpNext(int take = 50) =>
+    [
+        .. UpNextPositions(_order.Count, _cursor, Repeat, take)
+            .Select(pos => new QueueEntry(pos, _queue[_order[pos]]))
+    ];
+
+    /// <summary>
+    /// Pure, so the awkward cases have tests rather than a drawer somebody eyeballs once.
+    ///
+    /// <see cref="RepeatMode.All"/> wraps back to the top and stops one short of the current
+    /// track: the queue really does continue there, and listing the song you're on as "up
+    /// next" would make the preview a liar in the other direction. <see cref="RepeatMode.One"/>
+    /// changes what the `ended` event does, not what is queued — pressing next still walks on
+    /// — so the list is unchanged and the drawer says "repeating this track" in words.
+    /// </summary>
+    public static int UpNextTotal(int orderCount, int cursor, RepeatMode repeat)
+    {
+        if (orderCount <= 0 || cursor < 0) return 0;
+
+        return Math.Max(0, repeat == RepeatMode.All ? orderCount - 1 : orderCount - 1 - cursor);
+    }
+
+    /// <summary>Positions in the play order that come after the cursor. See <see cref="UpNextTotal"/>.</summary>
+    public static IReadOnlyList<int> UpNextPositions(int orderCount, int cursor, RepeatMode repeat, int take)
+    {
+        if (take <= 0) return [];
+
+        var count = Math.Min(take, UpNextTotal(orderCount, cursor, repeat));
+        if (count <= 0) return [];
+
+        var positions = new List<int>(count);
+        for (var i = 1; i <= count; i++)
+        {
+            positions.Add((cursor + i) % orderCount);
+        }
+
+        return positions;
+    }
+
+    /// <summary>
+    /// Play a position in the play order — a row click in the queue drawer. It moves the
+    /// cursor rather than re-queueing, so everything behind and ahead of it survives, and
+    /// with shuffle on the rest of the permutation is still the one being previewed.
+    /// </summary>
+    public async Task JumpToAsync(int orderIndex)
+    {
+        if (orderIndex < 0 || orderIndex >= _order.Count) return;
+
+        _cursor = orderIndex;
+        await PlayAtCursorAsync();
+    }
 
     // ---- callbacks from player.js ---------------------------------------
 

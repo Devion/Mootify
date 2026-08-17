@@ -20,7 +20,7 @@ below — read it before changing anything architectural.
 ```bash
 dotnet run --project src/Mootify        # http://localhost:5199 (or the launchSettings port)
 dotnet build                            # whole solution
-dotnet test                             # 343 tests, ~3s
+dotnet test                             # 403 tests, ~3s
 dotnet test --filter "FullyQualifiedName~PlaylistServiceTests"     # one class
 dotnet test --filter "DisplayName~Adding_the_same_request_twice"   # one test
 
@@ -86,20 +86,38 @@ the music down and back rather than pausing it.
 `PlayerService` is the single owner of playback state; the play bar and every in-list play
 button render from it. Do not let a component keep its own `isPlaying` flag.
 
+**Shuffle is a permutation, not a coin toss.** `_order` is a seeded Fisher-Yates shuffle of
+indices into `_queue`, generated once and then walked — which is what gives no repeats until
+the queue is exhausted, and what makes the queue drawer (`Components/Layout/QueuePanel.razor`)
+able to show a truthful "up next" while shuffle is on. Everything that reads ahead must walk `_order`,
+never `_queue`; the two are different lists exactly when somebody wants to look. The slice is
+`PlayerService.UpNextPositions`, kept pure so `RepeatMode.All` wrapping back to the top and
+stopping one short of the current track has tests rather than a drawer somebody eyeballs once.
+
 ### The request pipeline is ordered, and the order is the design
 
 ```
 Lidarr import → transcode non-MP3 → targeted rescan → match tracks → append to playlist → notify
 ```
 
-`Services/Requests/RequestReconciler.cs`. Transcoding happens *before* the rescan, so a FLAC
-never becomes a `Track` row and therefore can never reach a playlist or the player — the
-MP3-only invariant is enforced by sequencing, not by checks in the UI. Appending before the
-rescan finds nothing, intermittently, and only on a fast disk.
+`Services/Requests/RequestReconciler.cs`. Transcoding happens *before* the rescan, so a file
+in a format the library can't index never becomes a `Track` row and therefore can never reach
+a playlist or the player — the invariant is enforced by sequencing, not by checks in the UI.
+That set is `Transcoder.ConvertibleExtensions`, and **FLAC is deliberately not in it**: the
+scanner indexes FLAC natively (`LibraryScanner.IndexedExtensions`) and a browser that can't
+decode one is served a cached MP3 from `/media/{id}/mp3`, rather than the library losing the
+original. Appending before the rescan finds nothing, intermittently, and only on a fast disk.
 
 Polling is the source of truth; a webhook (not yet built) would only be the fast path. The
 reconciler is idempotent — `PlaylistItem.RequestId` makes the append safe to run twice, which
 it will be.
+
+**Completing a request lives in `RequestFulfiller`, not in the reconciler**, because Lidarr is
+no longer the only way music arrives — a file dropped into the import folder satisfies a
+request just as completely (see **The import drop folder** below). Appending to the target
+playlist, flipping the row to `Available` and notifying the requester and their team are one
+operation, and two code paths that each decide separately what "done" means is how one of them
+ends up not notifying anybody.
 
 **A pass works albums, not requests, and re-searching is part of it.** Both halves of that came
 from the same 504-request import:
@@ -171,6 +189,62 @@ same-title-different-artist covers, correctly rejected.
 Requesting the missing ones is capped per import (`MaxRequests`) and deliberately a second,
 explicit click — every missing song means fetching a whole album, and 600 of them would fill
 a disk.
+
+### The import drop folder
+
+`<MusicRoot>/import` (`Library:ImportFolder`) is a mailbox: drop anything in it and
+`LibraryFiler` files it under `Artist/Album`, `Artist/` when only the artist is known, and
+`Library:UnsortedFolder` (`generic/`) when neither is. It runs at the start of every
+`ScanAllAsync`, which is every scan trigger there is — startup, the six-hourly timer, the
+watcher debounce and the admin's "Rescan library".
+
+**The order is load-bearing, twice over.**
+
+- **File, then index.** Indexing first means the file is indexed where it landed *and* again
+  where it went, and the first row goes absent on the following pass, taking any playlist entry
+  made in between with it. The drop folder is therefore excluded from indexing outright
+  (`EnumerateAudioFiles(root, exclude:)`) — what's left in it after a pass is a file still being
+  copied, and a half-written MP3 has a plausible size and unreadable tags, which is exactly the
+  shape of a `Track` row nobody wants. "Still being copied" is decided by opening it with
+  `FileShare.None`, not by a timer.
+- **Follow what was already indexed.** A drop folder that predates the filer has been indexed
+  like anywhere else, so its tracks are in playlists. `RepointMovedTracksAsync` rewrites
+  `Track.Path` for rows the filer moved instead of letting the scan mark the old path absent
+  and add the new one as a stranger — same row, same id, so every playlist entry, play count
+  and playback position on it survives. `Track.Path` is unique, so a destination that somehow
+  already has a row is left for the scan to sort out the ordinary way.
+- **Index, then match requests.** `ImportRequestMatcher` completes any open request the new
+  files satisfy, and it can only do that after the `Track` rows exist. It runs through
+  `RequestFulfiller`, so a hand-fetched file appends to the same playlist and fires the same
+  cowbell as one Lidarr found — `NotFound` and `Failed` rows are matched too, since those are
+  precisely the ones somebody gives up on Lidarr for and fetches themselves.
+
+**A match must be seeded by a file that just arrived.** The candidate query is by destination
+folder (`StartsWith`, which SQLite matches case-insensitively — the exact-path filter then
+happens in memory, where the comparison is ours), so dropping one file into an existing artist
+folder pulls that artist's whole catalogue back. Without that rule an album that has been
+sitting there for a year would close a request made yesterday. Matching itself reuses
+`PlaylistImportService.Normalize` — same problem, same normaliser, because two opinions about
+what counts as the same song is worse than one imperfect one — and requires the **artist** to
+agree, since a title alone matches covers and closing somebody's request with the wrong
+recording is worse than leaving it open.
+
+**A successful pass over an already-indexed drop folder reports `+0 ~0 -0`, and that is correct.**
+Repointing happens before the scan, so the scan finds each file at its new path with an unchanged
+fingerprint and does nothing — the files moved, the library didn't change. Reading the scan report
+as "the filer didn't run" is the obvious mistake, which is why `FilingOutcome` distinguishes
+`Disabled` / `NotFound` / `NothingToDo` / `Filed`, why every pass logs the folder and file counts
+it walked, and why `/admin` prints all four differently. Four situations that produce zero filed
+files and one word for all of them is a feature nobody can tell is working.
+
+Three things the filer will not do, each because the failure is unrecoverable: it never
+overwrites (a collision becomes `song (2).mp3` — two files can honestly both be
+`01 - Intro.mp3`), it never deletes, and it **never guesses an artist from a folder name**. A
+folder called "New stuff" would become an artist in the library; the album falls back to the
+folder name because the scanner already makes exactly that inference, but the artist comes from
+tags or not at all. Cover art travels with a folder only when every music file in it filed to
+the same place — `AlbumArtService` reads an adjacent `cover.jpg` off disk, so a cover left
+behind is a cover lost, and one moved to the wrong album is worse.
 
 ### Teams and authorization
 

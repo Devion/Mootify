@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using Mootify.Configuration;
 using Mootify.Data;
+using Mootify.Services.Requests;
 
 namespace Mootify.Services.Library;
 
@@ -13,11 +14,13 @@ public sealed record ScanReport(int Added, int Updated, int Removed, int Failed,
 }
 
 /// <summary>
-/// Walks the music root, reads tags, upserts. MP3 only — anything else is transcoded before
-/// it gets here, so a file the browser can't play never becomes a Track row.
+/// Walks the music root, reads tags, upserts. MP3 and FLAC — anything else is transcoded
+/// before it gets here, so a file the browser can't play never becomes a Track row.
 /// </summary>
 public sealed class LibraryScanner(
     IServiceScopeFactory scopeFactory,
+    LibraryFiler filer,
+    NetworkShareConnector shares,
     IOptionsMonitor<LibraryOptions> options,
     ILogger<LibraryScanner> log)
 {
@@ -33,7 +36,125 @@ public sealed class LibraryScanner(
     public async Task<ScanReport> ScanAllAsync(CancellationToken ct = default)
     {
         var root = options.CurrentValue.MusicRoot;
-        return await ScanAsync(root, isFullScan: true, ct);
+
+        // Here rather than only in LibraryScanService: the admin's "Rescan library" and the
+        // home page's "Scan now" call this directly, so on a credentialled share they were the
+        // two entry points that could run against a dropped SMB session — and a scan that can't
+        // see the library doesn't fail, it marks all 40,000 tracks absent.
+        await shares.EnsureConnectedAsync(ct);
+
+        // Empty the drop folder first, so this scan indexes each dropped file once, at the path
+        // it is going to keep. The other order indexes it twice — where it landed, then where
+        // it went — and the first row goes absent on the next pass, taking any playlist entry
+        // made in between down with it.
+        var filed = filer.FileDropFolder(ct);
+        await RepointMovedTracksAsync(filed, ct);
+
+        var report = await ScanAsync(root, isFullScan: true, ct);
+
+        // And only now, because a request is completed by appending Track rows to a playlist
+        // and those rows don't exist until the scan above has run.
+        await MatchImportsToRequestsAsync(filed, ct);
+
+        return report;
+    }
+
+    /// <summary>
+    /// Follows a file that already had a <see cref="Track"/> row through the move, rather than
+    /// letting the scan mark the old path absent and add the new one as a stranger.
+    ///
+    /// This only matters once, but it matters a lot: a drop folder that predates the filer has
+    /// been indexed like anywhere else, so its tracks are in playlists, and absent-plus-new
+    /// would empty those playlists on the first scan after the upgrade. Keeping the row keeps
+    /// its id, and therefore every playlist entry, play count and playback position on it.
+    /// </summary>
+    private async Task RepointMovedTracksAsync(FilingReport filed, CancellationToken ct)
+    {
+        if (filed.Paths.Count == 0 || filer.DropFolder is not { } drop) return;
+
+        try
+        {
+            using var scope = scopeFactory.CreateAsyncScope();
+            var db = scope.ServiceProvider.GetRequiredService<MootifyDbContext>();
+
+            // Everything still indexed under the drop folder, which bounds the set to what was
+            // just there. StartsWith translates to LIKE, so the case-sensitive comparison that
+            // actually decides happens below, in memory.
+            var stale = await db.Tracks.Where(t => t.Path.StartsWith(drop)).ToListAsync(ct);
+            if (stale.Count == 0) return;
+
+            var moves = filed.Paths.ToDictionary(f => f.From, f => f.To, StringComparer.OrdinalIgnoreCase);
+
+            // Track.Path is unique, so a destination that somehow already has a row is left for
+            // the scan to sort out the ordinary way rather than failing the whole SaveChanges.
+            var taken = await db.Tracks
+                .Where(t => moves.Values.Contains(t.Path))
+                .Select(t => t.Path)
+                .ToListAsync(ct);
+
+            var occupied = taken.ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var moved = 0;
+
+            foreach (var track in stale)
+            {
+                if (!moves.TryGetValue(track.Path, out var destination)) continue;
+                if (!occupied.Add(destination)) continue;
+
+                track.Path = destination;
+                track.IsPresent = true;
+                moved++;
+            }
+
+            if (moved == 0) return;
+
+            await db.SaveChangesAsync(ct);
+            log.LogInformation("Followed {Count} already-indexed track(s) out of the import folder", moved);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            // The scan below still indexes the files at their new homes; the cost of failing
+            // here is orphaned playlist entries, not lost music.
+            log.LogError(ex, "Could not follow moved tracks out of the import folder");
+        }
+    }
+
+    /// <summary>
+    /// A file somebody fetched by hand answers a request just as well as one Lidarr found. The
+    /// matcher is resolved per call rather than injected: it reaches PlaylistService and the
+    /// notifier, both scoped, and this scanner is a singleton that outlives all of them.
+    /// </summary>
+    private async Task MatchImportsToRequestsAsync(FilingReport filed, CancellationToken ct)
+    {
+        if (filed.Paths.Count == 0) return;
+
+        try
+        {
+            using var scope = scopeFactory.CreateAsyncScope();
+            var matcher = scope.ServiceProvider.GetRequiredService<ImportRequestMatcher>();
+
+            var summary = await matcher.MatchAsync([.. filed.Paths.Select(f => f.To)], ct);
+
+            if (summary.Requests > 0)
+            {
+                log.LogInformation(
+                    "{Requests} request(s) completed by {Tracks} track(s) from the import folder",
+                    summary.Requests, summary.Tracks);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            // The library is scanned either way; failing to close a request is not a reason to
+            // report a failed scan.
+            log.LogError(ex, "Could not match imported files to open requests");
+        }
     }
 
     /// <summary>
@@ -68,7 +189,10 @@ public sealed class LibraryScanner(
             using var scope = scopeFactory.CreateAsyncScope();
             var db = scope.ServiceProvider.GetRequiredService<MootifyDbContext>();
 
-            var files = EnumerateAudioFiles(path).ToList();
+            // The drop folder is a mailbox, not part of the library: what's left in it after
+            // the filer has run is a file still being copied, and a half-written MP3 has a
+            // plausible size and unreadable tags — exactly the shape of a Track row nobody wants.
+            var files = EnumerateAudioFiles(path, exclude: filer.DropFolder).ToList();
             log.LogInformation("Scanning {Count} file(s) under {Path}", files.Count, path);
 
             // Cache lookups per scan; a 5,000-track library would otherwise issue 15,000 queries.
@@ -286,7 +410,7 @@ public sealed class LibraryScanner(
     public static bool IsIndexable(string path) =>
         IndexedExtensions.Contains(Path.GetExtension(path), StringComparer.OrdinalIgnoreCase);
 
-    public static IEnumerable<FileInfo> EnumerateAudioFiles(string root)
+    public static IEnumerable<FileInfo> EnumerateAudioFiles(string root, string? exclude = null)
     {
         var opts = new EnumerationOptions
         {
@@ -295,11 +419,16 @@ public sealed class LibraryScanner(
             AttributesToSkip = FileAttributes.System,
         };
 
+        var excluded = string.IsNullOrWhiteSpace(exclude)
+            ? null
+            : exclude.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
+
         // One walk with a filter rather than a walk per pattern — over SMB the enumeration
         // is the expensive part, not the comparison.
         return new DirectoryInfo(root)
             .EnumerateFiles("*", opts)
-            .Where(f => IsIndexable(f.Name));
+            .Where(f => IsIndexable(f.Name))
+            .Where(f => excluded is null || !f.FullName.StartsWith(excluded, StringComparison.OrdinalIgnoreCase));
     }
 
     /// <summary>Size + mtime, not a content hash. Hashing 40,000 files on every scan is not worth it.</summary>

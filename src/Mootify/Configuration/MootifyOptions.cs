@@ -181,6 +181,26 @@ public sealed class LibraryOptions
 
     /// <summary>Run a scan as soon as the app starts.</summary>
     public bool ScanOnStartup { get; set; } = true;
+
+    /// <summary>
+    /// A drop folder inside the music root. Everything in it is filed under
+    /// <c>Artist/Album</c> at the start of each scan, and it is never itself indexed — see
+    /// <see cref="Services.Library.LibraryFiler"/>. Blank turns the whole thing off.
+    /// </summary>
+    public string ImportFolder { get; set; } = "import";
+
+    /// <summary>
+    /// Where a file whose artist can't be worked out ends up, relative to the music root. It
+    /// stays visible in the library rather than being hidden — the point is that somebody can
+    /// find it and tag it, not that it disappears tidily.
+    /// </summary>
+    public string UnsortedFolder { get; set; } = "generic";
+
+    /// <summary>
+    /// File the drop folder before each scan. Off leaves it alone *and* still excludes it from
+    /// indexing, which is what you want while sorting a batch by hand.
+    /// </summary>
+    public bool FileImportsOnScan { get; set; } = true;
 }
 
 public sealed class RequestOptions

@@ -19,12 +19,14 @@ public sealed record TranscodeProgress(
 }
 
 /// <summary>
-/// Converts everything in the library that isn't an MP3.
+/// Converts everything in the library the scanner can't index — see
+/// <see cref="Transcoder.NeedsTranscode"/>, which is neither MP3 nor FLAC.
 ///
 /// The request pipeline already transcodes what it fetches, but that only covers albums
 /// Mootify itself asked for. Anything else — an artist added straight in Lidarr, a folder
-/// copied in by hand — lands as FLAC and is invisible, because the scanner only indexes MP3.
-/// This is the sweep for all of that.
+/// copied in by hand — can land as OGG or M4A and is invisible until it's an MP3. This is
+/// the sweep for all of that. FLAC is not in it: the scanner indexes FLAC natively, and a
+/// browser that can't decode one gets a cached MP3 on demand instead of losing the original.
 ///
 /// Deliberately manual. Re-encoding hundreds of albums saturates a CPU for hours, and doing
 /// that unannounced to somebody's machine while they're listening is rude.

@@ -9,6 +9,7 @@ namespace Mootify.Services.Library;
 /// </summary>
 public sealed class LibraryScanService(
     LibraryScanner scanner,
+    LibraryFiler filer,
     NetworkShareConnector shares,
     IOptionsMonitor<LibraryOptions> options,
     ILogger<LibraryScanService> log) : BackgroundService
@@ -32,6 +33,8 @@ public sealed class LibraryScanService(
                 string.IsNullOrWhiteSpace(opts.MusicRoot) ? "<not set>" : opts.MusicRoot);
             return;
         }
+
+        EnsureDropFolder();
 
         if (opts.ScanOnStartup)
         {
@@ -57,6 +60,28 @@ public sealed class LibraryScanService(
         }
     }
 
+    /// <summary>
+    /// A drop folder nobody can find is a feature nobody uses, and "create this folder yourself
+    /// first" is the step that gets skipped. Making it is free and creates nothing to clean up.
+    /// </summary>
+    private void EnsureDropFolder()
+    {
+        if (filer.DropFolder is not { } drop) return;
+
+        try
+        {
+            if (Directory.Exists(drop)) return;
+
+            Directory.CreateDirectory(drop);
+            log.LogInformation("Created the import drop folder at {Drop}", drop);
+        }
+        catch (Exception ex)
+        {
+            // A read-only share is a perfectly good library; it just can't take drops.
+            log.LogWarning(ex, "Could not create the import drop folder at {Drop}", drop);
+        }
+    }
+
     private void StartWatcher(string root, CancellationToken stoppingToken)
     {
         try
@@ -65,9 +90,20 @@ public sealed class LibraryScanService(
             {
                 IncludeSubdirectories = true,
                 NotifyFilter = NotifyFilters.FileName | NotifyFilters.LastWrite | NotifyFilters.DirectoryName,
-                Filter = "*.mp3",
-                EnableRaisingEvents = true,
             };
+
+            // Everything worth reacting to, not just MP3. This stayed "*.mp3" after FLAC became
+            // a library entry in its own right, so a FLAC arriving fired no event at all and
+            // stayed invisible for up to Library:FullScanInterval. The convertible formats are
+            // in here too because a file dropped into the import folder should be filed within
+            // the debounce rather than at the next six-hourly scan.
+            //
+            // The events only ever start a full scan; the filter just decides whether one is
+            // worth starting, which is why a broad list is cheap and a wrong one is not.
+            foreach (var extension in LibraryFiler.MusicExtensions)
+            {
+                _watcher.Filters.Add($"*{extension}");
+            }
 
             _watcher.Created += (_, _) => DebouncedScan(stoppingToken);
             _watcher.Deleted += (_, _) => DebouncedScan(stoppingToken);
@@ -75,7 +111,11 @@ public sealed class LibraryScanService(
             _watcher.Changed += (_, _) => DebouncedScan(stoppingToken);
             _watcher.Error += (_, e) => log.LogWarning(e.GetException(), "File watcher error; periodic scan still covers it");
 
-            log.LogInformation("Watching {Root} for changes", root);
+            _watcher.EnableRaisingEvents = true;
+
+            log.LogInformation(
+                "Watching {Root} for {Extensions}",
+                root, string.Join(", ", LibraryFiler.MusicExtensions));
         }
         catch (Exception ex)
         {

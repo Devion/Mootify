@@ -44,10 +44,8 @@ public sealed class RequestReconciler(
     LidarrClient lidarr,
     LibraryScanner scanner,
     Transcoder transcoder,
-    PlaylistService playlists,
-    TeamService teams,
+    RequestFulfiller fulfiller,
     IOptionsMonitor<LidarrOptions> lidarrOptions,
-    NotificationDispatcher notifications,
     ILogger<RequestReconciler> log)
 {
     /// <summary>
@@ -305,14 +303,9 @@ public sealed class RequestReconciler(
                 continue;
             }
 
-            var addedTo = await AppendToPlaylistAsync(request, trackIds, ct);
-
-            request.Status = RequestStatus.Available;
-            request.CompletedAt = DateTimeOffset.UtcNow;
-            request.UpdatedAt = DateTimeOffset.UtcNow;
-            await db.SaveChangesAsync(ct);
-
-            await NotifyAsync(request, trackIds.Count, addedTo, ct);
+            // Appending, marking available and notifying are the same three things whether the
+            // music came from Lidarr or was dropped into the import folder by hand.
+            await fulfiller.CompleteAsync(db, request, trackIds, ct);
             completed++;
         }
 
@@ -394,93 +387,6 @@ public sealed class RequestReconciler(
         }
 
         return [byTitle.Id];
-    }
-
-    private sealed record AppendOutcome(string PlaylistName, Guid? TeamId);
-
-    private async Task<AppendOutcome?> AppendToPlaylistAsync(Request request, List<Guid> trackIds, CancellationToken ct)
-    {
-        if (request.TargetPlaylistId is not { } playlistId) return null;
-
-        await using var db = await dbFactory.CreateDbContextAsync(ct);
-        var target = await db.Playlists
-            .Where(p => p.Id == playlistId)
-            .Select(p => new { p.Name, p.TeamId })
-            .FirstOrDefaultAsync(ct);
-
-        if (target is null)
-        {
-            // Playlist deleted while the download was in flight. Say so rather than failing
-            // the request — the music did arrive.
-            log.LogInformation("Target playlist for request {RequestId} is gone; skipping append", request.Id);
-            return null;
-        }
-
-        // Runs as the requester, through the same authorization path as a manual add. If they
-        // left the team while the download was in flight, this correctly refuses.
-        var added = await playlists.AddTracksAsync(playlistId, request.RequesterId, trackIds, request.Id, ct);
-
-        if (added == 0)
-        {
-            log.LogInformation(
-                "Nothing appended for request {RequestId} — the requester may no longer have access to {Playlist}",
-                request.Id, target.Name);
-            return null;
-        }
-
-        return new AppendOutcome(target.Name, target.TeamId);
-    }
-
-    private async Task NotifyAsync(Request request, int trackCount, AppendOutcome? appended, CancellationToken ct)
-    {
-        var what = request.Kind == RequestKind.Track
-            ? $"\"{request.TrackTitle}\" by {request.ArtistName}"
-            : $"{request.AlbumTitle} by {request.ArtistName}";
-
-        var tracks = $"{trackCount} track{(trackCount == 1 ? "" : "s")}";
-        var url = request.TargetPlaylistId is { } id ? $"/playlist/{id}" : "/library";
-
-        var body = appended is not null
-            ? $"{tracks} added to {appended.PlaylistName}."
-            : $"{tracks} added to your library.";
-
-        await notifications.PublishAsync(
-            request.RequesterId,
-            NotificationType.RequestAvailable,
-            $"{what} is ready",
-            body,
-            url,
-            request.Id,
-            ct);
-
-        // A shared playlist that only the requester hears about is just a private playlist
-        // in an awkward place. Tell the rest of the team too — with different wording, so
-        // nobody thinks they asked for it.
-        if (appended?.TeamId is not { } teamId) return;
-
-        var requesterName = await GetDisplayNameAsync(request.RequesterId, ct);
-        var others = await teams.GetMemberIdsExceptAsync(teamId, request.RequesterId, ct);
-
-        foreach (var memberId in others)
-        {
-            await notifications.PublishAsync(
-                memberId,
-                NotificationType.RequestAvailable,
-                $"{requesterName} added {what}",
-                $"{tracks} added to {appended.PlaylistName}.",
-                url,
-                request.Id,
-                ct);
-        }
-    }
-
-    private async Task<string> GetDisplayNameAsync(Guid userId, CancellationToken ct)
-    {
-        await using var db = await dbFactory.CreateDbContextAsync(ct);
-        return await db.Users
-            .Where(u => u.Id == userId)
-            .Select(u => u.DisplayName)
-            .FirstOrDefaultAsync(ct) ?? "Somebody";
     }
 
     private void Fail(Request request, RequestStatus status, string reason)

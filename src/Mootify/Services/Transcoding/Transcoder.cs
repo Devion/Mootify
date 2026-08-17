@@ -20,7 +20,7 @@ public sealed class Transcoder(
     /// FLAC is deliberately absent — it's indexed natively now, and the browsers that can't
     /// play it are served a cached MP3 on demand instead of losing the original.
     /// </summary>
-    private static readonly string[] ConvertibleExtensions =
+    public static readonly string[] ConvertibleExtensions =
         [".ogg", ".m4a", ".aac", ".wma", ".alac", ".ape", ".wv", ".wav", ".opus"];
 
     /// <summary>Transcoding competes with playback for CPU. A whole discography importing at

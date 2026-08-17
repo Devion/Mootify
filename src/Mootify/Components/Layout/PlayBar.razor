@@ -86,12 +86,25 @@
     </div>
 
     <div class="playbar__right">
+        <button class="iconbutton @(_queueOpen ? "is-active" : "")" @onclick="ToggleQueue"
+                title="Queue" aria-label="Queue" aria-expanded="@_queueOpen">
+            <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M3 5h13v2H3Zm0 4h13v2H3Zm0 4h9v2H3Zm0 4h9v2H3Zm12-1.5V11l6 3.25Z"/></svg>
+            @if (Player.UpNextTotal() is > 0 and var waiting)
+            {
+                <span class="iconbutton__mark">@(waiting > 99 ? "99+" : waiting.ToString())</span>
+            }
+        </button>
+
         <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" class="playbar__volicon">
             <path fill="currentColor" d="M4 9h3l4-4v14l-4-4H4Zm12.5 3a4.5 4.5 0 0 0-2.5-4v8a4.5 4.5 0 0 0 2.5-4Z"/>
         </svg>
         <input class="playbar__volume" type="range" min="0" max="1" step="0.01"
                value="@Num(Player.Volume)" @onchange="OnVolume" aria-label="Volume" />
     </div>
+
+    @*  Inside the play bar, so the drawer lives in the layout that never unmounts and
+        survives navigation the same way the audio element does. *@
+    <QueuePanel Open="_queueOpen" OnClose="() => _queueOpen = false" />
 </footer>
 
 @code {
@@ -103,6 +116,9 @@
 
     private bool _scrubbing;
     private double _scrubTarget;
+    private bool _queueOpen;
+
+    private void ToggleQueue() => _queueOpen = !_queueOpen;
 
     protected override void OnInitialized() => Player.StateChanged += OnChanged;
 

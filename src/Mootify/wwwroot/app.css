@@ -164,6 +164,7 @@ h2 { font-size: 1.15rem; margin: 1.75rem 0 .75rem; }
 /* ---- play bar --------------------------------------------------------- */
 
 .playbar {
+    position: relative;          /* the queue drawer hangs off this */
     height: var(--playbar-h);
     flex-shrink: 0;
     display: grid;
@@ -220,6 +221,107 @@ h2 { font-size: 1.15rem; margin: 1.75rem 0 .75rem; }
 .playbar__right { display: flex; align-items: center; justify-content: flex-end; gap: .5rem; }
 .playbar__volicon { color: var(--text-dim); }
 .playbar__volume { width: 110px; }
+
+/* ---- queue drawer ------------------------------------------------------ */
+
+.queuepanel {
+    position: absolute;
+    right: 1.25rem;
+    bottom: calc(var(--playbar-h) - 6px);
+    width: 380px;
+    max-width: calc(100vw - 2rem);
+    max-height: min(58vh, 500px);
+    display: flex;
+    flex-direction: column;
+    background: var(--bg-raised);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    box-shadow: 0 14px 44px #000c;
+    z-index: 60;
+    overflow: hidden;
+}
+
+.queuepanel__head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: .5rem;
+    padding: .7rem .5rem .6rem .9rem;
+    border-bottom: 1px solid var(--line);
+}
+
+.queuepanel__head h3 { margin: 0; font-size: .95rem; }
+.queuepanel__note { color: var(--text-dim); font-size: .75rem; }
+
+.queuepanel__body { overflow-y: auto; padding: .25rem 0 .5rem; }
+
+.queuepanel__section {
+    display: flex;
+    align-items: center;
+    gap: .4rem;
+    margin: .6rem 0 .2rem;
+    padding: 0 .9rem;
+    color: var(--text-dim);
+    font-size: .7rem;
+    font-weight: 700;
+    letter-spacing: .06em;
+    text-transform: uppercase;
+}
+
+.queuepanel__count {
+    padding: 0 .3rem;
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    font-size: .65rem;
+    font-variant-numeric: tabular-nums;
+}
+
+.queuepanel__empty { margin: .3rem 0; padding: 0 .9rem; color: var(--text-dim); font-size: .82rem; }
+
+.queuepanel__list { list-style: none; margin: 0; padding: 0; }
+
+.queuerow {
+    display: flex;
+    align-items: center;
+    gap: .6rem;
+    width: 100%;
+    padding: .35rem .9rem;
+    border: none;
+    background: none;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+}
+
+.queuerow--button { cursor: pointer; }
+.queuerow--button:hover { background: var(--bg-hover); }
+
+.queuerow__mark {
+    width: 14px;
+    flex-shrink: 0;
+    color: var(--text-dim);
+    visibility: hidden;
+}
+
+.queuerow--current .queuerow__mark { visibility: visible; color: var(--accent); }
+.queuerow--button:hover .queuerow__mark { visibility: visible; color: var(--text); }
+
+.queuerow__meta { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+
+.queuerow__title,
+.queuerow__artist { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.queuerow__title { font-size: .87rem; font-weight: 500; }
+.queuerow__artist { color: var(--text-dim); font-size: .75rem; }
+
+.queuerow--current .queuerow__title { color: var(--accent); }
+
+.queuerow__dur {
+    flex-shrink: 0;
+    color: var(--text-dim);
+    font-size: .75rem;
+    font-variant-numeric: tabular-nums;
+}
 
 input[type=range] {
     flex: 1;
@@ -907,8 +1009,10 @@ a.badge:hover { text-decoration: none; filter: brightness(1.2); }
     .login__art { display: none; }
     .login__form { max-width: 100%; }
     .sidebar { display: none; }
-    .playbar { grid-template-columns: 1fr auto; }
-    .playbar__right { display: none; }
+    /*  The volume slider goes, not the whole right column — a phone has hardware volume but
+        no other way to reach the queue.  */
+    .playbar { grid-template-columns: 1fr auto auto; }
+    .playbar__volicon, .playbar__volume { display: none; }
 }
 
 /* ---- blazor plumbing -------------------------------------------------- */

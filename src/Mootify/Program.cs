@@ -239,6 +239,7 @@ builder.Services.AddRateLimiter(options =>
 
 // ---- application services ----------------------------------------------
 builder.Services.AddSingleton<NetworkShareConnector>();
+builder.Services.AddSingleton<LibraryFiler>();
 builder.Services.AddSingleton<LibraryScanner>();
 builder.Services.AddHostedService<LibraryScanService>();
 
@@ -256,6 +257,8 @@ builder.Services.AddSingleton<ImportRequestQueue>();
 builder.Services.AddScoped<TeamService>();
 builder.Services.AddScoped<PlayerService>();
 builder.Services.AddScoped<RequestService>();
+builder.Services.AddScoped<RequestFulfiller>();
+builder.Services.AddScoped<ImportRequestMatcher>();
 builder.Services.AddScoped<RequestReconciler>();
 builder.Services.AddHostedService<RequestReconcilerService>();
 

@@ -41,6 +41,8 @@ public sealed class LibraryTranscodeServiceTests : IAsyncLifetime
 
         var scanner = new LibraryScanner(
             services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>(),
+            new LibraryFiler(options, NullLogger<LibraryFiler>.Instance),
+            new NetworkShareConnector(options, NullLogger<NetworkShareConnector>.Instance),
             options,
             NullLogger<LibraryScanner>.Instance);
 

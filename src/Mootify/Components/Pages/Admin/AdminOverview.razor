@@ -5,6 +5,7 @@
 @inject AdminService Admin
 @inject SettingsService Settings
 @inject LibraryScanner Scanner
+@inject LibraryFiler Filer
 @inject NetworkShareConnector Shares
 @inject LidarrClient Lidarr
 @inject Transcoder Transcoder
@@ -119,6 +120,45 @@
                 <span class="muted">not yet</span>
             }
         </li>
+        @*  The drop folder is invisible otherwise: files leave it silently and the only evidence
+            they were ever there is that the library grew. All four outcomes produce zero filed
+            files, so saying only "empty" turns a missing folder into a mystery. *@
+        <li>
+            <span class="dot @(Filer.LastReport?.Outcome == FilingOutcome.NotFound ? "dot--bad" : "dot--ok")"></span>
+            Import folder:
+            @if (Filer.DropFolder is { } drop)
+            {
+                <code>@drop</code>
+                @switch (Filer.LastReport)
+                {
+                    case { Outcome: FilingOutcome.NotFound }:
+                        <span class="error"> &mdash; not there. Create it, or change <code>Library:ImportFolder</code>.</span>
+                        break;
+
+                    case { Outcome: FilingOutcome.Disabled }:
+                        <span class="muted"> &mdash; filing is off (<code>Library:FileImportsOnScan</code>)</span>
+                        break;
+
+                    case { Total: > 0 } filed:
+                        <span class="muted">
+                            &mdash; @filed.Folders folder(s), filed @filed.Filed by artist, @filed.Unsorted unsorted@(filed.Skipped > 0 ? $", {filed.Skipped} still in use" : "")@(filed.Failed > 0 ? $", {filed.Failed} failed" : "")
+                        </span>
+                        break;
+
+                    case { Outcome: FilingOutcome.NothingToDo } walked:
+                        <span class="muted"> &mdash; walked @walked.Folders folder(s), no music in them</span>
+                        break;
+
+                    default:
+                        <span class="muted"> &mdash; not scanned yet</span>
+                        break;
+                }
+            }
+            else
+            {
+                <span class="muted">off &mdash; set <code>Library:ImportFolder</code></span>
+            }
+        </li>
     </ul>
 
     <div class="managebox__actions">
@@ -139,10 +179,10 @@
     }
 </section>
 
-@* The scanner only indexes MP3, so anything Lidarr grabbed as FLAC is sitting there invisible.
-   This is the sweep that rescues it. *@
+@* The scanner indexes MP3 and FLAC. Anything else Lidarr grabbed — OGG, M4A, WMA — is sitting
+   there invisible, and this is the sweep that rescues it. *@
 <section class="managebox">
-    <h2>Non-MP3 files</h2>
+    <h2>Unplayable files</h2>
 
     @{ var progress = LibraryTranscode.Progress; }
 
@@ -169,7 +209,7 @@
     else if (_convertible == 0)
     {
         <p class="muted">
-            Everything in the library is already an MP3.
+            Everything in the library is in a format the scanner indexes.
             @if (progress.FinishedAt is not null)
             {
                 <text>Converted @progress.Done, @progress.Failed failed.</text>
@@ -180,7 +220,7 @@
     {
         <p>
             <strong>@_convertible.ToString("N0")</strong> file@(_convertible == 1 ? "" : "s")
-            can't be played or even seen &mdash; the library only indexes MP3.
+            can't be played or even seen &mdash; the library indexes MP3 and FLAC, nothing else.
         </p>
         <p class="muted">
             Converting keeps the originals unless <code>Transcode:DeleteSourceAfterTranscode</code>

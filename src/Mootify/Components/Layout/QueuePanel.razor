@@ -1,0 +1,118 @@
+@inject PlayerService Player
+
+@*  The queue drawer.
+
+    Every row here comes from PlayerService.UpNext, which walks the *play order* rather than
+    the queue array. That distinction is the whole feature: with shuffle on, "the next five
+    rows of the queue" and "the next five tracks" are different lists, and this shows the one
+    that is going to happen.
+
+    No StateChanged subscription — PlayBar owns one and this renders as its child.  *@
+
+@if (Open)
+{
+    var upNext = Player.UpNext(Take);
+    var total = Player.UpNextTotal();
+
+    <section class="queuepanel" role="dialog" aria-label="Play queue">
+        <header class="queuepanel__head">
+            <div>
+                <h3>Queue</h3>
+                <span class="queuepanel__note">@OrderNote()</span>
+            </div>
+            <button class="iconbutton iconbutton--small" @onclick="OnClose" title="Close" aria-label="Close queue">
+                <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M6.4 5 5 6.4 10.6 12 5 17.6 6.4 19 12 13.4 17.6 19 19 17.6 13.4 12 19 6.4 17.6 5 12 10.6Z"/></svg>
+            </button>
+        </header>
+
+        <div class="queuepanel__body">
+            @if (Player.Current is { } current)
+            {
+                <p class="queuepanel__section">Now playing</p>
+                <div class="queuerow queuerow--current">
+                    <span class="queuerow__mark" aria-hidden="true">
+                        <svg viewBox="0 0 24 24" width="13" height="13"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>
+                    </span>
+                    <span class="queuerow__meta">
+                        <span class="queuerow__title">@current.Title</span>
+                        <span class="queuerow__artist">@current.ArtistName</span>
+                    </span>
+                    <span class="queuerow__dur">@Format(current.Duration)</span>
+                </div>
+            }
+
+            <p class="queuepanel__section">
+                Next up
+                @if (total > 0)
+                {
+                    <span class="queuepanel__count">@total</span>
+                }
+            </p>
+
+            @if (upNext.Count == 0)
+            {
+                <p class="queuepanel__empty">
+                    @(Player.Current is null ? "Nothing queued." : "Nothing after this one.")
+                </p>
+            }
+            else
+            {
+                <ol class="queuepanel__list">
+                    @foreach (var entry in upNext)
+                    {
+                        <li>
+                            @*  A click jumps the cursor rather than re-queueing, so the tracks
+                                you skipped past are still behind you and the permutation ahead
+                                is still the one listed above.  *@
+                            <button class="queuerow queuerow--button" @onclick="() => Player.JumpToAsync(entry.OrderIndex)"
+                                    title="Play this next" aria-label="@($"Play {entry.Track.Title}")">
+                                <span class="queuerow__mark" aria-hidden="true">
+                                    <svg viewBox="0 0 24 24" width="13" height="13"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>
+                                </span>
+                                <span class="queuerow__meta">
+                                    <span class="queuerow__title">@entry.Track.Title</span>
+                                    <span class="queuerow__artist">@entry.Track.ArtistName</span>
+                                </span>
+                                <span class="queuerow__dur">@Format(entry.Track.Duration)</span>
+                            </button>
+                        </li>
+                    }
+                </ol>
+
+                @if (total > upNext.Count)
+                {
+                    <p class="queuepanel__empty">and @(total - upNext.Count) more</p>
+                }
+            }
+        </div>
+    </section>
+}
+
+@code {
+    [Parameter] public bool Open { get; set; }
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    /// <summary>
+    /// A 600-song import is a plausible queue and rendering all of it into a drawer nobody
+    /// scrolls past the top of is wasted markup on every player state change. The count above
+    /// the list is the whole queue, so the cut is visible rather than silent.
+    /// </summary>
+    [Parameter] public int Take { get; set; } = 50;
+
+    /// <summary>
+    /// What the list means, said once at the top. Shuffle is the reason this matters — the
+    /// order below is a real permutation, not the queue in a different colour.
+    /// </summary>
+    private string OrderNote() => (Player.ShuffleEnabled, Player.Repeat) switch
+    {
+        (true, RepeatMode.One) => "Shuffled · repeating this track",
+        (true, RepeatMode.All) => "Shuffled · repeating",
+        (true, _) => "Shuffled",
+        (false, RepeatMode.One) => "In order · repeating this track",
+        (false, RepeatMode.All) => "In order · repeating",
+        _ => "In order",
+    };
+
+    private static string Format(TimeSpan t) =>
+        t.TotalHours >= 1 ? t.ToString(@"h\:mm\:ss") : t.ToString(@"m\:ss");
+}
