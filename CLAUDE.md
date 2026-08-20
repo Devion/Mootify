@@ -20,7 +20,7 @@ below — read it before changing anything architectural.
 ```bash
 dotnet run --project src/Mootify        # http://localhost:5199 (or the launchSettings port)
 dotnet build                            # whole solution
-dotnet test                             # 403 tests, ~3s
+dotnet test                             # 635 tests, ~4s
 dotnet test --filter "FullyQualifiedName~PlaylistServiceTests"     # one class
 dotnet test --filter "DisplayName~Adding_the_same_request_twice"   # one test
 
@@ -53,10 +53,11 @@ connector says so rather than failing silently.
 
 There are no EF migrations yet: startup calls `EnsureCreated()`, which only ever builds an empty
 file. Two kinds of addition to `Data/Entities.cs` can reach an existing install at boot by being
-listed in `Data/SchemaPatch.cs`: a **brand-new table** (`AddedTables` — that's how `ApiTokens`
-arrived) and a **new column appended to an existing one** (`AddedColumns` — that's how
-`Users.MustChangePassword` and `Requests.LastSearchAt` did — note the latter's DDL says `INTEGER`,
-because the `DateTimeOffset` convention below stores a converted long, not text). Both are guarded
+listed in `Data/SchemaPatch.cs`: a **brand-new table** (`AddedTables` — that's how `ApiTokens`,
+`ListeningSessions` and `Ideas` arrived) and a **new column appended to an existing one**
+(`AddedColumns` — that's how `Users.MustChangePassword`, `Requests.LastSearchAt` and
+`Preferences.ShareListening` did — note that `LastSearchAt`'s DDL says `INTEGER`, because the
+`DateTimeOffset` convention below stores a converted long, not text). Both are guarded
 by a `sqlite_master` / `pragma_table_info` check,
 so they're idempotent and cost nothing on a current database. `SchemaPatchTests` is the only test
 that runs against the *old* shape, because every other fixture starts from a schema that already
@@ -85,6 +86,15 @@ the music down and back rather than pausing it.
 
 `PlayerService` is the single owner of playback state; the play bar and every in-list play
 button render from it. Do not let a component keep its own `isPlaying` flag.
+
+That extends to what a control *does*, not just how it looks. `TrackList`'s row button showed a
+pause icon on the current track and then restarted the song, because the icon asked
+`Player.Current?.Id == row.TrackId` and the click handler didn't ask at all — two expressions of
+one idea, and only one of them was maintained. Both now go through `PlayerService.IsCurrent` and
+`PlayerService.PressRowAsync`: pressing the row you are listening to pauses it, pressing any other
+starts the list from there. `PlayerController.tap` is the Android side of the same rule. A
+double-click on a row always starts it — there is no icon under the cursor claiming otherwise —
+which is why the button stops that event from reaching the row.
 
 **Shuffle is a permutation, not a coin toss.** `_order` is a seeded Fisher-Yates shuffle of
 indices into `_queue`, generated once and then walked — which is what gives no repeats until
@@ -190,6 +200,41 @@ Requesting the missing ones is capped per import (`MaxRequests`) and deliberatel
 explicit click — every missing song means fetching a whole album, and 600 of them would fill
 a disk.
 
+### Library search is one rule in one place
+
+`LibraryMatch` (in `Services/Library/LibrarySearch.cs`) owns what a search term matches, and
+everything goes through it: the library page, the search box, and the API. There used to be three
+answers to one question — the library page filtered **artist names only** (in memory, over every
+artist), the search box matched title/artist/album, and `LibraryQueries` matched track titles
+only. So "nevermind" found songs on one page, nothing on another, and nothing in the car.
+
+The distinction worth keeping is `TrackTitle` vs `TrackAnywhere`. **Filtering** a list already
+scoped to an album or artist matches the title only — matching the album title there would match
+every track on it the moment somebody typed the album's name. **Searching**, with one box and no
+scope, matches title, artist and album, because "play nevermind" has to reach the songs on it.
+
+**On speed.** Every pattern is `%term%`, which no B-tree index can serve — SQLite scans, and an
+index on `Title` would not change that. What keeps it cheap is the shape, not an index:
+
+- the scan is over a *projection* with a `LIMIT`, never over materialised entities;
+- the joins are primary-key lookups, which is what makes 40,000 rows milliseconds;
+- callers debounce (250ms) and cancel in flight, so typing is one query rather than one per key;
+- the total is only counted when the page didn't already answer it — `COUNT` over a `LIKE` is a
+  second full scan with no early exit, and on the first page of a short result the answer is just
+  how many came back.
+
+The library page is paged and server-side for the same reason it needed to be: it used to load
+every artist into the circuit before anybody typed anything, which is fine at 200 artists and
+wrong at 2,000. It searches artists, albums and songs as three tabs — and a term that leaves the
+open tab empty moves to the first tab that has results, because landing on "Artists (0)" next to
+"Songs (12)" looks exactly like a search that failed.
+
+**The ceiling is real and is worth knowing before optimising the wrong thing.** Somewhere in the
+low hundreds of thousands of tracks a scan per keystroke stops being free, and the answer then is
+SQLite's FTS5 — a virtual table kept in step by the scanner, queried with `MATCH`. That is
+triggers and raw SQL, and it is not worth carrying at this size. If searching starts to feel slow,
+that is the thing to build, and `LibraryMatch` is what it replaces.
+
 ### The import drop folder
 
 `<MusicRoot>/import` (`Library:ImportFolder`) is a mailbox: drop anything in it and
@@ -203,7 +248,7 @@ watcher debounce and the admin's "Rescan library".
 - **File, then index.** Indexing first means the file is indexed where it landed *and* again
   where it went, and the first row goes absent on the following pass, taking any playlist entry
   made in between with it. The drop folder is therefore excluded from indexing outright
-  (`EnumerateAudioFiles(root, exclude:)`) — what's left in it after a pass is a file still being
+  (it is in `LibraryFiler.NotLibrary`) — what's left in it after a pass is a file still being
   copied, and a half-written MP3 has a plausible size and unreadable tags, which is exactly the
   shape of a `Track` row nobody wants. "Still being copied" is decided by opening it with
   `FileShare.None`, not by a timer.
@@ -245,6 +290,291 @@ folder name because the scanner already makes exactly that inference, but the ar
 tags or not at all. Cover art travels with a folder only when every music file in it filed to
 the same place — `AlbumArtService` reads an adjacent `cover.jpg` off disk, so a cover left
 behind is a cover lost, and one moved to the wrong album is worse.
+
+### Organizing what's already there
+
+`/admin/organize` (`LibraryOrganizer`) repairs names the scanner has already stored and collapses
+the same song stored twice. It exists because a real library arrives looking like this:
+
+```
+09. Elton John     — 1 album, 1 song
+12. Shocking Blue  — 1 album, 1 song
+The Black Eyed Peas / Black Eyed Peas — the same band, two rows, a screen apart
+```
+
+**The first of those is not the folder layout leaking in.** `Track.ArtistId` comes from the tag
+and from nowhere else — `LibraryFiler` deliberately never guesses an artist from a folder name,
+and the scanner's only folder inference is the *album* (see `AlbumFromFolder`). A numbered artist
+is a numbered tag, which is what a compilation ripped with each track's position in the artist
+field looks like. Every one of those is its own `Artist` row with one album and one song under it,
+which is what turns the library page into a wall.
+
+**`LibraryNaming` owns the rule and the scanner applies it too**, which is what makes this a repair
+rather than a chore somebody redoes weekly: the organizer fixes the rows, and every file that
+arrives afterwards is read the same way, so nothing puts the mess back. `LibraryScanner`'s artist
+cache is keyed by `LibraryNaming.ArtistKey`, not by the raw tag, so a file tagged "Black Eyed Peas"
+joins the existing "The Black Eyed Peas" instead of founding a second row beside it.
+
+**Almost all of `StripIndexPrefix` is a rule about what *not* to strip**, because the failure is
+silent and permanent — "3 Doors Down" filed under "Doors Down" is an artist nobody finds again.
+So: at most three digits; a separator is required and a bare space only counts when the number is
+zero-padded ("09 Elton John" yes, "10 Years" no); whitespace has to appear in the separator unless
+it's a dot or underscore, which keeps "5-Star" and "3-11 Porter" whole; and what's left has to
+start with a letter, which is what saves "10.000 Maniacs" from becoming "000 Maniacs". It is
+one pass, deliberately: catching "01 - 09. Elton John" means letting the strip recurse past a
+remainder starting with a digit, and that guard is worth more than the doubled prefix is.
+
+`ArtistKey` folds further than the display name does — `PlaylistImportService.Normalize` (case,
+accents, punctuation) plus a leading "The". Only "The": "A Perfect Circle" is a name, and there is
+no habit of dropping that the way there is with the article. A name that normalises to nothing
+falls back to itself, because `!!!` is a band and otherwise every all-punctuation name would share
+one key.
+
+**Albums are folded far more conservatively than artists** — the track number and case, nothing
+else. There is no album-shaped bloat to justify the risk of merging "Live" into "Live at Leeds".
+That pass still has to run whenever artists merged, because two artists that became one can each
+own a *Greatest Hits* and `(ArtistId, Title)` is unique.
+
+**Duplicates are `Normalize(title)` + artist + running time within five seconds**, the same
+normaliser the import matcher uses. The tolerance is the whole safeguard: a live and a studio
+version share a title and an artist, and almost never share a length. The survivor is present over
+absent, then bitrate (which carries FLAC above MP3 without knowing about formats), then file size,
+then `AddedAt`.
+
+**Four things about the pass are load-bearing.**
+
+- **It is previewed first.** Merging artists isn't undoable and the interesting failure — two bands
+  that were never the same band — is only ever visible as a pair of names somebody reads. So
+  `PreviewAsync` and the apply build the *same* plan from the same read-only snapshot, and the page
+  shows merges first.
+- **The duplicate file is moved to `<MusicRoot>/duplicates`, and that move is what makes the merge
+  stick.** Delete only the row and the next scan finds the file where it always was and indexes it
+  straight back in as a brand-new duplicate. It is never a delete, because the pass can be wrong.
+  **If the move fails the row is kept**, so the database still describes what is on the disk.
+- **Everything pointing at a merged-away track is repointed, not dropped** — playlist entries, play
+  history, listening broadcasts, and the ids inside `PlaybackState.QueueJson`. A tidy-up that
+  empties a playlist is worse than the mess it tidied. The queue is remapped in place rather than
+  deduplicated, so `QueueIndex` still means what it meant. Playlist entries that would become the
+  same song twice in one list are dropped, keeping the earlier `SortKey`.
+- **Merge before rename, albums before artists.** The apply order is one long argument with two
+  unique indexes and two cascading foreign keys. `(Albums.ArtistId, Title)` is unique, so moving
+  Cowbells' *Greatest Hits* onto The Cowbells before the two *Greatest Hits* rows have been merged
+  fails; collapsing albums first leaves at most one album per title under each artist, which is
+  what makes the move safe. `Artists.Name` is unique for the reason renaming comes last. And
+  nothing is deleted before what hangs off it has moved.
+
+Empty artists and albums are cleared at the end, recomputed against the database rather than taken
+from the plan — by then the plan is several saves old, and the debris that was already there is
+worth clearing too.
+
+**Which folders are not the library is one list in one place**, `LibraryFiler.NotLibrary`: the drop
+folder (still being copied into) and the duplicates folder (deliberately taken out). Three separate
+things walk that tree — `LibraryScanner.EnumerateAudioFiles`, the `FileSystemWatcher` in
+`LibraryScanService`, and `LibraryTranscodeService.FindConvertible` — and a quarantined file comes
+straight back the moment one of them disagrees. The watcher skips only the *duplicates* folder: a
+drop has to wake it, and an organize pass moving 400 files must not.
+
+**And nothing may scan while a pass runs.** `LibraryScanner.Suspend()` is held for the length of
+one, and a suspended scan is **refused rather than queued** — every caller is a timer, a watcher or
+a button, and all three would rather come back in a minute than block. The check is at the top of
+`ScanAllAsync`, before the filer, because filing writes `Track.Path` on rows the pass may be about
+to merge away. Without it, a scan caught mid-merge saves tracks pointing at an artist that stopped
+existing halfway through.
+
+### Playlists are read a page at a time
+
+`PlaylistService.GetPageAsync` is how a playlist is read; `GetAsync` (the whole entity graph) is
+for editing one row, not for showing a long list. The difference stopped being academic at 200
+tracks: `GetAsync` loads every item joined to its track, artist and album as tracked objects, and
+the API then re-queried the same tracks to serialise them — so browsing a playlist on the phone
+was slow and browsing one **in the car was slow once per page**, because `MootifyLibraryService`
+fetched the whole thing and sliced it locally for every twenty rows the head unit drew.
+
+Three things came out of that and all three matter:
+
+- **`PlaylistTrackRow` carries the union of what both clients need** — the website wants a title,
+  an artist and a duration; the API additionally wants the ids, numbers and bitrate that make an
+  `ApiTrack`. Projecting the union once is what removes the second query.
+- **Totals describe the playlist, not the page.** `PlaylistTrackPage.Total` and `TotalDuration`
+  are counted over the whole list, because a pager that can only count what it fetched can't say
+  "page 2 of 9" and a header computed from a page says "10 tracks" about a list of 200.
+- **"Play" doesn't page.** `GetTrackIdsAsync` returns every present track id in order, in one
+  column of GUIDs — a queue needs all of the list and none of the metadata.
+
+On the wire, `ApiPlaylistDetail.Items` is an `ApiPage<ApiPlaylistItem>` rather than an array, and
+`/playlists/{id}/items` and `/playlists/{id}/trackids` exist for the pages after the first and for
+building a queue. That shape change is why **`ApiMap.Version` is 2**: a client built against the
+old array fails to parse rather than silently showing the first hundred as though they were all
+of them. The Android app pages the browse tree from the server and fills the phone screen's list
+in behind the first page (`MootifyViewModel.PlaylistUi.complete` gates Play and Shuffle, so
+neither can queue a prefix).
+
+### Listening along
+
+A playlist page shows who else is playing that playlist and what they're on. It is deliberately
+**not** called syncing: nothing is synchronised, nobody's playback follows anybody else's, and
+turning it on hands over no control. It publishes one fact — "I am on track 7 of this list" — to
+people who can already see the list.
+
+`Services/Playlists/ListeningService.cs`. Three things decide whether a row exists or is visible:
+
+- **The broadcaster opted in.** `UserPreference.ShareListening` is off by default and is
+  **per account, not per device** — a phone that kept broadcasting after the website was told to
+  stop is the bug that shape prevents. Every client reports which playlist it is playing from and
+  the server decides; the client never interprets the switch. Turning it off *deletes* the row
+  rather than hiding it.
+- **The broadcaster can still read the playlist**, checked through `PlaylistService` like every
+  other playlist read, so leaving a team stops the broadcast at the next heartbeat.
+- **The reader can read it too**, and so can everyone in the list they get back — a team playlist
+  only ever lists current members, re-checked on read rather than trusted from when the row was
+  written. A playlist the reader can't see answers *empty*, the same as one nobody is on, so this
+  can't be used to discover that somebody else's list exists. The viewer is left out of their own
+  list; the toggle already tells them whether they're sharing.
+
+**Liveness is a timestamp, not a teardown.** A closed tab, a phone in a tunnel and a killed
+process all fail to say goodbye, so a session counts as live only while `UpdatedAt` is inside
+`ListeningService.StaleAfter` (2 minutes) and clients re-stamp while they play. Nothing has to be
+cleaned up on a schedule.
+
+**One call, one timer.** The heartbeat rides on the playback save that already happens every 20
+seconds — `SavePlaybackRequest` gained `SourcePlaylistId` and `IsPlaying`, and the Android media
+id already encodes which list a track was browsed from. On the website `PlayerService.BroadcastAsync`
+throttles itself to the same interval, because `OnTimeUpdate` fires several times a second and a
+write per tick is thousands of updates an hour against the file that also serves the website.
+`PlaylistPage` polls for other people's rows every 10 seconds: their playback happens in other
+processes, so there is nothing in this circuit to subscribe to.
+
+### Uploading music from the browser
+
+It lives inside `/import` rather than beside it: "get music in" is one job with two shapes — a
+Spotify CSV or the files themselves — and two menu entries for it was clutter. `/upload` is kept
+as a second route on the same page that opens on that tab, so the half is still linkable.
+
+**Both tabs stay mounted and the inactive one is hidden**, rather than the usual `@if`. Either
+side can have work in flight — a CSV being read, an album being uploaded — and a tab click that
+unmounted the component doing it would throw the result away while the work carried on regardless.
+
+
+The **Music files** tab on `/import` (`TrackUpload` + `TrackUploadService`) is the drop folder with
+a front door on it, and it runs the same
+sequence for the same reasons: **file, then index, then match requests**. Indexing before filing
+indexes the temp copy; matching before indexing has no `Track` rows to match against. The naming
+rules are `LibraryFiler`'s — called, not re-implemented, because two opinions about where a file
+belongs is how a library splits in half.
+
+**The one rule that is not the drop folder's: an upload must be tagged.** The filer puts an
+untagged file in the catch-all folder, which is right for a mailbox somebody works through and
+wrong here — the person is standing in front of the machine and can fix the tag or pick another
+file. So a missing artist or album is a refusal with a reason and *nothing is written*; the
+arbiter is `LibraryFiler.SafeFolder` returning null, which is also what makes a file tagged
+literally "Unknown Artist" count as untagged. The `Artist/Album` folders are created on demand, so
+the first file by a new artist makes the shelf it goes on.
+
+**Nothing trusts the file name.** It is a string from a browser: the tags decide the folder, and
+the name goes through `LibraryFiler.SafeName` before it becomes part of a path — which is what
+stops `../../` being a valid album. Collisions become `song (2).mp3` via the same
+`LibraryFiler.Unique` the filer uses; nothing is ever overwritten.
+
+Only what the library indexes is accepted (`.mp3`, `.flac`). The drop folder also takes the
+formats the transcode sweep can rescue because it is asynchronous and something will get to them;
+an upload answers immediately, and "it's in, but not yet, and only if ffmpeg is installed" is not
+an answer — so an OGG is refused with a sentence pointing at the import folder. Size and batch
+caps are `Library:MaxUploadBytes` / `Library:MaxUploadFiles`, counted against bytes that actually
+arrive rather than a declared length, and **anything past the batch cap is reported as refused by
+name** rather than silently dropped.
+
+The rescan afterwards is per destination folder, not a full scan — an album is one or two folders,
+and walking 40,000 files to notice ten new ones is the wait this feature exists to avoid.
+
+### The Ideabox
+
+`/ideas` takes a short note from anybody with an account; `/admin/ideas` is where they land.
+Posting rings the same cowbell everything else does, to every admin except the author — a
+suggestion box that has to be checked on purpose is a suggestion box nobody checks. Archiving is
+not deleting, because the person who wrote it seeing that it was read is the only feedback this
+box gives.
+
+**The interesting part is the input rule, and it is not the escaping.** Razor escapes interpolated
+text and nothing here ever becomes a `MarkupString` — line breaks are `white-space: pre-wrap` in
+CSS rather than `<br>` for exactly that reason. `IdeaText` is the layer *under* that, and it
+exists because "we escape on output" is a promise about every future rendering site, including the
+ones nobody has written yet: a log line, a notification body, a CSV export, a terminal. (The
+notification body is already one of them.)
+
+So the rule is blunt — **printable ASCII and newlines, nothing else** — and it is aimed at the
+characters that change what a correctly-escaped string *means*: `U+202E` reverses the text after
+it, zero-width characters are invisible in every list they appear in, homoglyphs make a Cyrillic
+"а" read as a Latin "a", and C0 control characters mean things to terminals. `<script>` is not the
+threat model; escaping already handles that, and `IdeaTextTests` asserts that angle brackets and
+ampersands are *stored as typed* rather than mangled. The cost is that "café" and emoji are
+refused, with a message naming the position and the code point — never echoing the character back,
+which is how a sanitiser becomes the injection.
+
+Posting is throttled (20 seconds apart, 10 unarchived per person) against the accident rather than
+an attacker — a stuck key, a double-submitted form — because an admin inbox with 400 rows in it is
+one nobody opens. Archiving is admin-only and deleting is author-or-admin, both **re-checked
+against the database** in `IdeaService`: the `[Authorize]` attribute on the page decides what is
+drawn, the service decides what happens.
+
+### Knowing what somebody listens to
+
+`Services/Recommendations/TasteService.cs` turns play history into a taste profile, and a profile
+into things to play next. It backs two things: **Surprise me** (`/surprise`), and carrying on when
+a playlist runs out.
+
+**Two foundations had to be laid first, and both were silently missing.**
+
+- **The website never recorded a play.** `PlayEvent` existed from the start and only the Android
+  app wrote it, so anybody who listens on the website had no history at all and everything built
+  on history would have had nothing to work from. `PlayerService.FlushPlayAsync` now does what the
+  app's `PlaybackReporter` does: one event per track, written when the track is left, carrying the
+  seconds played — which is what tells a listen from a skip.
+- **There was no genre anywhere.** `Track.Genre` is read from tags now, and that exposed a trap:
+  the scanner skips files whose fingerprint is unchanged, so a new column stays null on every row
+  of every library that already existed, for ever. `LibraryScanner.FingerprintVersion` is the fix —
+  bumping it invalidates every stored fingerprint, so the next scan re-reads every file's tags
+  once and then goes back to being cheap. **Bump it whenever the scanner starts reading a tag it
+  didn't read before**, or the feature that needs it will quietly have no data.
+
+  The same change also showed that `SchemaPatch` could add a column but not its index, so an
+  upgraded database had `Tracks.Genre` and no index on it while a fresh one had both — invisible
+  until the install that has been running for a year is the slow one. Hence `AddedIndexes`.
+
+**The whole design is built around refusing to guess.** A household server has libraries where
+most of the music has never been played by the person asking, so a recommender that always answers
+mostly answers with music they own and actively don't listen to — which is worse than not having
+the feature, because it teaches people the button is bad. So nothing is suggested until
+`TasteService.MinimumTracksHeard` (15) **distinct** songs have been heard, and every entry point
+says so in words rather than padding the list with randoms. Distinct, not plays: one track on
+repeat is not a taste.
+
+Three weightings do the work, and each exists because of a specific way this goes wrong:
+
+- **Completion.** A play counts in proportion to how much of the track was heard, so skipping
+  through an album doesn't teach the profile that you love it.
+- **Recency.** Plays decay on a 45-day half-life, so this month outranks last year without erasing
+  it.
+- **Variety.** Suggestions are drawn by weighted random sampling, capped at
+  `MaxPerArtist` (2) per batch, with anything played in the last two weeks held out entirely.
+  Strict top-N returns one artist's discography — technically the best answer and useless as a
+  playlist — and a button called "Surprise me" that returns the same list twice is misnamed.
+
+An `ExplorationFloor` gives every track a non-zero chance, which is the only way somebody hears an
+artist they have never played; the ratios keep it rare (a same-genre track is roughly eight times
+likelier than an unrelated one). Every suggestion carries the reason it was picked — "You play a
+lot of Grunge" — because a suggestion nobody can account for is one nobody trusts, and because it
+makes a bad batch diagnosable instead of mysterious.
+
+**Running out.** `PlayerService` tops the queue up when it reaches the end. `UserPreference.
+AutoContinue` defaults to **on**, which is only safe because the suggester refuses to run without
+history: before there is anything to go on it does nothing and the music stops exactly as it did
+before. `RepeatMode.All` never reaches for suggestions — somebody looping a playlist has said what
+they want to hear. A queue started from Surprise me passes `alwaysGrow`, so it keeps going whatever
+the preference says: endlessness is the thing being asked for there, not a side effect of a setting.
+
+`FakeJsRuntime` in the tests is what makes any of this testable. The player's interesting behaviour
+is bookkeeping that happens to sit next to an `<audio>` element, and without a stand-in for the
+browser the only way to exercise it is a real one with a working sound device.
 
 ### Teams and authorization
 
@@ -343,7 +673,13 @@ Three things on the app side worth knowing before changing the server:
 - **A track's media id carries the list it came from** (`track:<id>@album:<id>`). Android Auto sends
   only the item that was tapped, so the parent is what lets the app rebuild the album around it.
   Nothing on the server depends on this, but `/library/albums/{id}`, `/playlists/{id}` and
-  `/library/artists/{id}/tracks` exist to make it cheap.
+  `/library/artists/{id}/tracks` exist to make it cheap. It is also what makes the listening
+  heartbeat free: the parent already says which playlist the current track came out of, so
+  `PlaybackReporter` can put it in the save it was making anyway.
+- **Any list that can be long is paged by the server, not sliced by the client.** Playlists were
+  the exception and were fetched whole for every browse page — see **Playlists are read a page at
+  a time**. Whole-list fetches survive only where the list has an inherent ceiling (an album's
+  tracks).
 - **The app reads ahead, so `/media` sees requests for tracks nobody played.** A rolling three tracks
   are pulled into the phone's cache while the current one plays (`MediaPrefetcher`), bounded to 24MB
   a pass. Play counts are unaffected — those come from `POST /api/v1/plays`, which only the player
@@ -476,6 +812,16 @@ context's *actual* connection string rather than what configuration claims.
 Drag-reorder in the UI (`PlaylistService.MoveAsync` is ready), the Lidarr webhook receiver, playback
 state on the *website* (the Android app writes it — see `/api/v1/playback`), offline downloads in the
 app, and EF migrations.
+
+Listening-along has no Android UI: the app reports its source playlist and the server decides, but
+the switch itself lives on the website (`/account` and any team playlist page) and there is no
+`ApiListener` on the client. The Ideabox is website-only for the same reason — the endpoints would
+have no screen to live on.
+
+Surprise me and auto-continue are website-only too, though the phone feeds them: the Android app
+has always written `PlayEvent`, so it is the main source of the history both run on. Bringing them
+to the car means an `/api/v1/suggestions` endpoint and growing the queue in `MootifyLibraryService`
+when it empties.
 
 ## Razor gotcha
 

@@ -113,6 +113,19 @@ data class ApiPlaylistItem(
     val addedAt: String? = null,
 )
 
+/**
+ * A playlist header plus **one page** of its contents.
+ *
+ * [items] used to be the whole list, and browsing a 200-track playlist in the car re-fetched all
+ * 200 rows for every twenty it drew — once per page, on a phone, over mobile data. It is now an
+ * [ApiPage]; [ApiPage.total] is the length of the playlist, so a pager needs no second call.
+ *
+ * [trackCount] and [durationMs] describe the playlist rather than the page, which is what the
+ * header wants — summing the page would say "12 songs" about a list of 200.
+ *
+ * Server API version 2. Older servers send `items` as a bare array and this will fail to parse,
+ * which is the intended failure: showing the first hundred as though they were all of them is worse.
+ */
 @Serializable
 data class ApiPlaylistDetail(
     val id: String,
@@ -122,7 +135,9 @@ data class ApiPlaylistDetail(
     val teamName: String? = null,
     val canEdit: Boolean = false,
     val canDelete: Boolean = false,
-    val items: List<ApiPlaylistItem> = emptyList(),
+    val trackCount: Int = 0,
+    val durationMs: Long = 0,
+    val items: ApiPage<ApiPlaylistItem> = ApiPage(),
 )
 
 @Serializable
@@ -239,6 +254,14 @@ data class ApiPlaybackState(
     val updatedAt: String? = null,
 )
 
+/**
+ * Where we are, and — when the current track came out of a playlist — which one.
+ *
+ * [sourcePlaylistId] and [isPlaying] are what make this call double as the "listening along"
+ * heartbeat. The app always reports them; whether that becomes visible to anybody is the account's
+ * setting on the server, not this app's decision. That is deliberate: a per-device switch would
+ * mean a phone still broadcasting after the website had been told to stop.
+ */
 @Serializable
 data class SavePlaybackRequest(
     val currentTrackId: String?,
@@ -247,6 +270,8 @@ data class SavePlaybackRequest(
     val queueIndex: Int,
     val shuffleEnabled: Boolean,
     val repeat: String,
+    val sourcePlaylistId: String? = null,
+    val isPlaying: Boolean = false,
 )
 
 @Serializable

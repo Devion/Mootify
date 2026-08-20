@@ -162,8 +162,8 @@
     </ul>
 
     <div class="managebox__actions">
-        <button class="button" @onclick="Rescan" disabled="@Scanner.IsScanning">
-            @(Scanner.IsScanning ? "Scanning…" : "Rescan library")
+        <button class="button" @onclick="Rescan" disabled="@(Scanner.IsScanning || Scanner.IsSuspended)">
+            @(Scanner.IsScanning ? "Scanning…" : Scanner.IsSuspended ? "Organizing…" : "Rescan library")
         </button>
         @if (_isNetworkShare)
         {
@@ -361,6 +361,14 @@
 
     private async Task Rescan()
     {
+        // A suspended scan is refused, and reporting the "+0 ~0 -0" that comes back as a scan
+        // would be a lie about a library somebody is in the middle of rearranging.
+        if (Scanner.IsSuspended)
+        {
+            _message = "The library is being organized — try again once that's finished.";
+            return;
+        }
+
         var report = await Scanner.ScanAllAsync();
         await LoadAsync();
         _message = $"Scanned in {report.Elapsed.TotalSeconds:0.0}s: +{report.Added} ~{report.Updated} -{report.Removed}";

@@ -1,6 +1,7 @@
 using System.Linq.Expressions;
 using Microsoft.EntityFrameworkCore;
 using Mootify.Data;
+using Mootify.Services.Library;
 
 namespace Mootify.Endpoints.Api;
 
@@ -59,14 +60,9 @@ internal static class LibraryQueries
     internal static async Task<ApiPage<ApiArtist>> ArtistsAsync(
         MootifyDbContext db, string? q, int skip, int take, CancellationToken ct)
     {
-        var query = ArtistBase(db);
-
-        // A filter of nothing but wildcards is a filter of nothing — the list stays whole.
-        if (ApiSetup.Clean(q) is { } term)
-        {
-            var pattern = ApiSetup.LikePattern(term);
-            query = query.Where(a => EF.Functions.Like(a.Name, pattern));
-        }
+        // A filter of nothing but wildcards is a filter of nothing — the list stays whole,
+        // which is what LibraryMatch.Artist answers for an empty term.
+        var query = ArtistBase(db).Where(LibraryMatch.Artist(q));
 
         var total = await query.CountAsync(ct);
         var rows = await ArtistShape(query.OrderBy(a => a.SortName).Skip(skip).Take(take)).ToListAsync(ct);
@@ -82,18 +78,6 @@ internal static class LibraryQueries
     private static IQueryable<Album> AlbumBase(MootifyDbContext db) =>
         db.Albums.AsNoTracking().Where(a => a.Tracks.Any(t => t.IsPresent));
 
-    /// <summary>
-    /// Album search matches the artist as well as the title, so "nirvana" finds Nevermind
-    /// instead of finding nothing.
-    /// </summary>
-    private static Expression<Func<Album, bool>> AlbumMatches(string? q)
-    {
-        if (ApiSetup.Clean(q) is not { } term) return _ => true;
-
-        var pattern = ApiSetup.LikePattern(term);
-        return a => EF.Functions.Like(a.Title, pattern) || EF.Functions.Like(a.Artist!.Name, pattern);
-    }
-
     internal static async Task<ApiPage<ApiAlbum>> AlbumsAsync(
         MootifyDbContext db,
         Guid? artistId,
@@ -105,7 +89,7 @@ internal static class LibraryQueries
     {
         var query = AlbumBase(db)
             .Where(a => artistId == null || a.ArtistId == artistId)
-            .Where(AlbumMatches(q));
+            .Where(LibraryMatch.Album(q));
 
         var total = await query.CountAsync(ct);
         var rows = await AlbumRowsAsync(query, order, skip, take, ct);
@@ -152,11 +136,15 @@ internal static class LibraryQueries
 
     // ---- tracks -----------------------------------------------------------
 
-    private static Expression<Func<Track, bool>> TrackMatches(Guid? albumId, Guid? artistId, string? pattern) =>
+    private static Expression<Func<Track, bool>> InScope(Guid? albumId, Guid? artistId) =>
         t => (albumId == null || t.AlbumId == albumId)
-          && (artistId == null || t.ArtistId == artistId)
-          && (pattern == null || EF.Functions.Like(t.Title, pattern));
+          && (artistId == null || t.ArtistId == artistId);
 
+    /// <summary>
+    /// Narrowing a list, so <c>q</c> matches the <b>title</b> only — see
+    /// <see cref="LibraryMatch.TrackTitle"/>. Searching, which matches the artist and album too,
+    /// is <see cref="SearchAsync"/>.
+    /// </summary>
     internal static async Task<ApiPage<ApiTrack>> TracksAsync(
         MootifyDbContext db,
         Guid? albumId,
@@ -166,10 +154,10 @@ internal static class LibraryQueries
         int take,
         CancellationToken ct)
     {
-        var pattern = ApiSetup.Clean(q) is { } term ? ApiSetup.LikePattern(term) : null;
         var query = db.Tracks.AsNoTracking()
             .Where(t => t.IsPresent)
-            .Where(TrackMatches(albumId, artistId, pattern));
+            .Where(InScope(albumId, artistId))
+            .Where(LibraryMatch.TrackTitle(q));
 
         var total = await query.CountAsync(ct);
 
@@ -275,22 +263,23 @@ internal static class LibraryQueries
     {
         // Unlike a filter, a search with no usable term returns nothing rather than everything:
         // a voice search that misheard the user must not start playing the whole library.
-        if (ApiSetup.Clean(q) is not { } term) return new ApiSearchResults([], [], []);
-
-        var pattern = ApiSetup.LikePattern(term);
+        if (ApiSetup.Clean(q) is null) return new ApiSearchResults([], [], []);
 
         var artists = await ArtistShape(
                 ArtistBase(db)
-                    .Where(a => EF.Functions.Like(a.Name, pattern))
+                    .Where(LibraryMatch.Artist(q))
                     .OrderBy(a => a.SortName)
                     .Take(take))
             .ToListAsync(ct);
 
         var albums = await AlbumRowsAsync(
-            AlbumBase(db).Where(AlbumMatches(q)), AlbumOrder.ArtistOrder, 0, take, ct);
+            AlbumBase(db).Where(LibraryMatch.Album(q)), AlbumOrder.ArtistOrder, 0, take, ct);
 
+        // Anywhere, not just the title: a voice search for "nevermind" has to end in the songs on
+        // it, and matching track titles alone answered nothing. Same rule the website's search box
+        // has always used.
         var tracks = await TrackRowsAsync(
-            db.Tracks.AsNoTracking().Where(t => t.IsPresent).Where(TrackMatches(null, null, pattern)),
+            db.Tracks.AsNoTracking().Where(t => t.IsPresent).Where(LibraryMatch.TrackAnywhere(q)),
             TrackOrder.TitleOrder,
             0,
             take,

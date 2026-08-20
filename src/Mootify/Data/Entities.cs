@@ -70,6 +70,28 @@ public sealed class UserPreference
     public bool DuckMusicWhilePlaying { get; set; } = true;
 
     public double Volume { get; set; } = 0.8;
+
+    /// <summary>
+    /// Keep playing when a playlist runs out, using suggestions from what this account has
+    /// listened to before (<see cref="Services.Recommendations.TasteService"/>).
+    ///
+    /// On by default, and that is safe because the suggester refuses to guess: with too little
+    /// history it returns nothing and the music simply stops the way it always did. So this can
+    /// turn itself on usefully once there is something to go on, rather than needing a setting
+    /// nobody knew to look for.
+    /// </summary>
+    public bool AutoContinue { get; set; } = true;
+
+    /// <summary>
+    /// Whether playing from a playlist tells everybody else who can see that playlist what you're
+    /// on. Off by default: what you listen to is nobody's business until you say it is.
+    ///
+    /// One switch for the account rather than one per device, because the alternative is a phone
+    /// that quietly keeps broadcasting after the website was told to stop. Every client reports
+    /// which playlist it is playing from and the server decides, in
+    /// <see cref="Services.Playlists.ListeningService"/>, whether that becomes visible.
+    /// </summary>
+    public bool ShareListening { get; set; }
 }
 
 /// <summary>
@@ -190,6 +212,15 @@ public sealed class Track
 
     [MaxLength(64)]
     public string? RecordingMusicBrainzId { get; set; }
+
+    /// <summary>
+    /// The genre tag, as the file spells it. Free text and frequently absent or nonsense —
+    /// "Rock", "rock", "Alt. Rock" and "(17)" are all things real files say — so it is a signal
+    /// for <see cref="Services.Recommendations.TasteService"/> to weigh, never a category the
+    /// library is organised by. Null means the file didn't have one.
+    /// </summary>
+    [MaxLength(128)]
+    public string? Genre { get; set; }
 
     public Guid ArtistId { get; set; }
     public Artist? Artist { get; set; }
@@ -511,4 +542,73 @@ public sealed class PlayEvent
 
     /// <summary>Distinguishes a real listen from a skip.</summary>
     public double SecondsPlayed { get; set; }
+}
+
+/// <summary>
+/// What one person is playing, out of one playlist, right now — so everybody else who can see
+/// that playlist can see it too.
+///
+/// Keyed by user, not by playlist: you are only ever listening to one thing, and a row per
+/// (user, playlist) would leave a trail of ghosts behind somebody who browsed four playlists in
+/// a minute. Moving to another playlist rewrites this row.
+///
+/// <b>Liveness is a timestamp, not a teardown.</b> A closed browser tab, a phone that drove into
+/// a tunnel and a process that was killed all fail to say goodbye, and a "stop" message that has
+/// to arrive is a stop message that eventually doesn't — so a session counts as live only while
+/// <see cref="UpdatedAt"/> is recent (<see cref="Services.Playlists.ListeningService.StaleAfter"/>),
+/// and every client re-stamps it while it plays.
+/// </summary>
+public sealed class ListeningSession
+{
+    public Guid UserId { get; set; }
+    public AppUser? User { get; set; }
+
+    /// <summary>The playlist being played from. This is what decides who is allowed to see the row.</summary>
+    public Guid PlaylistId { get; set; }
+    public Playlist? Playlist { get; set; }
+
+    public Guid TrackId { get; set; }
+    public Track? Track { get; set; }
+
+    public double PositionSeconds { get; set; }
+
+    /// <summary>False is still worth broadcasting — "paused on track 4" is information.</summary>
+    public bool IsPlaying { get; set; }
+
+    /// <summary>When this listener joined <i>this</i> playlist, so "listening for 20 minutes" is answerable.</summary>
+    public DateTimeOffset StartedAt { get; set; }
+
+    public DateTimeOffset UpdatedAt { get; set; }
+}
+
+/// <summary>
+/// One short note from a user to whoever runs the server. No threads, no replies, no categories —
+/// the whole point is that leaving a suggestion costs one sentence and one click.
+///
+/// <b><see cref="Message"/> is plain ASCII and is enforced to be</b>, in
+/// <see cref="Services.Ideas.IdeaText"/>, at the only door it can come in through. It is rendered
+/// as text everywhere (Razor escapes, and nothing here ever becomes a <c>MarkupString</c>), so the
+/// ASCII rule is a second wall rather than the only one — but it is the wall that also stops a
+/// right-to-left override or a zero-width joiner making the admin's list say something other than
+/// what was typed.
+/// </summary>
+public sealed class Idea
+{
+    public Guid Id { get; set; }
+
+    public Guid UserId { get; set; }
+    public AppUser? User { get; set; }
+
+    [MaxLength(Services.Ideas.IdeaText.MaxLength)]
+    public string Message { get; set; } = "";
+
+    public DateTimeOffset CreatedAt { get; set; }
+
+    /// <summary>
+    /// Set when an admin has dealt with it. Archived rather than deleted so the person who wrote
+    /// it can still see that it was read — and deleting is a separate, deliberate button.
+    /// </summary>
+    public DateTimeOffset? ArchivedAt { get; set; }
+
+    public bool IsArchived => ArchivedAt is not null;
 }

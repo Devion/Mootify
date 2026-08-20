@@ -22,6 +22,12 @@ import kotlinx.coroutines.launch
  * - one play event per track, when we leave it, carrying how far it got. That's what makes the
  *   difference between a listen and a skip recordable at all.
  *
+ * It is also the "listening along" heartbeat, and deliberately not a second timer next to this one.
+ * The media id already carries the list a track was browsed from ([MediaId.Track.parent]), so a save
+ * can say "playing track X out of playlist Y" for free. Whether that becomes visible to anybody else
+ * is the account's setting on the server — this app reports and does not decide, which is what stops
+ * a phone broadcasting after the website has been told to stop.
+ *
  * Failures are dropped on purpose. This is telemetry for the user's own benefit; a tunnel is not
  * worth an error message.
  */
@@ -136,6 +142,7 @@ class PlaybackReporter(
         val currentId = trackIdOf(player.currentMediaItem)
         val index = player.currentMediaItemIndex.coerceAtLeast(0)
         val positionSeconds = player.currentPosition.coerceAtLeast(0) / 1000.0
+        val sourcePlaylistId = playlistIdOf(player.currentMediaItem)
 
         val repeat = when (player.repeatMode) {
             Player.REPEAT_MODE_ONE -> "One"
@@ -152,6 +159,8 @@ class PlaybackReporter(
                     queueIndex = index,
                     shuffleEnabled = player.shuffleModeEnabled,
                     repeat = repeat,
+                    sourcePlaylistId = sourcePlaylistId,
+                    isPlaying = player.isPlaying,
                 ),
             )
         }
@@ -160,6 +169,14 @@ class PlaybackReporter(
     /** Track ids are carried in the media id, which also encodes where the track was browsed from. */
     private fun trackIdOf(item: MediaItem?): String? =
         (MediaId.decode(item?.mediaId) as? MediaId.Track)?.id
+
+    /**
+     * The playlist this track was picked out of, if it was. Null for an album, an artist, a search
+     * or a resumed queue — and null is the right answer there rather than a missing one: there is no
+     * set of people a shared album belongs to, so there is nothing to broadcast it to.
+     */
+    private fun playlistIdOf(item: MediaItem?): String? =
+        ((MediaId.decode(item?.mediaId) as? MediaId.Track)?.parent as? MediaId.Playlist)?.id
 
     private companion object {
         const val SaveInterval = 20_000L

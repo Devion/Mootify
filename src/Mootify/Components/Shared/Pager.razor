@@ -1,0 +1,36 @@
+@* Previous / Next with a truthful "page 3 of 11 (528 songs)".
+
+   The total is the whole answer, never the page — a pager that can only count what it fetched
+   can't say how much it isn't showing you, which is exactly the thing a cap used to hide. *@
+
+@if (Of > 1)
+{
+    <div class="pager">
+        <button class="linkbutton" disabled="@(!HasPrevious)" @onclick="() => OnGoTo.InvokeAsync(Skip - Take)">
+            &larr; Previous
+        </button>
+        <span class="pager__where">
+            Page @Page of @Of
+            <span class="muted">(@Total @Noun@(Total == 1 ? "" : "s"))</span>
+        </span>
+        <button class="linkbutton" disabled="@(!HasNext)" @onclick="() => OnGoTo.InvokeAsync(Skip + Take)">
+            Next &rarr;
+        </button>
+    </div>
+}
+
+@code {
+    [Parameter, EditorRequired] public int Page { get; set; }
+    [Parameter, EditorRequired] public int Of { get; set; }
+    [Parameter, EditorRequired] public int Total { get; set; }
+    [Parameter, EditorRequired] public int Skip { get; set; }
+    [Parameter, EditorRequired] public int Take { get; set; }
+    [Parameter] public bool HasPrevious { get; set; }
+    [Parameter] public bool HasNext { get; set; }
+
+    /// <summary>Singular. The "s" is added when the count needs one.</summary>
+    [Parameter] public string Noun { get; set; } = "result";
+
+    /// <summary>Called with the new skip, so the caller keeps ownership of what a page means.</summary>
+    [Parameter] public EventCallback<int> OnGoTo { get; set; }
+}

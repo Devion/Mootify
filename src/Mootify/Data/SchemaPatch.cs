@@ -47,6 +47,48 @@ public static class SchemaPatch
             """CREATE UNIQUE INDEX IF NOT EXISTS "IX_ApiTokens_TokenHash" ON "ApiTokens" ("TokenHash")""",
             """CREATE INDEX IF NOT EXISTS "IX_ApiTokens_UserId" ON "ApiTokens" ("UserId")""",
         ]),
+
+        ("ListeningSessions",
+        [
+            // UserId is the primary key, not just a foreign one: one person broadcasts one thing.
+            """
+            CREATE TABLE IF NOT EXISTS "ListeningSessions" (
+                "UserId" TEXT NOT NULL CONSTRAINT "PK_ListeningSessions" PRIMARY KEY,
+                "PlaylistId" TEXT NOT NULL,
+                "TrackId" TEXT NOT NULL,
+                "PositionSeconds" REAL NOT NULL,
+                "IsPlaying" INTEGER NOT NULL,
+                "StartedAt" INTEGER NOT NULL,
+                "UpdatedAt" INTEGER NOT NULL,
+                CONSTRAINT "FK_ListeningSessions_Users_UserId" FOREIGN KEY ("UserId")
+                    REFERENCES "Users" ("Id") ON DELETE CASCADE,
+                CONSTRAINT "FK_ListeningSessions_Playlists_PlaylistId" FOREIGN KEY ("PlaylistId")
+                    REFERENCES "Playlists" ("Id") ON DELETE CASCADE,
+                CONSTRAINT "FK_ListeningSessions_Tracks_TrackId" FOREIGN KEY ("TrackId")
+                    REFERENCES "Tracks" ("Id") ON DELETE CASCADE
+            )
+            """,
+            """CREATE INDEX IF NOT EXISTS "IX_ListeningSessions_PlaylistId_UpdatedAt" ON "ListeningSessions" ("PlaylistId", "UpdatedAt")""",
+            """CREATE INDEX IF NOT EXISTS "IX_ListeningSessions_PlaylistId" ON "ListeningSessions" ("PlaylistId")""",
+            """CREATE INDEX IF NOT EXISTS "IX_ListeningSessions_TrackId" ON "ListeningSessions" ("TrackId")""",
+        ]),
+
+        ("Ideas",
+        [
+            """
+            CREATE TABLE IF NOT EXISTS "Ideas" (
+                "Id" TEXT NOT NULL CONSTRAINT "PK_Ideas" PRIMARY KEY,
+                "UserId" TEXT NOT NULL,
+                "Message" TEXT NOT NULL,
+                "CreatedAt" INTEGER NOT NULL,
+                "ArchivedAt" INTEGER NULL,
+                CONSTRAINT "FK_Ideas_Users_UserId" FOREIGN KEY ("UserId")
+                    REFERENCES "Users" ("Id") ON DELETE CASCADE
+            )
+            """,
+            """CREATE INDEX IF NOT EXISTS "IX_Ideas_ArchivedAt_CreatedAt" ON "Ideas" ("ArchivedAt", "CreatedAt")""",
+            """CREATE INDEX IF NOT EXISTS "IX_Ideas_UserId_CreatedAt" ON "Ideas" ("UserId", "CreatedAt")""",
+        ]),
     ];
 
     /// <summary>
@@ -66,6 +108,40 @@ public static class SchemaPatch
             """ALTER TABLE "Requests" ADD COLUMN "LastSearchAt" INTEGER NULL"""),
         ("Requests", "SearchAttempts",
             """ALTER TABLE "Requests" ADD COLUMN "SearchAttempts" INTEGER NOT NULL DEFAULT 0"""),
+
+        // 0 is the default the entity carries too: nobody's listening is shared until they say so,
+        // and an upgrade that started broadcasting everyone's playback would be a privacy bug.
+        ("Preferences", "ShareListening",
+            """ALTER TABLE "Preferences" ADD COLUMN "ShareListening" INTEGER NOT NULL DEFAULT 0"""),
+
+        // 1, matching the entity: it only does anything once there is listening history to work
+        // from, so defaulting it on can't surprise anybody with music they didn't ask for.
+        ("Preferences", "AutoContinue",
+            """ALTER TABLE "Preferences" ADD COLUMN "AutoContinue" INTEGER NOT NULL DEFAULT 1"""),
+
+        // Null on every existing row, which is exactly right: it means "we have never read the
+        // genre off this file". LibraryScanner.FingerprintVersion is what makes the next scan go
+        // and look, rather than skipping every file as unchanged forever.
+        ("Tracks", "Genre",
+            """ALTER TABLE "Tracks" ADD COLUMN "Genre" TEXT NULL"""),
+    ];
+
+
+    /// <summary>
+    /// Indexes on a table that already exists.
+    ///
+    /// A separate list from <see cref="AddedColumns"/> because adding a column does not add the
+    /// index EF would have created alongside it — so an upgraded database ended up with
+    /// <c>Tracks.Genre</c> and no index on it, while a fresh one had both. That difference is
+    /// invisible until the install that has been running for a year is the slow one.
+    ///
+    /// <c>CREATE INDEX IF NOT EXISTS</c> is idempotent by itself, so unlike the lists above this
+    /// needs no existence check of its own — only that the table is there to index.
+    /// </summary>
+    private static readonly (string Table, string Name, string Ddl)[] AddedIndexes =
+    [
+        ("Tracks", "IX_Tracks_Genre",
+            """CREATE INDEX IF NOT EXISTS "IX_Tracks_Genre" ON "Tracks" ("Genre")"""),
     ];
 
     public static async Task ApplyAsync(MootifyDbContext db, ILogger log, CancellationToken ct = default)
@@ -97,6 +173,15 @@ public static class SchemaPatch
                 "Added the {Table}.{Column} column to an existing database. This is the " +
                 "no-migrations stopgap in SchemaPatch, not a migration — see the comment there.",
                 table, column);
+        }
+
+        // After the columns, since an index is on one of them.
+        foreach (var (table, name, ddl) in AddedIndexes)
+        {
+            if (!await TableExistsAsync(db, table, ct)) continue;
+
+            await db.Database.ExecuteSqlRawAsync(ddl, ct);
+            log.LogDebug("Ensured the {Index} index exists", name);
         }
     }
 

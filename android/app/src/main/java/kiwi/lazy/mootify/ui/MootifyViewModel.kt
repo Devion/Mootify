@@ -12,9 +12,11 @@ import kiwi.lazy.mootify.data.ApiArtistDetail
 import kiwi.lazy.mootify.data.ApiPlaylist
 import kiwi.lazy.mootify.data.ApiPlaylistDetail
 import kiwi.lazy.mootify.data.ApiRemoteAlbum
+import kiwi.lazy.mootify.data.ApiPlaylistItem
 import kiwi.lazy.mootify.data.ApiRemoteTrack
 import kiwi.lazy.mootify.data.ApiRequest
 import kiwi.lazy.mootify.data.ApiSearchResults
+import kiwi.lazy.mootify.data.ApiTrack
 import kiwi.lazy.mootify.data.MootifyRepository
 import kiwi.lazy.mootify.MootifyApp
 import kiwi.lazy.mootify.data.Session
@@ -97,6 +99,22 @@ class MootifyViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    /**
+     * A playlist as the phone screen holds it: the header from the server, plus however many rows
+     * have arrived so far.
+     *
+     * [complete] is not cosmetic. The server pages playlists, so [items] is a prefix until the
+     * background fill finishes — and starting playback from a prefix would quietly queue the first
+     * hundred songs of a two-hundred-song list, which looks exactly like the list being that long.
+     */
+    data class PlaylistUi(
+        val detail: ApiPlaylistDetail,
+        val items: List<ApiPlaylistItem>,
+        val complete: Boolean,
+    ) {
+        val tracks: List<ApiTrack> get() = items.map { it.track }
+    }
+
     // ---- library ----------------------------------------------------------
 
     data class LibraryState(
@@ -163,12 +181,37 @@ class MootifyViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch { _artist.value = repository.artist(artistId).getOrNull() }
     }
 
-    private val _playlist = MutableStateFlow<ApiPlaylistDetail?>(null)
-    val playlist: StateFlow<ApiPlaylistDetail?> = _playlist
+    private val _playlist = MutableStateFlow<PlaylistUi?>(null)
+    val playlist: StateFlow<PlaylistUi?> = _playlist
 
+    /**
+     * The header and the first page, then the rest in the background.
+     *
+     * The server pages playlists now, and the phone screen still wants the whole list — you scroll
+     * it, and Play means all of it. Showing page one immediately and filling in behind it is the
+     * shape that gets both: a 200-track playlist opens in one round trip instead of waiting on all
+     * of them, and by the time anybody has scrolled the rest has arrived.
+     *
+     * [PlaylistUi.complete] is what the buttons wait on. Playing a partially-loaded list would
+     * silently queue the first hundred songs, which is the failure worth avoiding.
+     */
     fun loadPlaylist(playlistId: String) {
         _playlist.value = null
-        viewModelScope.launch { _playlist.value = repository.playlist(playlistId).getOrNull() }
+
+        viewModelScope.launch {
+            val first = repository.playlist(playlistId).getOrNull() ?: return@launch
+
+            val items = first.items.items.toMutableList()
+            _playlist.value = PlaylistUi(first, items.toList(), complete = items.size >= first.items.total)
+
+            while (items.size < first.items.total) {
+                val page = repository.playlistItems(playlistId, skip = items.size).getOrNull() ?: break
+                if (page.items.isEmpty()) break
+
+                items += page.items
+                _playlist.value = PlaylistUi(first, items.toList(), complete = items.size >= first.items.total)
+            }
+        }
     }
 
     fun removeFromPlaylist(playlistId: String, itemId: String) {

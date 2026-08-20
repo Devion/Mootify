@@ -1,0 +1,110 @@
+@page "/admin/ideas"
+@attribute [Authorize(Policy = MootifyAuth.AdminPolicy)]
+@inject IdeaService Ideas
+@inject CurrentUser CurrentUser
+@using Mootify.Services.Ideas
+
+<PageTitle>Ideas · Mootify</PageTitle>
+
+<h1>Admin</h1>
+<AdminNav />
+
+<p class="pagehead__meta">
+    What people have asked for. Filing one doesn't delete it &mdash; the person who sent it can
+    still see that it was read, which is the only feedback this box gives them.
+</p>
+
+<div class="adminnav adminnav--sub">
+    <button class="linkbutton @(_archived ? "" : "is-active")" @onclick="() => SwitchAsync(false)">
+        Waiting@(_open > 0 ? $" ({_open})" : "")
+    </button>
+    <button class="linkbutton @(_archived ? "is-active" : "")" @onclick="() => SwitchAsync(true)">
+        Filed
+    </button>
+</div>
+
+@if (_rows.Count == 0)
+{
+    <div class="emptystate">
+        <img src="img/pietjecow-sm.png" alt="" />
+        <p>@(_archived ? "Nothing filed yet." : "Nobody has had an idea. Yet.")</p>
+    </div>
+}
+else
+{
+    <ul class="idealist">
+        @foreach (var idea in _rows)
+        {
+            <li class="idea @(idea.IsArchived ? "is-archived" : "")">
+                @* Text, always. The message is printable ASCII by the time it reaches the
+                   database (IdeaText) and Razor escapes it on the way out; neither of those is
+                   allowed to be the only one that holds. Line breaks come from CSS. *@
+                <p class="idea__message">@idea.Message</p>
+                <p class="idea__meta">
+                    <strong>@idea.AuthorName</strong>
+                    <time datetime="@idea.CreatedAt.ToString("o")">
+                        @idea.CreatedAt.ToLocalTime().ToString("d MMM HH:mm")
+                    </time>
+                    <span class="idea__actions">
+                        @if (idea.IsArchived)
+                        {
+                            <button class="linkbutton" @onclick="() => SetArchived(idea.Id, false)">
+                                Put back
+                            </button>
+                        }
+                        else
+                        {
+                            <button class="linkbutton" @onclick="() => SetArchived(idea.Id, true)">
+                                File it
+                            </button>
+                        }
+                        <button class="linkbutton linkbutton--danger" @onclick="() => Delete(idea.Id)">
+                            Delete
+                        </button>
+                    </span>
+                </p>
+            </li>
+        }
+    </ul>
+}
+
+@code {
+    private List<IdeaRow> _rows = [];
+    private bool _archived;
+    private int _open;
+    private Guid _userId;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _userId = await CurrentUser.GetRequiredIdAsync();
+        await ReloadAsync();
+    }
+
+    private async Task ReloadAsync()
+    {
+        _rows = await Ideas.GetAllAsync(_archived);
+        _open = await Ideas.CountOpenAsync();
+    }
+
+    private async Task SwitchAsync(bool archived)
+    {
+        _archived = archived;
+        await ReloadAsync();
+    }
+
+    private async Task SetArchived(Guid ideaId, bool archived)
+    {
+        await Ideas.SetArchivedAsync(ideaId, archived, _userId);
+        await ReloadAsync();
+    }
+
+    /// <summary>
+    /// The service re-checks that this account is still an admin. The policy on the page decides
+    /// whether the button is drawn; it does not decide whether the row goes.
+    /// </summary>
+    private async Task Delete(Guid ideaId)
+    {
+        await Ideas.DeleteAsync(ideaId, _userId);
+        await ReloadAsync();
+    }
+}

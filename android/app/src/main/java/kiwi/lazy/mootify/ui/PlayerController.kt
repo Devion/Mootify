@@ -104,6 +104,26 @@ class PlayerController(
         target.play()
     }
 
+    /**
+     * Tapping a track in a list.
+     *
+     * On the track that is already playing this toggles rather than restarting it — re-queueing
+     * would jump back to 0:00, and "I tapped the song I am listening to" is never a request to
+     * start it again. Any other row starts the list from there. The website's `PlayerService`
+     * makes the same call for the same reason; two clients disagreeing about what a tap means is
+     * worse than either answer.
+     */
+    fun tap(tracks: List<ApiTrack>, index: Int = 0, parent: MediaId? = null) {
+        if (index !in tracks.indices) return
+
+        if (tracks[index].id == _state.value.trackId) {
+            togglePlay()
+            return
+        }
+
+        play(tracks, index, parent)
+    }
+
     /** Appends to whatever is playing, or starts playing if nothing is. */
     fun queue(tracks: List<ApiTrack>, parent: MediaId? = null) {
         val target = controller ?: return

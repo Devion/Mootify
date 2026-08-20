@@ -1,4 +1,7 @@
 @page "/import"
+@* Kept as a second route so the files half is directly linkable, and so anything that already
+   points at /upload still lands somewhere sensible. It just opens on that tab. *@
+@page "/upload"
 @attribute [Authorize]
 @implements IDisposable
 @inject PlaylistImportService Importer
@@ -17,179 +20,208 @@
 
 <PageTitle>Import · Mootify</PageTitle>
 
-<h1>Import a playlist</h1>
-<p class="pagehead__meta">
-    Drop in a CSV of a Spotify playlist. To make one, sign in to
-    <a href="https://exportify.net/" target="_blank" rel="noopener">exportify.net</a> with your
-    Spotify account and export the playlist you want.
-    It becomes a new playlist named after the file, or goes into one you already have. Anything
-    already in the library goes straight in; the rest can be requested.
-</p>
+<h1>Import</h1>
 
-@if (_error is not null) { <p class="error">@_error</p> }
+<div class="adminnav adminnav--sub">
+    <button class="linkbutton @(_tab == Tab.Playlist ? "is-active" : "")" @onclick="() => _tab = Tab.Playlist">
+        A Spotify playlist
+    </button>
+    <button class="linkbutton @(_tab == Tab.Files ? "is-active" : "")" @onclick="() => _tab = Tab.Files">
+        Music files
+    </button>
+</div>
 
-<section class="managebox">
-    <InputFile OnChange="OnFileChosen" accept=".csv" />
-    @if (_reading)
-    {
-        <p class="muted">Reading&hellip;</p>
-    }
-</section>
+@* Both halves stay mounted and the inactive one is hidden, rather than the usual @@if.
+   Either side can have work in flight — a CSV being read, an album being uploaded — and a tab
+   click that unmounted the component doing it would throw the result away while the work
+   carried on regardless. Hiding costs a bit of markup; unmounting costs somebody their answer. *@
+<div class="@(_tab == Tab.Playlist ? "" : "tabpanel--hidden")">
+    <p class="pagehead__meta">
+        Drop in a CSV of a Spotify playlist. To make one, sign in to
+        <a href="https://exportify.net/" target="_blank" rel="noopener">exportify.net</a> with your
+        Spotify account and export the playlist you want.
+        It becomes a new playlist named after the file, or goes into one you already have. Anything
+        already in the library goes straight in; the rest can be requested.
+    </p>
 
-@if (_preview is { } preview)
-{
+    @if (_error is not null) { <p class="error">@_error</p> }
+
     <section class="managebox">
-        <h2>@preview.PlaylistName</h2>
-
-        <div class="statrow">
-            <div class="stat"><strong>@preview.Total</strong><span>songs in the file</span></div>
-            <div class="stat"><strong>@preview.Matched.Count</strong><span>already in your library</span></div>
-            <div class="stat"><strong>@preview.Missing.Count</strong><span>not found</span></div>
-            @if (preview.Skipped > 0)
-            {
-                <div class="stat"><strong>@preview.Skipped</strong><span>duplicates skipped</span></div>
-            }
-        </div>
-
-        @if (preview.Total == 0)
+        <InputFile OnChange="OnFileChosen" accept=".csv" />
+        @if (_reading)
         {
-            <p class="error">No tracks in that file. Is it an Exportify export?</p>
-        }
-        else if (_targetPlaylistId is null)
-        {
-            <label for="destination">Where should these songs go?</label>
-            <select id="destination" @bind="_destination">
-                <option value="@NewPlaylist">Into a new playlist called @preview.PlaylistName</option>
-                @if (_playlists.Count > 0)
-                {
-                    <optgroup label="Add to a playlist you already have">
-                        @foreach (var playlist in _playlists)
-                        {
-                            <option value="@playlist.Id">@playlist.Name@(playlist.IsTeamPlaylist ? $" · {playlist.TeamName}" : "")</option>
-                        }
-                    </optgroup>
-                }
-            </select>
-
-            @if (_destination == NewPlaylist)
-            {
-                <label for="team">Who should own it?</label>
-                <select id="team" @bind="_teamId">
-                    <option value="">My playlists</option>
-                    @foreach (var team in _teams)
-                    {
-                        <option value="@team.Id">@team.Name (shared with the team)</option>
-                    }
-                </select>
-            }
-            else
-            {
-                @* Songs already in there are left alone, which is not what "add 40 songs"
-                   implies on its own. *@
-                <p class="muted">
-                    Anything already in <strong>@(AppendTarget?.Name)</strong> stays as it is.
-                </p>
-            }
-
-            <div class="managebox__actions">
-                <button class="button" @onclick="Go" disabled="@_working">
-                    @if (_destination == NewPlaylist)
-                    {
-                        <text>Create with @preview.Matched.Count song@(preview.Matched.Count == 1 ? "" : "s")</text>
-                    }
-                    else
-                    {
-                        <text>Add @preview.Matched.Count song@(preview.Matched.Count == 1 ? "" : "s") to @(AppendTarget?.Name)</text>
-                    }
-                </button>
-            </div>
-        }
-        else
-        {
-            <p class="success">
-                @_doneMessage
-                <a href="@($"/playlist/{_targetPlaylistId}")">open @_targetPlaylistName</a>.
-            </p>
+            <p class="muted">Reading&hellip;</p>
         }
     </section>
 
-    @if (preview.Missing.Count > 0)
+    @if (_preview is { } preview)
     {
         <section class="managebox">
-            <h2>Not in the library (@preview.Missing.Count)</h2>
+            <h2>@preview.PlaylistName</h2>
 
-            @{ var queue = Queue.Progress; }
-
-            @if (_targetPlaylistId is null)
-            {
-                <p class="muted">Pick a destination above first, then these can be requested into it.</p>
-            }
-            else if (!Lidarr.IsConfigured)
-            {
-                <p class="muted">Lidarr isn't configured, so these can't be fetched.</p>
-            }
-            else if (queue.IsRunning)
-            {
-                <p>
-                    Album <strong>@queue.AlbumsDone</strong> of @queue.TotalAlbums &mdash;
-                    @queue.Queued song@(queue.Queued == 1 ? "" : "s") queued
-                    @if (queue.NotFound > 0) { <text>, @queue.NotFound not found</text> }
-                </p>
-                @if (queue.Current is { } current) { <p class="muted">@current</p> }
-                <div class="progressbar"><span style="width:@(queue.Percent)%"></span></div>
-                <div class="managebox__actions">
-                    <button class="linkbutton linkbutton--danger" @onclick="() => Queue.Cancel()">Stop</button>
-                </div>
-            }
-            else if (queue.FinishedAt is not null)
-            {
-                <p class="success">
-                    Queued @queue.Queued request@(queue.Queued == 1 ? "" : "s") across @queue.AlbumsDone album@(queue.AlbumsDone == 1 ? "" : "s").
-                    You'll get a cowbell as they land.
-                </p>
-                @if (queue.NotFound > 0)
+            <div class="statrow">
+                <div class="stat"><strong>@preview.Total</strong><span>songs in the file</span></div>
+                <div class="stat"><strong>@preview.Matched.Count</strong><span>already in your library</span></div>
+                <div class="stat"><strong>@preview.Missing.Count</strong><span>not found</span></div>
+                @if (preview.Skipped > 0)
                 {
-                    <p class="muted">@queue.NotFound song@(queue.NotFound == 1 ? "" : "s") Lidarr couldn't find. @queue.LastError</p>
+                    <div class="stat"><strong>@preview.Skipped</strong><span>duplicates skipped</span></div>
                 }
-            }
-            else
+            </div>
+
+            @if (preview.Total == 0)
             {
-                @* Say the real number before starting. Lidarr fetches whole albums, so the
-                   album count is what this actually costs in disk and indexer traffic — and
-                   it's usually a third of the song count. *@
-                <p class="muted">
-                    These @preview.Missing.Count songs live on <strong>@_albumCount album@(_albumCount == 1 ? "" : "s")</strong>,
-                    and Lidarr fetches whole albums. Requests go out a few seconds apart and land in
-                    <strong>@_targetPlaylistName</strong> as they arrive. You can stop it at any point.
-                </p>
+                <p class="error">No tracks in that file. Is it an Exportify export?</p>
+            }
+            else if (_targetPlaylistId is null)
+            {
+                <label for="destination">Where should these songs go?</label>
+                <select id="destination" @bind="_destination">
+                    <option value="@NewPlaylist">Into a new playlist called @preview.PlaylistName</option>
+                    @if (_playlists.Count > 0)
+                    {
+                        <optgroup label="Add to a playlist you already have">
+                            @foreach (var playlist in _playlists)
+                            {
+                                <option value="@playlist.Id">@playlist.Name@(playlist.IsTeamPlaylist ? $" · {playlist.TeamName}" : "")</option>
+                            }
+                        </optgroup>
+                    }
+                </select>
+
+                @if (_destination == NewPlaylist)
+                {
+                    <label for="team">Who should own it?</label>
+                    <select id="team" @bind="_teamId">
+                        <option value="">My playlists</option>
+                        @foreach (var team in _teams)
+                        {
+                            <option value="@team.Id">@team.Name (shared with the team)</option>
+                        }
+                    </select>
+                }
+                else
+                {
+                    @* Songs already in there are left alone, which is not what "add 40 songs"
+                       implies on its own. *@
+                    <p class="muted">
+                        Anything already in <strong>@(AppendTarget?.Name)</strong> stays as it is.
+                    </p>
+                }
+
                 <div class="managebox__actions">
-                    <button class="button" @onclick="RequestMissing">
-                        Request all @preview.Missing.Count
+                    <button class="button" @onclick="Go" disabled="@_working">
+                        @if (_destination == NewPlaylist)
+                        {
+                            <text>Create with @preview.Matched.Count song@(preview.Matched.Count == 1 ? "" : "s")</text>
+                        }
+                        else
+                        {
+                            <text>Add @preview.Matched.Count song@(preview.Matched.Count == 1 ? "" : "s") to @(AppendTarget?.Name)</text>
+                        }
                     </button>
                 </div>
             }
-
-            <ul class="importlist">
-                @foreach (var track in preview.Missing.Take(_showAllMissing ? int.MaxValue : 25))
-                {
-                    <li>
-                        <span class="importlist__title">@track.Title</span>
-                        <span class="muted">@track.Artist@(string.IsNullOrWhiteSpace(track.Album) ? "" : $" · {track.Album}")</span>
-                    </li>
-                }
-            </ul>
-
-            @if (!_showAllMissing && preview.Missing.Count > 25)
+            else
             {
-                <button class="linkbutton" @onclick="() => _showAllMissing = true">
-                    Show all @preview.Missing.Count
-                </button>
+                <p class="success">
+                    @_doneMessage
+                    <a href="@($"/playlist/{_targetPlaylistId}")">open @_targetPlaylistName</a>.
+                </p>
             }
         </section>
+
+        @if (preview.Missing.Count > 0)
+        {
+            <section class="managebox">
+                <h2>Not in the library (@preview.Missing.Count)</h2>
+
+                @{ var queue = Queue.Progress; }
+
+                @if (_targetPlaylistId is null)
+                {
+                    <p class="muted">Pick a destination above first, then these can be requested into it.</p>
+                }
+                else if (!Lidarr.IsConfigured)
+                {
+                    <p class="muted">Lidarr isn't configured, so these can't be fetched.</p>
+                }
+                else if (queue.IsRunning)
+                {
+                    <p>
+                        Album <strong>@queue.AlbumsDone</strong> of @queue.TotalAlbums &mdash;
+                        @queue.Queued song@(queue.Queued == 1 ? "" : "s") queued
+                        @if (queue.NotFound > 0) { <text>, @queue.NotFound not found</text> }
+                    </p>
+                    @if (queue.Current is { } current) { <p class="muted">@current</p> }
+                    <div class="progressbar"><span style="width:@(queue.Percent)%"></span></div>
+                    <div class="managebox__actions">
+                        <button class="linkbutton linkbutton--danger" @onclick="() => Queue.Cancel()">Stop</button>
+                    </div>
+                }
+                else if (queue.FinishedAt is not null)
+                {
+                    <p class="success">
+                        Queued @queue.Queued request@(queue.Queued == 1 ? "" : "s") across @queue.AlbumsDone album@(queue.AlbumsDone == 1 ? "" : "s").
+                        You'll get a cowbell as they land.
+                    </p>
+                    @if (queue.NotFound > 0)
+                    {
+                        <p class="muted">@queue.NotFound song@(queue.NotFound == 1 ? "" : "s") Lidarr couldn't find. @queue.LastError</p>
+                    }
+                }
+                else
+                {
+                    @* Say the real number before starting. Lidarr fetches whole albums, so the
+                       album count is what this actually costs in disk and indexer traffic — and
+                       it's usually a third of the song count. *@
+                    <p class="muted">
+                        These @preview.Missing.Count songs live on <strong>@_albumCount album@(_albumCount == 1 ? "" : "s")</strong>,
+                        and Lidarr fetches whole albums. Requests go out a few seconds apart and land in
+                        <strong>@_targetPlaylistName</strong> as they arrive. You can stop it at any point.
+                    </p>
+                    <div class="managebox__actions">
+                        <button class="button" @onclick="RequestMissing">
+                            Request all @preview.Missing.Count
+                        </button>
+                    </div>
+                }
+
+                <ul class="importlist">
+                    @foreach (var track in preview.Missing.Take(_showAllMissing ? int.MaxValue : 25))
+                    {
+                        <li>
+                            <span class="importlist__title">@track.Title</span>
+                            <span class="muted">@track.Artist@(string.IsNullOrWhiteSpace(track.Album) ? "" : $" · {track.Album}")</span>
+                        </li>
+                    }
+                </ul>
+
+                @if (!_showAllMissing && preview.Missing.Count > 25)
+                {
+                    <button class="linkbutton" @onclick="() => _showAllMissing = true">
+                        Show all @preview.Missing.Count
+                    </button>
+                }
+            </section>
+        }
     }
-}
+
+</div>
+
+<div class="@(_tab == Tab.Files ? "" : "tabpanel--hidden")">
+    <TrackUpload />
+</div>
 
 @code {
+    private enum Tab { Playlist, Files }
+
+    /// <summary>
+    /// Which half is showing. Driven by the route so /upload opens on the files tab — see the
+    /// second @@page above.
+    /// </summary>
+    private Tab _tab;
+
     /// <summary>Sentinel for the destination select; every other value is a playlist id.</summary>
     private const string NewPlaylist = "new";
 
@@ -215,6 +247,10 @@
 
     protected override async Task OnInitializedAsync()
     {
+        _tab = Nav.ToBaseRelativePath(Nav.Uri).StartsWith("upload", StringComparison.OrdinalIgnoreCase)
+            ? Tab.Files
+            : Tab.Playlist;
+
         _userId = await CurrentUser.GetRequiredIdAsync();
         _teams = await Teams.GetForUserAsync(_userId);
 

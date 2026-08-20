@@ -1,4 +1,5 @@
 using Mootify.Data;
+using Mootify.Services.Playlists;
 
 namespace Mootify.Endpoints.Api;
 
@@ -86,8 +87,17 @@ public sealed record ApiPlaylist(
 }
 
 /// <summary>
-/// A playlist with its contents. <paramref name="Items"/> carry their own id because removing
-/// one is a per-item operation — the same track can legitimately appear twice.
+/// A playlist with one page of its contents. <paramref name="Items"/> carry their own id because
+/// removing one is a per-item operation — the same track can legitimately appear twice.
+///
+/// <b><paramref name="Items"/> is a page, not the playlist.</b> It used to be the whole thing, and
+/// a 200-track playlist was then fetched whole every time a head unit asked for the next twenty
+/// rows of it — once per browse page, on a phone, over a mobile connection. <paramref name="Items"/>
+/// carries its own total so a client can page without a second call, and
+/// <paramref name="TrackCount"/> and <paramref name="DurationMs"/> describe the playlist itself so
+/// the header doesn't have to be computed from a page. This is why <see cref="ApiMap.Version"/> is
+/// 2: a client built against the old shape fails to parse rather than silently showing the first
+/// hundred as though they were all of them.
 /// </summary>
 public sealed record ApiPlaylistDetail(
     Guid Id,
@@ -97,10 +107,28 @@ public sealed record ApiPlaylistDetail(
     string? TeamName,
     bool CanEdit,
     bool CanDelete,
-    List<ApiPlaylistItem> Items)
+    int TrackCount,
+    long DurationMs,
+    ApiPage<ApiPlaylistItem> Items)
 {
     public bool IsTeamPlaylist => TeamId is not null;
 }
+
+/// <summary>
+/// Somebody else playing this playlist right now. See
+/// <see cref="Mootify.Services.Playlists.ListeningService"/> for who is allowed to appear here —
+/// the short version is: they opted in, and they can read the same playlist you can.
+/// </summary>
+public sealed record ApiListener(
+    Guid UserId,
+    string DisplayName,
+    Guid TrackId,
+    string TrackTitle,
+    string ArtistName,
+    double PositionSeconds,
+    bool IsPlaying,
+    DateTimeOffset StartedAt,
+    DateTimeOffset UpdatedAt);
 
 public sealed record ApiPlaylistItem(Guid Id, ApiTrack Track, DateTimeOffset AddedAt);
 
@@ -192,15 +220,33 @@ public sealed record CreateRequestBody(
     Guid? TargetPlaylistId,
     string? SearchTerm);
 
+/// <summary>
+/// A heartbeat from whichever client is playing.
+///
+/// <paramref name="SourcePlaylistId"/> and <paramref name="IsPlaying"/> are what let this one call
+/// also serve "listening along". The alternative was a second endpoint on its own timer, which is a
+/// second thing to keep in step with playback and a second write per tick; the client already
+/// reports where it is every twenty seconds, and it already knows which list the current track was
+/// picked out of. The server decides whether that becomes visible — the account's
+/// <see cref="Data.UserPreference.ShareListening"/> switch is not the client's to interpret.
+///
+/// Both are optional on the wire: an older client that sends neither saves its playback state
+/// exactly as before and broadcasts nothing.
+/// </summary>
 public sealed record SavePlaybackRequest(
     Guid? CurrentTrackId,
     double PositionSeconds,
     List<Guid>? Queue,
     int QueueIndex,
     bool ShuffleEnabled,
-    RepeatMode Repeat);
+    RepeatMode Repeat,
+    Guid? SourcePlaylistId = null,
+    bool IsPlaying = false);
 
 public sealed record RecordPlayRequest(Guid TrackId, double SecondsPlayed);
+
+/// <summary>The listening-along switch, which is per account rather than per device.</summary>
+public sealed record SetListeningRequest(bool Sharing);
 
 // ---- projection helpers --------------------------------------------------
 
@@ -211,7 +257,11 @@ public sealed record RecordPlayRequest(Guid TrackId, double SecondsPlayed);
 /// </summary>
 public static class ApiMap
 {
-    public const int Version = 1;
+    /// <summary>
+    /// Bumped to 2 when playlist contents became a page — see <see cref="ApiPlaylistDetail"/>.
+    /// Clients check this before assuming an endpoint or a shape exists.
+    /// </summary>
+    public const int Version = 2;
 
     public static string StreamUrl(Guid trackId) => $"/media/{trackId}";
 
@@ -225,4 +275,41 @@ public static class ApiMap
     public static ApiUser User(AppUser user) => new(user.Id, user.DisplayName, user.IsAdmin);
 
     public static long Ms(long ticks) => (long)TimeSpan.FromTicks(ticks).TotalMilliseconds;
+
+    public static long Ms(TimeSpan span) => (long)span.TotalMilliseconds;
+
+    /// <summary>
+    /// A playlist row as the wire sees it. The paging query already projected everything an
+    /// <see cref="ApiTrack"/> needs, so this is a rename rather than a second trip to the
+    /// database — which is the entire point of <see cref="PlaylistTrackRow"/> carrying the
+    /// union of what the website and the API want.
+    /// </summary>
+    public static ApiTrack Track(PlaylistTrackRow row) => new(
+        row.TrackId,
+        row.Title,
+        row.ArtistId,
+        row.ArtistName,
+        row.AlbumId,
+        row.AlbumTitle,
+        row.Year,
+        row.TrackNumber,
+        row.DiscNumber,
+        Ms(row.DurationTicks),
+        row.Bitrate,
+        StreamUrl(row.TrackId),
+        ArtUrl(row.AlbumId));
+
+    public static ApiPlaylistItem PlaylistItem(PlaylistTrackRow row) =>
+        new(row.ItemId, Track(row), row.AddedAt);
+
+    public static ApiListener Listener(Mootify.Services.Playlists.Listener listener) => new(
+        listener.UserId,
+        listener.DisplayName,
+        listener.TrackId,
+        listener.TrackTitle,
+        listener.ArtistName,
+        listener.PositionSeconds,
+        listener.IsPlaying,
+        listener.StartedAt,
+        listener.UpdatedAt);
 }

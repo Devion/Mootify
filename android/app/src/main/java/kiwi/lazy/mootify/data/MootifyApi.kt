@@ -80,8 +80,24 @@ interface MootifyApi {
     @GET("api/v1/playlists")
     suspend fun playlists(): Response<List<ApiPlaylist>>
 
+    /** The header plus the first page. [skip]/[take] page the contents — see [ApiPlaylistDetail]. */
     @GET("api/v1/playlists/{id}")
-    suspend fun playlist(@Path("id") id: String): Response<ApiPlaylistDetail>
+    suspend fun playlist(
+        @Path("id") id: String,
+        @Query("skip") skip: Int = 0,
+        @Query("take") take: Int = 100,
+    ): Response<ApiPlaylistDetail>
+
+    /**
+     * Just the rows. What the browse tree asks for on page 2 and after: the header is already in
+     * hand, and re-sending it per page is exactly what made a long playlist slow to browse.
+     */
+    @GET("api/v1/playlists/{id}/items")
+    suspend fun playlistItems(
+        @Path("id") id: String,
+        @Query("skip") skip: Int = 0,
+        @Query("take") take: Int = 100,
+    ): Response<ApiPage<ApiPlaylistItem>>
 
     @POST("api/v1/playlists")
     suspend fun createPlaylist(@Body body: CreatePlaylistRequest): Response<CreatedId>

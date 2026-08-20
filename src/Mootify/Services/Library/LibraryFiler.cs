@@ -86,22 +86,49 @@ public sealed class LibraryFiler(
     public DateTimeOffset? LastRunAt { get; private set; }
 
     /// <summary>
-    /// The drop folder's full path, or null when it isn't configured or isn't there. Also what
-    /// the scanner excludes from indexing.
+    /// The drop folder's full path, or null when it isn't configured. Also what the scanner
+    /// excludes from indexing.
     /// </summary>
-    public string? DropFolder
-    {
-        get
-        {
-            var opts = options.CurrentValue;
-            if (string.IsNullOrWhiteSpace(opts.MusicRoot) || string.IsNullOrWhiteSpace(opts.ImportFolder))
-            {
-                return null;
-            }
+    public string? DropFolder => Inside(options.CurrentValue.ImportFolder);
 
-            return Path.GetFullPath(Path.Combine(opts.MusicRoot, opts.ImportFolder.Trim('/', '\\')));
-        }
+    /// <summary>
+    /// Where <see cref="LibraryOrganizer"/> puts a copy of a song it merged away, or null when
+    /// <c>Library:DuplicatesFolder</c> is blank.
+    /// </summary>
+    public string? DuplicatesFolder => Inside(options.CurrentValue.DuplicatesFolder);
+
+    /// <summary>
+    /// The folders inside the music root that are <i>not</i> the library: the mailbox, whose
+    /// contents are still being copied, and the quarantine, whose contents were deliberately
+    /// taken out. One list in one place, because three different walkers over the same tree with
+    /// two different opinions about it is precisely how a merged-away duplicate finds its way
+    /// back in — see <see cref="LibraryScanner.EnumerateAudioFiles"/> and
+    /// <see cref="Transcoding.LibraryTranscodeService.FindConvertible"/>.
+    /// </summary>
+    public string?[] NotLibrary => [DropFolder, DuplicatesFolder];
+
+    /// <summary>Resolves a configured folder name against the music root. Null if either is blank.</summary>
+    private string? Inside(string? folder)
+    {
+        var root = options.CurrentValue.MusicRoot;
+
+        return string.IsNullOrWhiteSpace(root) || string.IsNullOrWhiteSpace(folder)
+            ? null
+            : Path.GetFullPath(Path.Combine(root, folder.Trim('/', '\\')));
     }
+
+    /// <summary>
+    /// Whether a path sits inside one of <see cref="NotLibrary"/>. The trailing separator
+    /// matters: without it a folder called "duplicates-old" would match "duplicates".
+    /// </summary>
+    public bool IsOutsideTheLibrary(string path) =>
+        NotLibrary.Any(folder => folder is not null && Contains(folder, path));
+
+    internal static bool Contains(string folder, string path) =>
+        path.StartsWith(
+            folder.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+                + Path.DirectorySeparatorChar,
+            StringComparison.OrdinalIgnoreCase);
 
     public FilingReport FileDropFolder(CancellationToken ct = default)
     {
@@ -469,8 +496,12 @@ public sealed class LibraryFiler(
     /// <summary>
     /// Never overwrite. Two files can legitimately both be "01 - Intro.mp3" for the same album,
     /// and a filer that replaces one with the other has destroyed music in order to tidy up.
+    ///
+    /// Public because the drop folder is no longer the only way a file arrives — an upload
+    /// (<see cref="TrackUploadService"/>) lands in exactly the same folders and has to answer
+    /// the collision exactly the same way. Null means it gave up looking for a free name.
     /// </summary>
-    private static string? Unique(string path)
+    public static string? Unique(string path)
     {
         if (!File.Exists(path)) return path;
 

@@ -48,7 +48,13 @@
     "ImportFolder": "import",
     "//UnsortedFolder": "Where a file whose artist can't be worked out lands. It stays in the library so somebody can find it and tag it.",
     "UnsortedFolder": "generic",
-    "FileImportsOnScan": true
+    "FileImportsOnScan": true,
+    "//DuplicatesFolder": "Where Organize (in /admin/organize) moves the copy of a song it merged away. Never indexed, and never deleted — a merge that turns out to be wrong is recoverable from this folder. Blank stops Organize merging duplicates at all.",
+    "DuplicatesFolder": "duplicates",
+    "//MaxUploadBytes": "Ceiling on one file uploaded from the Music files tab on /import. 100MB takes a long FLAC and still refuses somebody's holiday video.",
+    "MaxUploadBytes": 104857600,
+    "//MaxUploadFiles": "Files in one upload. Anything past it is reported as refused, never silently dropped.",
+    "MaxUploadFiles": 50
   },
 
   "Requests": {

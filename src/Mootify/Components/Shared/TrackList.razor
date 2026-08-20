@@ -19,13 +19,20 @@
         {
             var index = i;
             var row = Rows[i];
-            var isCurrent = Player.Current?.Id == row.TrackId;
+            var isCurrent = Player.IsCurrent(row.TrackId);
+            var willPause = isCurrent && Player.IsPlaying;
 
-            <tr class="@(isCurrent ? "is-current" : "")" @ondblclick="() => PlayFrom(index)">
+            @* Double-click starts the list from this row whatever it is showing; the button
+               below decides for itself, so it stops the double-click from also reaching here
+               and undoing what the press just did. *@
+            <tr class="@(isCurrent ? "is-current" : "")" @ondblclick="() => StartFrom(index)">
                 <td class="tracklist__num">
-                    <button class="tracklist__play" @onclick="() => PlayFrom(index)"
-                            title="Play" aria-label="@($"Play {row.Title}")">
-                        @if (isCurrent && Player.IsPlaying)
+                    @* The label follows the icon, because the icon follows the player. *@
+                    <button class="tracklist__play" @onclick="() => Press(index)"
+                            @ondblclick:stopPropagation="true"
+                            title="@(willPause ? "Pause" : "Play")"
+                            aria-label="@($"{(willPause ? "Pause" : "Play")} {row.Title}")">
+                        @if (willPause)
                         {
                             <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M7 5h4v14H7zm6 0h4v14h-4z"/></svg>
                         }
@@ -79,6 +86,13 @@
     [Parameter] public EventCallback<Guid> OnRemove { get; set; }
 
     /// <summary>
+    /// The playlist these rows came out of, when they came out of one. Passed to the player so
+    /// "listening along" knows which list to broadcast against — a queue with no source is played
+    /// privately, because there is nobody a shared album or search result belongs to.
+    /// </summary>
+    [Parameter] public Guid? SourcePlaylistId { get; set; }
+
+    /// <summary>
     /// The rows show which track is playing, so they have to follow the player rather than
     /// only their own parameters. Without this the highlight is stuck on whatever was clicked:
     /// pressing next moves the audio and the play bar, and the list quietly disagrees with
@@ -91,14 +105,24 @@
     public void Dispose() => Player.StateChanged -= OnPlayerChanged;
 
     /// <summary>
-    /// Playing a row queues the whole list from that point — clicking track 3 of an album
-    /// should not leave you with a queue of one.
+    /// The button on the row. Pauses when it is showing a pause icon, and otherwise starts the
+    /// list from here — see <see cref="PlayerService.PressRowAsync"/> for why that decision lives
+    /// in the player rather than here.
     /// </summary>
-    private async Task PlayFrom(int index)
-    {
-        var ids = Rows.Select(r => r.TrackId).ToList();
-        await Player.PlayQueueAsync(ids, index);
-    }
+    private async Task Press(int index) =>
+        await Player.PressRowAsync(TrackIds(), index, SourcePlaylistId);
+
+    /// <summary>
+    /// Double-clicking a row always starts it, even if it is the current track — the gesture
+    /// means "play this", and there is no icon under the cursor claiming otherwise.
+    ///
+    /// Either way it queues the whole list from that point: clicking track 3 of an album should
+    /// not leave you with a queue of one.
+    /// </summary>
+    private async Task StartFrom(int index) =>
+        await Player.PlayQueueAsync(TrackIds(), index, SourcePlaylistId);
+
+    private List<Guid> TrackIds() => [.. Rows.Select(r => r.TrackId)];
 
     private static string Format(TimeSpan t) =>
         t.TotalHours >= 1 ? t.ToString(@"h\:mm\:ss") : t.ToString(@"m\:ss");

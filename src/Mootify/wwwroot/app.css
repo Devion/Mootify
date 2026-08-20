@@ -796,6 +796,20 @@ a.badge:hover { text-decoration: none; filter: brightness(1.2); }
 .managebox__actions { margin-top: 1rem; display: flex; align-items: center; gap: .75rem; }
 .managebox__hint { margin: .4rem 0 0; font-size: .8rem; color: var(--text-dim); }
 
+/* Checkboxes that pick what an operation is allowed to touch, on /admin/organize. The label
+   wraps the box so the sentence is the hit target — these are long enough to be worth reading. */
+.checkline { display: flex; flex-direction: column; gap: .6rem; margin-top: 1rem; }
+.checkline label {
+    display: flex;
+    align-items: flex-start;
+    gap: .55rem;
+    margin: 0;
+    font-weight: 400;
+    color: var(--text);
+    cursor: pointer;
+}
+.checkline input[type="checkbox"] { width: auto; margin: .2rem 0 0; accent-color: var(--accent); }
+
 /* Signed-in phones and tablets, on the account page. */
 .devicelist { list-style: none; margin: 0; padding: 0; }
 
@@ -1107,3 +1121,142 @@ a.badge:hover { text-decoration: none; filter: brightness(1.2); }
     color: #fff;
     border-radius: var(--radius);
 }
+
+/* ---- listening along --------------------------------------------------- */
+
+.listening {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: .6rem 1.1rem;
+    margin: .25rem 0 1.25rem;
+    padding: .55rem .8rem;
+    background: var(--bg-raised);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+}
+
+.listening__toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: .5rem;
+    background: none;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    padding: .3rem .8rem;
+    color: var(--text-dim);
+    font: inherit;
+    font-size: .82rem;
+    cursor: pointer;
+}
+
+.listening__toggle:hover { color: var(--text); border-color: var(--text-dim); }
+.listening__toggle.is-on { color: var(--accent); border-color: #f5a52455; background: var(--accent-soft); }
+
+.listening__dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--text-dim);
+    flex-shrink: 0;
+}
+
+.listening__toggle.is-on .listening__dot { background: var(--accent); }
+
+.listening__none { font-size: .82rem; }
+
+.listening__list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-wrap: wrap;
+    gap: .3rem 1.1rem;
+    min-width: 0;
+}
+
+.listening__who {
+    font-size: .82rem;
+    display: flex;
+    align-items: baseline;
+    gap: .4rem;
+    min-width: 0;
+}
+
+.listening__who span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.listening__who.is-playing strong { color: var(--accent); }
+
+/* ---- uploads ----------------------------------------------------------- */
+
+.uploadlist { list-style: none; margin: 1rem 0 0; padding: 0; }
+
+.uploadlist__row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: .25rem .75rem;
+    padding: .45rem .6rem;
+    border-bottom: 1px solid #ffffff08;
+    border-left: 3px solid transparent;
+    font-size: .88rem;
+}
+
+.uploadlist__row.is-ok { border-left-color: var(--ok); }
+.uploadlist__row.is-bad { border-left-color: var(--danger); }
+.uploadlist__name { font-weight: 500; }
+.uploadlist__row .error, .uploadlist__row .muted { font-size: .82rem; }
+
+/* ---- ideabox ----------------------------------------------------------- */
+
+.ideabox__input {
+    width: 100%;
+    max-width: 640px;
+    padding: .6rem .75rem;
+    background: var(--bg);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    color: var(--text);
+    font: inherit;
+    resize: vertical;
+}
+
+.ideabox__input:focus { outline: 2px solid var(--accent-soft); border-color: var(--accent); }
+
+.idealist { list-style: none; margin: 1rem 0 0; padding: 0; display: flex; flex-direction: column; gap: .6rem; }
+
+.idea {
+    background: var(--bg-raised);
+    border: 1px solid var(--line);
+    border-left: 3px solid var(--accent);
+    border-radius: var(--radius);
+    padding: .7rem .9rem;
+}
+
+.idea.is-archived { border-left-color: var(--line); opacity: .72; }
+
+/*  pre-wrap, not <br>. The message is user text rendered as text — turning its newlines into
+    markup would mean building HTML out of it, which is the one thing the Ideabox never does.  */
+.idea__message {
+    margin: 0 0 .45rem;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
+.idea__meta {
+    margin: 0;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: .6rem;
+    color: var(--text-dim);
+    font-size: .8rem;
+}
+
+.idea__actions { margin-left: auto; display: flex; align-items: center; gap: .75rem; }
+
+.adminnav--sub { border-bottom: none; margin-bottom: .75rem; gap: 1rem; }
+.adminnav--sub .linkbutton.is-active { color: var(--accent); }
+
+/*  A tab panel that is mounted but not showing. Both halves of /import stay in the DOM so a tab
+    click can't tear down work that is in flight — see the comment on ImportPage.  */
+.tabpanel--hidden { display: none; }

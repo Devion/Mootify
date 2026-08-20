@@ -1,0 +1,170 @@
+@* Adding music files to the library. A component rather than a page: it lives inside /import,
+   because "get music in" is one job with two shapes and two menu entries for it was clutter. *@
+@inject TrackUploadService Uploads
+@inject CurrentUser CurrentUser
+@inject ILogger<TrackUpload> Log
+
+<p class="pagehead__meta">
+    Pick one file or a whole album. Each one goes into the library under its own
+    <strong>Artist / Album</strong>, and the folders are made if they don't exist yet.
+    Anything that was waiting on a request for it stops waiting.
+</p>
+
+<section class="managebox">
+    <label for="files">Files</label>
+    <InputFile id="files" OnChange="OnFilesChosen" multiple accept="@TrackUploadService.AcceptAttribute" />
+
+    <p class="managebox__hint">
+        @string.Join(" and ", TrackUploadService.AcceptedExtensions.Select(e => e.TrimStart('.').ToUpperInvariant())),
+        up to @(Uploads.MaxBytes / (1024 * 1024))MB each and @Uploads.MaxFiles at a time.
+        Every file needs an <strong>artist</strong> and an <strong>album</strong> tag &mdash; that's
+        what decides where it lands, so anything untagged is handed back rather than guessed at.
+        Other formats go in the import folder on the server, where they get converted first.
+    </p>
+
+    @if (_working)
+    {
+        <p class="muted">
+            Uploading @_done of @_total&hellip; then a scan of the folders they landed in.
+        </p>
+        <div class="progressbar"><span style="width:@(_total == 0 ? 0 : _done * 100 / _total)%"></span></div>
+    }
+</section>
+
+@if (_error is not null)
+{
+    <p class="error">@_error</p>
+}
+
+@if (_report is { } report)
+{
+    <section class="managebox">
+        <h2>@Headline(report)</h2>
+
+        <div class="statrow">
+            <div class="stat"><strong>@report.Filed</strong><span>added to the library</span></div>
+            @if (report.Rejected > 0)
+            {
+                <div class="stat"><strong>@report.Rejected</strong><span>not taken</span></div>
+            }
+            @if (report.Matched.Requests > 0)
+            {
+                <div class="stat"><strong>@report.Matched.Requests</strong><span>requests answered</span></div>
+            }
+        </div>
+
+        @if (report.Filed > 0)
+        {
+            @* The scan is the step that makes the files playable, so it is reported rather than
+               assumed — "+0" after an upload means something went wrong and is worth seeing. *@
+            <p class="muted">
+                Indexed: +@report.Scan.Added new, ~@report.Scan.Updated updated@(report.Scan.Failed > 0
+                    ? $", {report.Scan.Failed} unreadable" : "").
+                @if (report.Matched.Requests > 0)
+                {
+                    <text>
+                        @report.Matched.Requests request@(report.Matched.Requests == 1 ? "" : "s")
+                        closed and dropped into the playlist@(report.Matched.Requests == 1 ? "" : "s") they were aimed at.
+                    </text>
+                }
+            </p>
+        }
+
+        <ul class="uploadlist">
+            @foreach (var file in report.Files)
+            {
+                <li class="uploadlist__row @(file.Ok ? "is-ok" : "is-bad")">
+                    <span class="uploadlist__name">@file.FileName</span>
+
+                    @if (file.Ok)
+                    {
+                        @* The relative path, not the absolute one: where it went is useful, and
+                           the server's disk layout is nobody's business. *@
+                        <span class="muted">@file.RelativePath</span>
+                    }
+                    else
+                    {
+                        <span class="error">@file.Detail</span>
+                        @if (file.Artist is not null || file.Album is not null)
+                        {
+                            <span class="muted">
+                                Tagged: @(file.Artist ?? "no artist") &middot; @(file.Album ?? "no album")
+                            </span>
+                        }
+                    }
+                </li>
+            }
+        </ul>
+    </section>
+}
+
+@code {
+    private UploadReport? _report;
+    private string? _error;
+    private bool _working;
+    private int _done;
+    private int _total;
+
+    private async Task OnFilesChosen(InputFileChangeEventArgs e)
+    {
+        _error = null;
+        _report = null;
+        _done = 0;
+        _working = true;
+
+        try
+        {
+            var userId = await CurrentUser.GetRequiredIdAsync();
+
+            // GetMultipleFiles refuses silently past its cap, so it is asked for the service's
+            // own limit — everything above that is then reported as refused by name.
+            var chosen = e.GetMultipleFiles(maximumFileCount: Uploads.MaxFiles);
+            _total = chosen.Count;
+
+            // Streams are opened one at a time and read straight through to a temp file, so the
+            // memory cost is one buffer rather than one album. OpenReadStream's own cap is the
+            // first wall; TrackUploadService counts the bytes that actually arrive as the second.
+            var files = new List<TrackUploadService.Incoming>(chosen.Count);
+            var streams = new List<Stream>(chosen.Count);
+
+            try
+            {
+                foreach (var file in chosen)
+                {
+                    var stream = file.OpenReadStream(maxAllowedSize: Uploads.MaxBytes);
+                    streams.Add(stream);
+                    files.Add(new TrackUploadService.Incoming(file.Name, stream));
+                }
+
+                _report = await Uploads.UploadAsync(userId, files);
+                _done = _total;
+            }
+            finally
+            {
+                foreach (var stream in streams)
+                {
+                    await stream.DisposeAsync();
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            // The message from a browser file stream is not worth showing anybody, and it can
+            // contain a path.
+            Log.LogWarning(ex, "An upload failed before anything was filed");
+            _error = "That upload didn't go through. Try a smaller batch.";
+        }
+        finally
+        {
+            _working = false;
+        }
+    }
+
+    private static string Headline(UploadReport report) => (report.Filed, report.Rejected) switch
+    {
+        (0, 0) => "Nothing to do",
+        (0, _) => "Nothing was added",
+        (_, 0) => $"Added {report.Filed} file{(report.Filed == 1 ? "" : "s")}",
+        var (filed, rejected) => $"Added {filed}, couldn't take {rejected}",
+    };
+}

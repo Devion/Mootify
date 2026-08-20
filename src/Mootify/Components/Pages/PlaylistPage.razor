@@ -1,13 +1,15 @@
 @page "/playlist/{PlaylistId:guid}"
 @attribute [Authorize]
+@implements IAsyncDisposable
 @inject PlaylistService Playlists
+@inject ListeningService Listening
 @inject PlaylistEvents PlaylistEvents
 @inject TeamService Teams
 @inject CurrentUser CurrentUser
 @inject PlayerService Player
 @inject NavigationManager Nav
 
-<PageTitle>@(_name ?? "Playlist") · Mootify</PageTitle>
+<PageTitle>@(_page?.Name ?? "Playlist") · Mootify</PageTitle>
 
 @if (_notFound)
 {
@@ -16,7 +18,7 @@
         <p>That playlist doesn't exist, or isn't yours.</p>
     </div>
 }
-else if (_name is null)
+else if (_page is null)
 {
     <p>Loading&hellip;</p>
 }
@@ -30,27 +32,64 @@ else
             }
             else
             {
-                <h1 @onclick="StartRename" title="Click to rename">@_name</h1>
+                <h1 @onclick="StartRename" title="Click to rename">@_page.Name</h1>
             }
             <p class="pagehead__meta">
-                @if (_teamId is { } tid)
+                @if (_page.TeamId is { } tid)
                 {
-                    <a href="@($"/team/{tid}")" class="badge">@_teamName</a>
+                    <a href="@($"/team/{tid}")" class="badge">@_page.TeamName</a>
                     <text> &middot; </text>
                 }
-                @_tracks.Count tracks &middot; @FormatTotal()
+                @* The playlist's numbers, not the page's — see PlaylistTrackPage.Total. *@
+                @_page.Total track@(_page.Total == 1 ? "" : "s") &middot; @FormatTotal(_page.TotalDuration)
             </p>
         </div>
         <div class="pagehead__actions">
-            <button class="button" @onclick="PlayAll" disabled="@(_tracks.Count == 0)">Play</button>
+            <button class="button" @onclick="PlayAll" disabled="@(_page.Total == 0)">Play</button>
             @* Only for personal playlists — a team one is already shared. *@
-            @if (_teamId is null && _myTeams.Count > 0)
+            @if (_page.TeamId is null && _myTeams.Count > 0)
             {
                 <button class="linkbutton" @onclick="() => _sharing = !_sharing">Share with a team</button>
             }
             <button class="linkbutton linkbutton--danger" @onclick="Delete">Delete</button>
         </div>
     </div>
+
+    @* Only on a team playlist: a personal one has exactly one reader, so there is nobody to
+       tell and nothing to see. *@
+    @if (_page.IsTeamPlaylist)
+    {
+        <div class="listening">
+            <button class="listening__toggle @(_shareListening ? "is-on" : "")"
+                    @onclick="ToggleShareListening"
+                    title="@(_shareListening
+                        ? "Everyone in this team can see what you play from a shared playlist"
+                        : "Nobody is told what you're playing")">
+                <span class="listening__dot"></span>
+                @(_shareListening ? "Sharing what I'm playing" : "Share what I'm playing")
+            </button>
+
+            @if (_listeners.Count > 0)
+            {
+                <ul class="listening__list">
+                    @foreach (var listener in _listeners)
+                    {
+                        <li class="listening__who @(listener.IsPlaying ? "is-playing" : "")">
+                            <strong>@listener.DisplayName</strong>
+                            <span class="muted">
+                                @(listener.IsPlaying ? "is on" : "is paused on")
+                                @listener.TrackTitle &middot; @listener.ArtistName
+                            </span>
+                        </li>
+                    }
+                </ul>
+            }
+            else
+            {
+                <span class="muted listening__none">Nobody else is listening to this right now.</span>
+            }
+        </div>
+    }
 
     @if (_sharing)
     {
@@ -78,64 +117,183 @@ else
         <p class="error">@_deleteError</p>
     }
 
-    <TrackList Rows="_tracks" OnRemove="Remove" EmptyMessage="Empty. Add tracks with the + on any song." />
+    <TrackList Rows="_tracks" OnRemove="Remove" SourcePlaylistId="PlaylistId"
+               EmptyMessage="Empty. Add tracks with the + on any song." />
+
+    <Pager Page="_page.PageNumber" Of="_page.PageCount" Total="_page.Total" Noun="track"
+           HasPrevious="_page.HasPrevious" HasNext="_page.HasNext"
+           OnGoTo="GoTo" Skip="_page.Skip" Take="_page.Take" />
 }
 
 @code {
     [Parameter] public Guid PlaylistId { get; set; }
 
-    private string? _name;
+    private PlaylistTrackPage? _page;
+    private int _skip;
+    private Guid _userId;
+
     private string _draftName = "";
     private bool _renaming;
     private bool _notFound;
-    private Guid? _teamId;
-    private string? _teamName;
     private string? _deleteError;
     private List<TrackList.Row> _tracks = [];
     private List<TeamSummary> _myTeams = [];
     private bool _sharing;
     private string? _shareTeamId;
 
-    protected override async Task OnParametersSetAsync() => await LoadAsync();
+    private bool _shareListening;
+    private List<Listener> _listeners = [];
+
+    /// <summary>
+    /// Polls the listening strip. Other people's playback happens in other processes — a phone,
+    /// another circuit — so there is nothing in this one to subscribe to, and the alternative
+    /// (a hub) is plumbing for a page that is refreshing a handful of rows.
+    /// </summary>
+    private CancellationTokenSource? _pollCts;
+
+    private static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(10);
+
+    /// <summary>
+    /// Which playlist the state below belongs to. <c>OnParametersSetAsync</c> runs on every
+    /// cascading update as well as on navigation — an auth-state renewal is one — so without
+    /// this, somebody reading page 4 of a long playlist gets thrown back to page 1 by an event
+    /// that has nothing to do with them.
+    /// </summary>
+    private Guid _loadedPlaylistId;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (PlaylistId != _loadedPlaylistId)
+        {
+            // A different playlist is a different list; page 4 of the last one means nothing here.
+            _loadedPlaylistId = PlaylistId;
+            _skip = 0;
+            StartPolling();
+        }
+
+        await LoadAsync();
+    }
 
     private async Task LoadAsync()
     {
-        var userId = await CurrentUser.GetRequiredIdAsync();
-        var playlist = await Playlists.GetAsync(PlaylistId, userId);
+        _userId = await CurrentUser.GetRequiredIdAsync();
 
-        if (playlist is null)
+        var page = await Playlists.GetPageAsync(PlaylistId, _userId, _skip);
+
+        if (page is null)
         {
             _notFound = true;
+            _page = null;
             return;
         }
 
         _notFound = false;
-        _name = playlist.Name;
-        _teamId = playlist.TeamId;
-        _teamName = playlist.Team?.Name;
-        _myTeams = _teamId is null ? await Teams.GetForUserAsync(userId) : [];
+        _page = page;
+
+        // GetPageAsync clamps a skip that ran off the end of a shrinking list; take its answer
+        // rather than keeping our own.
+        _skip = page.Skip;
+
+        _myTeams = page.TeamId is null ? await Teams.GetForUserAsync(_userId) : [];
 
         _tracks =
         [
-            .. playlist.Items
-                .Where(i => i.Track is { IsPresent: true })
-                .OrderBy(i => i.SortKey)
-                .Select(i => new TrackList.Row(
-                    i.TrackId,
-                    i.Track!.Title,
-                    i.Track.Artist?.Name ?? "",
-                    i.Track.Duration,
-                    i.Id))
+            .. page.Rows.Select(r => new TrackList.Row(
+                r.TrackId, r.Title, r.ArtistName, r.Duration, r.ItemId))
         ];
+
+        if (page.IsTeamPlaylist)
+        {
+            _shareListening = await Listening.IsSharingAsync(_userId);
+            await RefreshListenersAsync();
+        }
+        else
+        {
+            _listeners = [];
+        }
     }
 
-    private async Task PlayAll() =>
-        await Player.PlayQueueAsync([.. _tracks.Select(t => t.TrackId)], 0);
+    private async Task GoTo(int skip)
+    {
+        _skip = Math.Max(0, skip);
+        await LoadAsync();
+    }
+
+    // ---- listening along -------------------------------------------------
+
+    private async Task RefreshListenersAsync() =>
+        _listeners = await Listening.GetForPlaylistAsync(PlaylistId, _userId);
+
+    private async Task ToggleShareListening()
+    {
+        // Through the player rather than the service: it is what knows what is playing right now,
+        // so switching on publishes immediately instead of at the next heartbeat.
+        _shareListening = await Player.SetSharingListeningAsync(!_shareListening);
+        await RefreshListenersAsync();
+    }
+
+    private void StartPolling()
+    {
+        StopPolling();
+
+        _pollCts = new CancellationTokenSource();
+        var token = _pollCts.Token;
+
+        _ = Task.Run(async () =>
+        {
+            using var timer = new PeriodicTimer(PollInterval);
+
+            try
+            {
+                while (await timer.WaitForNextTickAsync(token))
+                {
+                    if (_page?.IsTeamPlaylist != true) continue;
+
+                    await RefreshListenersAsync();
+                    await InvokeAsync(StateHasChanged);
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                // Navigated away, or the circuit is going.
+            }
+            catch (Exception)
+            {
+                // A poll that fails is a strip that doesn't update. Never a page that breaks.
+            }
+        }, CancellationToken.None);
+    }
+
+    private void StopPolling()
+    {
+        _pollCts?.Cancel();
+        _pollCts?.Dispose();
+        _pollCts = null;
+    }
+
+    public ValueTask DisposeAsync()
+    {
+        StopPolling();
+        return ValueTask.CompletedTask;
+    }
+
+    // ---- the rest --------------------------------------------------------
+
+    /// <summary>
+    /// Plays the whole playlist, not the page. The ids come back in one column, so a 500-track
+    /// list costs one small query rather than however many pages it is on screen.
+    /// </summary>
+    private async Task PlayAll()
+    {
+        var ids = await Playlists.GetTrackIdsAsync(PlaylistId, _userId);
+        if (ids is not { Count: > 0 }) return;
+
+        await Player.PlayQueueAsync(ids, 0, PlaylistId);
+    }
 
     private async Task Remove(Guid itemId)
     {
-        var userId = await CurrentUser.GetRequiredIdAsync();
-        await Playlists.RemoveItemAsync(itemId, userId);
+        await Playlists.RemoveItemAsync(itemId, _userId);
         await LoadAsync();
         PlaylistEvents.NotifyChanged();
     }
@@ -143,7 +301,7 @@ else
     private void StartRename()
     {
         _renaming = true;
-        _draftName = _name ?? "";
+        _draftName = _page?.Name ?? "";
     }
 
     private async Task OnRenameKey(KeyboardEventArgs e)
@@ -157,12 +315,11 @@ else
         if (!_renaming) return;
         _renaming = false;
 
-        if (string.IsNullOrWhiteSpace(_draftName) || _draftName == _name) return;
+        if (string.IsNullOrWhiteSpace(_draftName) || _draftName == _page?.Name) return;
 
-        var userId = await CurrentUser.GetRequiredIdAsync();
-        if (await Playlists.RenameAsync(PlaylistId, userId, _draftName))
+        if (await Playlists.RenameAsync(PlaylistId, _userId, _draftName))
         {
-            _name = _draftName.Trim();
+            _page = _page! with { Name = _draftName.Trim() };
             PlaylistEvents.NotifyChanged();
         }
     }
@@ -171,8 +328,7 @@ else
     {
         if (!Guid.TryParse(_shareTeamId, out var teamId)) return;
 
-        var userId = await CurrentUser.GetRequiredIdAsync();
-        var (ok, error) = await Playlists.ShareWithTeamAsync(PlaylistId, userId, teamId);
+        var (ok, error) = await Playlists.ShareWithTeamAsync(PlaylistId, _userId, teamId);
 
         _deleteError = ok ? null : error;
         _sharing = false;
@@ -183,8 +339,7 @@ else
 
     private async Task Delete()
     {
-        var userId = await CurrentUser.GetRequiredIdAsync();
-        if (await Playlists.DeleteAsync(PlaylistId, userId))
+        if (await Playlists.DeleteAsync(PlaylistId, _userId))
         {
             PlaylistEvents.NotifyChanged();
             Nav.NavigateTo("/");
@@ -196,9 +351,6 @@ else
         _deleteError = "Only a team owner can delete this playlist.";
     }
 
-    private string FormatTotal()
-    {
-        var t = TimeSpan.FromTicks(_tracks.Sum(x => x.Duration.Ticks));
-        return t.TotalHours >= 1 ? $"{(int)t.TotalHours}h {t.Minutes}m" : $"{t.Minutes}m";
-    }
+    private static string FormatTotal(TimeSpan t) =>
+        t.TotalHours >= 1 ? $"{(int)t.TotalHours}h {t.Minutes}m" : $"{t.Minutes}m";
 }

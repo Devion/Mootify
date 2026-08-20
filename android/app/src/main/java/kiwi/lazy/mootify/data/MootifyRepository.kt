@@ -138,8 +138,48 @@ class MootifyRepository(
 
     suspend fun playlists(): Result<List<ApiPlaylist>> = io { api()?.playlists() }
 
-    suspend fun playlist(playlistId: String): Result<ApiPlaylistDetail> =
-        io { api()?.playlist(playlistId) }
+    /** The header and one page of contents. See [ApiPlaylistDetail] for why it is a page. */
+    suspend fun playlist(
+        playlistId: String,
+        skip: Int = 0,
+        take: Int = PlaylistPageSize,
+    ): Result<ApiPlaylistDetail> = io { api()?.playlist(playlistId, skip, take) }
+
+    /** One page of rows, for a browse list that already has the header. */
+    suspend fun playlistItems(
+        playlistId: String,
+        skip: Int = 0,
+        take: Int = PlaylistPageSize,
+    ): Result<ApiPage<ApiPlaylistItem>> = io { api()?.playlistItems(playlistId, skip, take) }
+
+    /**
+     * Every track in a playlist, in order. This is what building a play queue needs, and it is the
+     * one caller that legitimately wants all of it — so it pages through rather than asking the
+     * server for an unbounded list, and stops at [MaxPlaylistTracks] rather than following a list
+     * that keeps growing under it.
+     *
+     * A page that fails ends the walk and returns what it has: a queue of the first hundred songs
+     * is a car that keeps playing, which beats a car that plays nothing.
+     */
+    suspend fun playlistTracks(playlistId: String): Result<List<ApiTrack>> = withContext(Dispatchers.IO) {
+        val first = call { api()?.playlist(playlistId, 0, PlaylistPageSize) }
+            .getOrElse { return@withContext Result.failure(it) }
+
+        val tracks = first.items.items.map { it.track }.toMutableList()
+        val total = minOf(first.items.total, MaxPlaylistTracks)
+
+        while (tracks.size < total) {
+            val page = call { api()?.playlistItems(playlistId, tracks.size, PlaylistPageSize) }
+                .getOrNull() ?: break
+
+            // A page the server answered as empty would otherwise spin here forever.
+            if (page.items.isEmpty()) break
+
+            tracks += page.items.map { it.track }
+        }
+
+        Result.success(tracks)
+    }
 
     suspend fun createPlaylist(name: String, teamId: String? = null): Result<String> =
         io { api()?.createPlaylist(CreatePlaylistRequest(name, teamId)) }.map { it.id }
@@ -267,6 +307,15 @@ class MootifyRepository(
         }
     }
 }
+
+/** Matches the server's own default (`PlaylistService.DefaultPageSize`). */
+const val PlaylistPageSize = 100
+
+/**
+ * A ceiling on how much of a playlist becomes a play queue. ExoPlayer holds these in memory and a
+ * head unit has very little of it; a playlist longer than this is a library, not a queue.
+ */
+const val MaxPlaylistTracks = 2_000
 
 class ApiException(val code: Int, message: String) : IOException(message)
 

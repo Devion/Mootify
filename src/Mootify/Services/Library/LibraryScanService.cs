@@ -105,10 +105,10 @@ public sealed class LibraryScanService(
                 _watcher.Filters.Add($"*{extension}");
             }
 
-            _watcher.Created += (_, _) => DebouncedScan(stoppingToken);
-            _watcher.Deleted += (_, _) => DebouncedScan(stoppingToken);
-            _watcher.Renamed += (_, _) => DebouncedScan(stoppingToken);
-            _watcher.Changed += (_, _) => DebouncedScan(stoppingToken);
+            _watcher.Created += (_, e) => DebouncedScan(e.FullPath, stoppingToken);
+            _watcher.Deleted += (_, e) => DebouncedScan(e.FullPath, stoppingToken);
+            _watcher.Renamed += (_, e) => DebouncedScan(e.FullPath, stoppingToken);
+            _watcher.Changed += (_, e) => DebouncedScan(e.FullPath, stoppingToken);
             _watcher.Error += (_, e) => log.LogWarning(e.GetException(), "File watcher error; periodic scan still covers it");
 
             _watcher.EnableRaisingEvents = true;
@@ -125,9 +125,20 @@ public sealed class LibraryScanService(
 
     /// <summary>
     /// An album import fires hundreds of events. Collapse them into one scan once writes settle.
+    ///
+    /// <b>The duplicates folder is not worth waking up for.</b> An organize pass moves every
+    /// merged-away copy into it, which is hundreds of events for files that have deliberately
+    /// just left the library — and the scan they'd start would run straight into the pass that
+    /// is still going. The drop folder stays watched, because a file landing there is exactly
+    /// what the debounce exists to notice.
     /// </summary>
-    private void DebouncedScan(CancellationToken stoppingToken)
+    private void DebouncedScan(string path, CancellationToken stoppingToken)
     {
+        if (filer.DuplicatesFolder is { } quarantine && LibraryFiler.Contains(quarantine, path))
+        {
+            return;
+        }
+
         lock (_debounceLock)
         {
             _debounceCts?.Cancel();

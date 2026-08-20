@@ -1,6 +1,10 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.JSInterop;
 using Mootify.Data;
+using Mootify.Services.Auth;
+using Mootify.Services.Playlists;
+using Mootify.Services.Recommendations;
+using Mootify.Services.Settings;
 
 namespace Mootify.Services.Playback;
 
@@ -39,10 +43,37 @@ public sealed record QueueEntry(int OrderIndex, TrackInfo Track);
 public sealed class PlayerService(
     IJSRuntime js,
     IDbContextFactory<MootifyDbContext> dbFactory,
+    ListeningService listening,
+    TasteService taste,
+    PreferenceService preferences,
+    CurrentUser currentUser,
     ILogger<PlayerService> log) : IAsyncDisposable
 {
     private IJSObjectReference? _module;
     private DotNetObjectReference<PlayerService>? _selfRef;
+
+    /// <summary>When the last listening heartbeat went out. See <see cref="BroadcastAsync"/>.</summary>
+    private DateTimeOffset _lastBroadcast = DateTimeOffset.MinValue;
+
+    /// <summary>
+    /// The track seconds are being counted against, and how far it had got when we last looked.
+    ///
+    /// Kept separately from <see cref="Current"/> because by the time a track change is handled,
+    /// <see cref="Position"/> already belongs to the next song — the same reason the Android
+    /// reporter keeps its own copy.
+    /// </summary>
+    private Guid? _countingTrackId;
+    private double _countedSeconds;
+
+    /// <summary>
+    /// Set when the queue came from "Surprise me". Such a queue always tops itself up, whatever
+    /// the auto-continue preference says — endlessness is the thing that was asked for, not a
+    /// side effect of a setting.
+    /// </summary>
+    private bool _alwaysGrow;
+
+    /// <summary>Stops two top-ups racing when the last track ends while one is already running.</summary>
+    private bool _growing;
 
     private List<TrackInfo> _queue = [];
 
@@ -73,6 +104,17 @@ public sealed class PlayerService(
     public bool HasNext => _cursor >= 0 && (_cursor + 1 < _order.Count || Repeat == RepeatMode.All);
     public bool HasPrevious => _cursor > 0 || Position > 3;
 
+    /// <summary>
+    /// The playlist this queue was started from, or null when it came from an album, an artist or
+    /// a search. It is the only thing that makes "listening along" addressable — a queue with no
+    /// source has no set of people who are entitled to see it, so nothing is broadcast.
+    ///
+    /// Set by whoever built the queue and then left alone. Enqueueing more tracks onto a playlist
+    /// queue keeps the source: the person is still working through that list, and dropping the
+    /// claim on the first added track would make the strip flicker for everybody watching.
+    /// </summary>
+    public Guid? SourcePlaylistId { get; private set; }
+
     public event Func<Task>? StateChanged;
 
     private async Task NotifyAsync()
@@ -97,12 +139,60 @@ public sealed class PlayerService(
 
     public async Task PlayTrackAsync(Guid trackId) => await PlayQueueAsync([trackId], 0);
 
-    public async Task PlayQueueAsync(IReadOnlyList<Guid> trackIds, int startIndex)
+    /// <summary>
+    /// Whether this is the track the player is on right now. Every list renders its play control
+    /// from this rather than comparing ids itself — the row button showed a pause icon and then
+    /// restarted the song, because the icon and the click handler were two expressions of the
+    /// same idea and only one of them knew about it.
+    /// </summary>
+    public bool IsCurrent(Guid trackId) => Current?.Id == trackId;
+
+    /// <summary>
+    /// Pressing the play control on a row in a list.
+    ///
+    /// On the track that is already playing this is a <b>pause</b>, and on a paused one a resume:
+    /// the button is showing a pause icon at that point, and re-queueing would jump back to 0:00,
+    /// which is never what somebody pressing a pause icon means. Any other row starts the list
+    /// from there.
+    ///
+    /// Here rather than in the component because it is a decision about playback state, and this
+    /// is the thing that owns playback state.
+    /// </summary>
+    public async Task PressRowAsync(
+        IReadOnlyList<Guid> trackIds, int index, Guid? sourcePlaylistId = null)
+    {
+        if (index < 0 || index >= trackIds.Count) return;
+
+        if (IsCurrent(trackIds[index]))
+        {
+            await TogglePlayPauseAsync();
+            return;
+        }
+
+        await PlayQueueAsync(trackIds, index, sourcePlaylistId);
+    }
+
+    /// <summary>
+    /// Starts a queue. <paramref name="sourcePlaylistId"/> is what the tracks were picked out of,
+    /// when that was a playlist — see <see cref="SourcePlaylistId"/>.
+    /// </summary>
+    public async Task PlayQueueAsync(
+        IReadOnlyList<Guid> trackIds,
+        int startIndex,
+        Guid? sourcePlaylistId = null,
+        bool alwaysGrow = false)
     {
         if (trackIds.Count == 0) return;
 
+        // Before the queue is replaced: whatever was playing has now been left, and its seconds
+        // are only reportable while we still know what they belong to.
+        await FlushPlayAsync();
+
         _queue = await LoadTracksAsync(trackIds);
         if (_queue.Count == 0) return;
+
+        SourcePlaylistId = sourcePlaylistId;
+        _alwaysGrow = alwaysGrow;
 
         startIndex = Math.Clamp(startIndex, 0, _queue.Count - 1);
         BuildOrder(startAt: startIndex);
@@ -204,10 +294,16 @@ public sealed class PlayerService(
             return;
         }
 
+        // The track we are leaving, before Current moves off it.
+        await FlushPlayAsync();
+
         Current = _queue[_order[_cursor]];
         Position = 0;
         Duration = Current.Duration.TotalSeconds;
         IsPlaying = true;
+
+        _countingTrackId = Current.Id;
+        _countedSeconds = 0;
 
         // Each track gets a fresh verdict; the last one falling back says nothing about this one.
         UsingFallback = false;
@@ -220,6 +316,10 @@ public sealed class PlayerService(
             "play",
             $"/media/{Current.Id}",
             Current.NeedsFallback ? $"/media/{Current.Id}/mp3" : null);
+
+        // A new track is the moment the broadcast is most wrong, so it goes out immediately
+        // rather than waiting for the next heartbeat.
+        await BroadcastAsync(force: true);
 
         await NotifyAsync();
     }
@@ -234,6 +334,7 @@ public sealed class PlayerService(
         await EnsureInitializedAsync();
         IsPlaying = !IsPlaying;
         await _module!.InvokeVoidAsync(IsPlaying ? "resume" : "pause");
+        await BroadcastAsync(force: true);
         await NotifyAsync();
     }
 
@@ -261,8 +362,15 @@ public sealed class PlayerService(
         {
             _cursor = 0;
         }
+        // The end of the queue, and the one moment worth asking for more. Repeat.All never gets
+        // here, which is right: somebody looping a playlist has said what they want to hear.
+        else if (await TryGrowQueueAsync())
+        {
+            _cursor++;
+        }
         else
         {
+            await FlushPlayAsync();
             IsPlaying = false;
             await EnsureInitializedAsync();
             await _module!.InvokeVoidAsync("pause");
@@ -401,6 +509,180 @@ public sealed class PlayerService(
         await PlayAtCursorAsync();
     }
 
+    // ---- play history ----------------------------------------------------
+
+    /// <summary>
+    /// Writes down the track just left and how far it got.
+    ///
+    /// The website did not record this at all — <c>PlayEvent</c> was written only by the Android
+    /// app — which meant anybody who listens on the website had no history, and everything built
+    /// on history had nothing to work from. It is the same shape as the app's
+    /// <c>PlaybackReporter</c>: one event per track, on leaving it, carrying the seconds played,
+    /// because that is what tells a listen from a skip.
+    ///
+    /// Failures are swallowed. This is bookkeeping for the listener's own benefit and never a
+    /// reason for their music to stop.
+    /// </summary>
+    private async Task FlushPlayAsync()
+    {
+        if (_countingTrackId is not { } trackId) return;
+
+        // Position still belongs to this track at every call site, but take the larger of the two
+        // so a pause that happened before the flush isn't lost.
+        var seconds = Math.Max(_countedSeconds, Current?.Id == trackId ? Position : 0);
+
+        _countingTrackId = null;
+        _countedSeconds = 0;
+
+        if (seconds < MinimumReportableSeconds) return;
+
+        try
+        {
+            if (await currentUser.GetIdAsync() is not { } userId) return;
+
+            await using var db = await dbFactory.CreateDbContextAsync();
+
+            db.PlayEvents.Add(new PlayEvent
+            {
+                UserId = userId,
+                TrackId = trackId,
+                PlayedAt = DateTimeOffset.UtcNow,
+                SecondsPlayed = seconds,
+            });
+
+            await db.SaveChangesAsync();
+        }
+        catch (Exception ex)
+        {
+            log.LogDebug(ex, "Could not record a play of {Track}", trackId);
+        }
+    }
+
+    /// <summary>
+    /// Below this it was a skip, and the play history is better off without it. The same number
+    /// the Android reporter uses, so the two clients agree about what counts as listening.
+    /// </summary>
+    private const double MinimumReportableSeconds = 5;
+
+    // ---- running out -----------------------------------------------------
+
+    /// <summary>
+    /// The queue is finished. Top it up from what this account listens to, when that has been
+    /// asked for and when there is enough history to do it without guessing.
+    ///
+    /// Returns whether anything was added, so the caller can carry on playing rather than stop.
+    /// </summary>
+    private async Task<bool> TryGrowQueueAsync()
+    {
+        if (_growing) return false;
+
+        try
+        {
+            _growing = true;
+
+            if (await currentUser.GetIdAsync() is not { } userId) return false;
+            if (!_alwaysGrow && !await preferences.GetAutoContinueAsync(userId)) return false;
+
+            // Nothing already in the queue comes back round; TasteService also holds out anything
+            // heard recently, which after a long session is most of this anyway.
+            var suggestions = await taste.SuggestAsync(
+                userId, GrowBy, [.. _queue.Select(t => t.Id)]);
+
+            if (suggestions.Count == 0)
+            {
+                // Either the profile isn't ready or the library has nothing left to offer. Both
+                // mean the music stops, which is what it did before this existed.
+                log.LogDebug("Nothing to continue with for {User}", userId);
+                return false;
+            }
+
+            var added = await LoadTracksAsync([.. suggestions.Select(s => s.TrackId)]);
+            if (added.Count == 0) return false;
+
+            var firstNew = _queue.Count;
+            _queue.AddRange(added);
+
+            for (var i = firstNew; i < _queue.Count; i++)
+            {
+                _order.Add(i);
+            }
+
+            log.LogInformation("Added {Count} suggested track(s) to keep {User} going", added.Count, userId);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            log.LogWarning(ex, "Could not extend the queue");
+            return false;
+        }
+        finally
+        {
+            _growing = false;
+        }
+    }
+
+    /// <summary>How many tracks a top-up adds. Enough to keep going, few enough to stay steerable.</summary>
+    private const int GrowBy = 10;
+
+    // ---- listening along -------------------------------------------------
+
+    /// <summary>
+    /// Tells <see cref="ListeningService"/> where we are, at most once every
+    /// <see cref="ListeningService.HeartbeatInterval"/> unless <paramref name="force"/> says this
+    /// is one of the moments that matter — a track change, a pause, a resume.
+    ///
+    /// The throttle is the point. <see cref="OnTimeUpdate"/> fires several times a second while a
+    /// song plays, and a write per tick would mean one listener generating thousands of updates an
+    /// hour against the same SQLite file that is serving the website. The service's staleness
+    /// window is sized around this interval, not the other way round.
+    ///
+    /// Failures are swallowed. This is a courtesy to other people looking at a playlist; it is
+    /// never a reason for somebody's music to stop.
+    /// </summary>
+    private async Task BroadcastAsync(bool force = false)
+    {
+        var now = DateTimeOffset.UtcNow;
+        if (!force && now - _lastBroadcast < ListeningService.HeartbeatInterval) return;
+
+        _lastBroadcast = now;
+
+        try
+        {
+            if (await currentUser.GetIdAsync() is not { } userId) return;
+
+            await listening.PublishAsync(
+                userId, SourcePlaylistId, Current?.Id, Position, IsPlaying);
+        }
+        catch (Exception ex)
+        {
+            log.LogDebug(ex, "Could not update the listening-along session");
+        }
+    }
+
+    /// <summary>Whether this account is sharing what it plays. Read from the stored preference.</summary>
+    public async Task<bool> IsSharingListeningAsync()
+    {
+        if (await currentUser.GetIdAsync() is not { } userId) return false;
+        return await listening.IsSharingAsync(userId);
+    }
+
+    /// <summary>
+    /// Flips the switch and, when it goes on, immediately publishes what is already playing —
+    /// otherwise turning it on mid-song does nothing visible for up to a heartbeat, which reads
+    /// as a broken button.
+    /// </summary>
+    public async Task<bool> SetSharingListeningAsync(bool enabled)
+    {
+        if (await currentUser.GetIdAsync() is not { } userId) return false;
+
+        await listening.SetSharingAsync(userId, enabled);
+
+        if (enabled) await BroadcastAsync(force: true);
+
+        await NotifyAsync();
+        return enabled;
+    }
+
     // ---- callbacks from player.js ---------------------------------------
 
     [JSInvokable]
@@ -411,6 +693,17 @@ public sealed class PlayerService(
         {
             Duration = duration;
         }
+
+        // Remembered while the player still has it: by the time a track change is handled,
+        // Position belongs to the next song.
+        if (Current is not null && Current.Id == _countingTrackId)
+        {
+            _countedSeconds = position;
+        }
+
+        // Throttled inside; this fires several times a second.
+        await BroadcastAsync();
+
         await NotifyAsync();
     }
 
@@ -435,6 +728,7 @@ public sealed class PlayerService(
     public async Task OnPlayStateChanged(bool playing)
     {
         IsPlaying = playing;
+        await BroadcastAsync(force: true);
         await NotifyAsync();
     }
 
@@ -449,6 +743,24 @@ public sealed class PlayerService(
 
     public async ValueTask DisposeAsync()
     {
+        // Best effort, and only that: a circuit torn down by a closed laptop never gets here at
+        // all, which is why ListeningService expires a session on age rather than on being told.
+        // Doing it anyway means the common case — navigating away, signing out — is instant.
+        try
+        {
+            // The last track of a session is only ever recorded here — nothing else follows it.
+            await FlushPlayAsync();
+
+            if (await currentUser.GetIdAsync() is { } userId)
+            {
+                await listening.StopAsync(userId);
+            }
+        }
+        catch (Exception ex)
+        {
+            log.LogDebug(ex, "Could not clear the listening-along session on teardown");
+        }
+
         if (_module is not null)
         {
             try

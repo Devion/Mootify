@@ -10,6 +10,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Mootify.Data;
+using Mootify.Endpoints.Api;
 using Mootify.Services.Settings;
 
 namespace Mootify.Tests;
@@ -189,13 +190,45 @@ public sealed class MootifyApiFixture : IsolatedMootifyFixture, IAsyncLifetime
         Services.GetRequiredService<SetupState>().MarkComplete();
     }
 
-    /// <summary>A client carrying a freshly issued device token, as the app would.</summary>
+    /// <summary>
+    /// One token, minted once and reused, per device name.
+    ///
+    /// It used to mint a fresh one per test, and that quietly coupled the size of this file to two
+    /// production limits: <c>/api/v1/auth/token</c> is rate-limited to 20 a minute, and
+    /// <c>Api:MaxTokensPerUser</c> drops the oldest past ten. Adding a test eventually made an
+    /// unrelated one fail with a 503, which is a fixture problem wearing an API problem's clothes.
+    ///
+    /// Tests that are <i>about</i> issuing or revoking a token call <see cref="IssueTokenAsync"/>
+    /// directly with their own device name, so they still get a real one of their own.
+    /// </summary>
+    private readonly Dictionary<string, string> _tokens = [];
+    private readonly SemaphoreSlim _tokenGate = new(1, 1);
+
     public async Task<HttpClient> SignedInClientAsync(string device = "Test phone")
     {
         var client = CreateClient();
-        var token = await IssueTokenAsync(client, device);
-        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        client.DefaultRequestHeaders.Authorization =
+            new AuthenticationHeaderValue("Bearer", await CachedTokenAsync(device));
         return client;
+    }
+
+    private async Task<string> CachedTokenAsync(string device)
+    {
+        await _tokenGate.WaitAsync();
+
+        try
+        {
+            if (_tokens.TryGetValue(device, out var existing)) return existing;
+
+            using var client = CreateClient();
+            var token = await IssueTokenAsync(client, device);
+            _tokens[device] = token;
+            return token;
+        }
+        finally
+        {
+            _tokenGate.Release();
+        }
     }
 
     public async Task<string> IssueTokenAsync(HttpClient client, string device = "Test phone")
@@ -345,7 +378,8 @@ public sealed class ApiIntegrationTests(MootifyApiFixture fixture) : IClassFixtu
         // Lidarr is unconfigured in this fixture, and the app uses this to hide the request UI
         // rather than discovering it through a 503.
         Assert.False(body.GetProperty("server").GetProperty("lidarrConfigured").GetBoolean());
-        Assert.Equal(1, body.GetProperty("server").GetProperty("apiVersion").GetInt32());
+        // 2 since playlist contents became a page. The app checks this before assuming a shape.
+        Assert.Equal(ApiMap.Version, body.GetProperty("server").GetProperty("apiVersion").GetInt32());
     }
 
     // ---- the forced password change ---------------------------------------
@@ -591,11 +625,169 @@ public sealed class ApiIntegrationTests(MootifyApiFixture fixture) : IClassFixtu
             .RootElement.GetProperty("added").GetInt32());
 
         var detail = (await client.GetFromJsonAsync<JsonDocument>($"/api/v1/playlists/{playlistId}"))!.RootElement;
-        var item = detail.GetProperty("items").EnumerateArray().Single();
+
+        // items is a page, not an array — see ApiPlaylistDetail. A client built against the old
+        // shape fails to parse here rather than silently showing a prefix of a long playlist.
+        var items = detail.GetProperty("items");
+        var item = items.GetProperty("items").EnumerateArray().Single();
 
         Assert.Equal("Car songs", detail.GetProperty("name").GetString());
         Assert.Equal("More Cowbell", item.GetProperty("track").GetProperty("title").GetString());
         Assert.True(detail.GetProperty("canEdit").GetBoolean());
+
+        // The playlist's own totals, so a header never has to be computed from a page.
+        Assert.Equal(1, detail.GetProperty("trackCount").GetInt32());
+        Assert.Equal(1, items.GetProperty("total").GetInt32());
+    }
+
+    [Fact]
+    public async Task A_long_playlist_is_paged_rather_than_sent_whole()
+    {
+        // The reason any of this changed: a car browsing a long playlist re-fetched every row for
+        // every page it drew. skip/take have to reach the query, and the total has to describe the
+        // playlist rather than the page, or a pager can't say what it is not showing.
+        using var client = await fixture.SignedInClientAsync();
+
+        var created = await client.PostAsJsonAsync("/api/v1/playlists", new { name = "Long drive" });
+        var playlistId = (await created.Content.ReadFromJsonAsync<JsonDocument>())!
+            .RootElement.GetProperty("id").GetGuid();
+
+        // The fixture has one track; adding it repeatedly is a legitimate playlist and is enough
+        // to prove the paging arithmetic without seeding a library.
+        for (var i = 0; i < 3; i++)
+        {
+            await client.PostAsJsonAsync(
+                $"/api/v1/playlists/{playlistId}/tracks", new { trackIds = new[] { fixture.TrackId } });
+        }
+
+        var first = (await client.GetFromJsonAsync<JsonDocument>(
+            $"/api/v1/playlists/{playlistId}?skip=0&take=2"))!.RootElement.GetProperty("items");
+
+        Assert.Equal(3, first.GetProperty("total").GetInt32());
+        Assert.Equal(2, first.GetProperty("items").EnumerateArray().Count());
+
+        // The rows-only endpoint is what a browse tree asks for on page 2 and after.
+        var second = (await client.GetFromJsonAsync<JsonDocument>(
+            $"/api/v1/playlists/{playlistId}/items?skip=2&take=2"))!.RootElement;
+
+        Assert.Equal(3, second.GetProperty("total").GetInt32());
+        Assert.Single(second.GetProperty("items").EnumerateArray());
+
+        // And the whole thing as bare ids, which is what building a play queue needs.
+        var ids = (await client.GetFromJsonAsync<List<Guid>>(
+            $"/api/v1/playlists/{playlistId}/trackids"))!;
+
+        Assert.Equal(3, ids.Count);
+        Assert.All(ids, id => Assert.Equal(fixture.TrackId, id));
+    }
+
+    [Fact]
+    public async Task Listening_along_is_off_until_it_is_switched_on()
+    {
+        // The switch is per account rather than per device, so it is the server that decides
+        // whether a heartbeat becomes visible — a phone must not be able to opt itself in.
+        using var client = await fixture.SignedInClientAsync();
+
+        var before = (await client.GetFromJsonAsync<JsonDocument>("/api/v1/listening"))!.RootElement;
+        Assert.False(before.GetProperty("sharing").GetBoolean());
+
+        var on = await client.PutAsJsonAsync("/api/v1/listening", new { sharing = true });
+        on.EnsureSuccessStatusCode();
+
+        Assert.True((await on.Content.ReadFromJsonAsync<JsonDocument>())!
+            .RootElement.GetProperty("sharing").GetBoolean());
+
+        var after = (await client.GetFromJsonAsync<JsonDocument>("/api/v1/listening"))!.RootElement;
+        Assert.True(after.GetProperty("sharing").GetBoolean());
+    }
+
+    [Fact]
+    public async Task A_playback_heartbeat_carries_the_source_playlist_without_a_second_call()
+    {
+        // Folding the listening heartbeat into the playback save is the whole design: one call on
+        // one timer. This proves the extra fields reach the server and that a save still succeeds
+        // for a client that has never heard of them.
+        using var client = await fixture.SignedInClientAsync();
+
+        var created = await client.PostAsJsonAsync("/api/v1/playlists", new { name = "In the car" });
+        var playlistId = (await created.Content.ReadFromJsonAsync<JsonDocument>())!
+            .RootElement.GetProperty("id").GetGuid();
+
+        await client.PostAsJsonAsync(
+            $"/api/v1/playlists/{playlistId}/tracks", new { trackIds = new[] { fixture.TrackId } });
+
+        await client.PutAsJsonAsync("/api/v1/listening", new { sharing = true });
+
+        var saved = await client.PutAsJsonAsync("/api/v1/playback", new
+        {
+            currentTrackId = fixture.TrackId,
+            positionSeconds = 12.5,
+            queue = new[] { fixture.TrackId },
+            queueIndex = 0,
+            shuffleEnabled = false,
+            repeat = "Off",
+            sourcePlaylistId = playlistId,
+            isPlaying = true,
+        });
+
+        Assert.Equal(HttpStatusCode.NoContent, saved.StatusCode);
+
+        // A personal playlist has exactly one reader and they are left out of their own list, so
+        // this is empty — what it proves is that the endpoint exists and answers rather than 404s.
+        var listeners = await client.GetFromJsonAsync<List<JsonElement>>(
+            $"/api/v1/playlists/{playlistId}/listeners");
+
+        Assert.Empty(listeners!);
+
+        // The old body shape, with neither new field. It still has to save playback.
+        var legacy = await client.PutAsJsonAsync("/api/v1/playback", new
+        {
+            currentTrackId = fixture.TrackId,
+            positionSeconds = 30.0,
+            queue = new[] { fixture.TrackId },
+            queueIndex = 0,
+            shuffleEnabled = false,
+            repeat = "Off",
+        });
+
+        Assert.Equal(HttpStatusCode.NoContent, legacy.StatusCode);
+
+        var state = (await client.GetFromJsonAsync<JsonDocument>("/api/v1/playback"))!.RootElement;
+        Assert.Equal(30.0, state.GetProperty("positionSeconds").GetDouble());
+    }
+
+    [Fact]
+    public async Task Listeners_on_somebody_elses_playlist_are_not_found()
+    {
+        // Empty rather than 403, and 404 for a playlist that isn't there: neither answer may be
+        // usable to discover that somebody else's list exists.
+        using var client = await fixture.SignedInClientAsync();
+
+        var listeners = await client.GetFromJsonAsync<List<JsonElement>>(
+            $"/api/v1/playlists/{Guid.NewGuid()}/listeners");
+
+        Assert.Empty(listeners!);
+
+        Assert.Equal(
+            HttpStatusCode.NotFound,
+            (await client.GetAsync($"/api/v1/playlists/{Guid.NewGuid()}/items")).StatusCode);
+        Assert.Equal(
+            HttpStatusCode.NotFound,
+            (await client.GetAsync($"/api/v1/playlists/{Guid.NewGuid()}/trackids")).StatusCode);
+    }
+
+    [Fact]
+    public async Task Library_search_reaches_the_album_and_the_artist_too()
+    {
+        // Track-title-only search was the API's own rule and it disagreed with the website's.
+        // "Pasture" is the fixture album; the track on it is called "More Cowbell".
+        using var client = await fixture.SignedInClientAsync();
+
+        var byAlbum = (await client.GetFromJsonAsync<JsonDocument>(
+            "/api/v1/library/search?q=pasture"))!.RootElement;
+
+        var track = byAlbum.GetProperty("tracks").EnumerateArray().Single();
+        Assert.Equal("More Cowbell", track.GetProperty("title").GetString());
     }
 
     [Fact]

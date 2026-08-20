@@ -2,6 +2,7 @@
 @attribute [Authorize]
 @implements IDisposable
 @inject IDbContextFactory<MootifyDbContext> DbFactory
+@inject LibrarySearchService Search
 @inject LidarrClient Lidarr
 @inject RequestService Requests
 @inject PlaylistService Playlists
@@ -35,6 +36,16 @@
     else
     {
         <TrackList Rows="_localTracks" EmptyMessage="Type something above." />
+
+        @if (_localTotal > _localTracks.Count)
+        {
+            @* Never a silent cap. The number is the whole answer, and the link goes where the
+               rest of it can actually be paged through. *@
+            <p class="muted">
+                Showing @_localTracks.Count of @_localTotal matches &mdash;
+                <a href="@($"/library?q={Uri.EscapeDataString(_query)}")">see them all in the library</a>.
+            </p>
+        }
     }
 </section>
 
@@ -182,8 +193,16 @@
 @code {
     [SupplyParameterFromQuery(Name = "q")] public string? InitialQuery { get; set; }
 
+    /// <summary>
+    /// What this page shows before handing off to the library page. It is a first look on the way
+    /// to asking Lidarr, not a browser — so it is deliberately short, and it says how many it
+    /// isn't showing rather than stopping at fifty and looking complete.
+    /// </summary>
+    private const int LocalResults = 25;
+
     private string _query = "";
     private List<TrackList.Row> _localTracks = [];
+    private int _localTotal;
     private List<LidarrAlbum> _remote = [];
     private List<PlaylistSummary> _playlists = [];
     private string? _targetPlaylistId;
@@ -258,32 +277,29 @@
         }
     }
 
+    /// <summary>
+    /// The local half. Through <see cref="LibrarySearchService"/> rather than a query written here,
+    /// so this box, the library page and the phone all agree about what a term matches — this page
+    /// had its own copy of that rule and the library page had a different one.
+    /// </summary>
     private async Task SearchLocalAsync()
     {
         if (string.IsNullOrWhiteSpace(_query))
         {
             _localTracks = [];
+            _localTotal = 0;
             return;
         }
 
         _searching = true;
-        var term = _query.Trim();
 
-        await using var db = await DbFactory.CreateDbContextAsync();
+        var page = await Search.TracksAsync(_query, 0, LocalResults);
 
-        var hits = await db.Tracks
-            .AsNoTracking()
-            .Where(t => t.IsPresent && (
-                EF.Functions.Like(t.Title, $"%{term}%") ||
-                EF.Functions.Like(t.Artist!.Name, $"%{term}%") ||
-                EF.Functions.Like(t.Album!.Title, $"%{term}%")))
-            .OrderBy(t => t.Title)
-            .Take(50)
-            .Select(t => new { t.Id, t.Title, ArtistName = t.Artist!.Name, t.DurationTicks })
-            .ToListAsync();
-
-        _localTracks = [.. hits.Select(t => new TrackList.Row(
-            t.Id, t.Title, t.ArtistName, TimeSpan.FromTicks(t.DurationTicks)))];
+        _localTotal = page.Total;
+        _localTracks =
+        [
+            .. page.Rows.Select(t => new TrackList.Row(t.Id, t.Title, t.ArtistName, t.Duration))
+        ];
 
         _searching = false;
     }

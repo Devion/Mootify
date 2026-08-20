@@ -2,6 +2,8 @@
 @attribute [Authorize]
 @inject AccountService Accounts
 @inject ApiTokenService ApiTokens
+@inject ListeningService Listening
+@inject PreferenceService Preferences
 @inject CurrentUser CurrentUser
 
 <PageTitle>Account · Mootify</PageTitle>
@@ -26,6 +28,43 @@
 
     <div class="managebox__actions">
         <button class="button" @onclick="Change">Change password</button>
+    </div>
+</section>
+
+<section class="managebox">
+    <h2>Keep playing</h2>
+    <p class="muted">
+        When a playlist runs out, carry on with songs picked from what you listen to. It only
+        does anything once there's enough history to pick from &mdash; before that the music just
+        stops, the way it always did.
+    </p>
+
+    <div class="managebox__actions">
+        <button class="button" @onclick="ToggleAutoContinue">
+            @(_autoContinue ? "Stop when the playlist ends" : "Keep playing after the playlist ends")
+        </button>
+        <span class="muted">Currently @(_autoContinue ? "on" : "off").</span>
+    </div>
+</section>
+
+@* One switch for the account, not one per device — a phone that kept broadcasting after the
+   website was told to stop is the bug that shape prevents. It lives here as well as on the
+   playlist page because "how do I turn that off" should have an obvious answer. *@
+<section class="managebox">
+    <h2>Listening along</h2>
+    <p class="muted">
+        When this is on and you play a <strong>team</strong> playlist, everybody else in that team
+        sees which song you're on while you're on it. Nothing else is shared, nobody's player
+        follows yours, and personal playlists are never visible to anyone.
+    </p>
+
+    <div class="managebox__actions">
+        <button class="button" @onclick="ToggleListening">
+            @(_shareListening ? "Stop sharing what I play" : "Share what I play")
+        </button>
+        <span class="muted">
+            Currently @(_shareListening ? "on for every device you're signed in on" : "off").
+        </span>
     </div>
 </section>
 
@@ -62,12 +101,31 @@
     private string _current = "", _new = "", _confirm = "";
     private string? _error, _status;
     private List<ApiTokenInfo> _devices = [];
+    private bool _shareListening;
+    private bool _autoContinue;
 
     protected override async Task OnInitializedAsync()
     {
         _displayName = await CurrentUser.GetDisplayNameAsync();
+
+        var userId = await CurrentUser.GetRequiredIdAsync();
+        _shareListening = await Listening.IsSharingAsync(userId);
+        _autoContinue = await Preferences.GetAutoContinueAsync(userId);
+
         await LoadDevicesAsync();
     }
+
+    private async Task ToggleAutoContinue() =>
+        _autoContinue = await Preferences.SetAutoContinueAsync(
+            await CurrentUser.GetRequiredIdAsync(), !_autoContinue);
+
+    /// <summary>
+    /// Straight to the service rather than through the player: this page has no queue, so there
+    /// is nothing to publish immediately — the next heartbeat from whatever is playing carries it.
+    /// </summary>
+    private async Task ToggleListening() =>
+        _shareListening = await Listening.SetSharingAsync(
+            await CurrentUser.GetRequiredIdAsync(), !_shareListening);
 
     private async Task LoadDevicesAsync() =>
         _devices = await ApiTokens.ListAsync(await CurrentUser.GetRequiredIdAsync());

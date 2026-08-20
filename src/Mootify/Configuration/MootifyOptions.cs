@@ -201,6 +201,34 @@ public sealed class LibraryOptions
     /// indexing, which is what you want while sorting a batch by hand.
     /// </summary>
     public bool FileImportsOnScan { get; set; } = true;
+
+    /// <summary>
+    /// Where <see cref="Services.Library.LibraryOrganizer"/> puts the copy of a song it merged
+    /// away, relative to the music root. Like the drop folder it is never indexed — a quarantine
+    /// the scanner walks is not a quarantine, and the file would come straight back as a new
+    /// duplicate on the next pass.
+    ///
+    /// It is a move rather than a delete because the pass can be wrong: two versions of a song
+    /// that really were different are recoverable from a folder and not from a delete. Blank
+    /// leaves duplicate files where they are, which also means Organize can't merge them.
+    /// </summary>
+    public string DuplicatesFolder { get; set; } = "duplicates";
+
+    /// <summary>
+    /// Ceiling on one uploaded file (<see cref="Services.Library.TrackUploadService"/>). 100MB
+    /// takes a long FLAC without complaint and still refuses somebody's holiday video, and the
+    /// limit is counted against bytes that have arrived rather than a declared length.
+    /// </summary>
+    [Range(1_000_000, 2_000_000_000)]
+    public long MaxUploadBytes { get; set; } = 100 * 1024 * 1024;
+
+    /// <summary>
+    /// Files in one upload. An album is a dozen; the number is here so a whole discography
+    /// arrives as a handful of batches somebody watches rather than one that times out. Anything
+    /// past it is reported as refused, never silently dropped.
+    /// </summary>
+    [Range(1, 500)]
+    public int MaxUploadFiles { get; set; } = 50;
 }
 
 public sealed class RequestOptions

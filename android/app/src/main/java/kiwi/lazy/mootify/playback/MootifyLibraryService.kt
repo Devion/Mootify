@@ -39,7 +39,10 @@ import kotlinx.coroutines.launch
  *
  * 1. **The browse tree is fetched, not cached.** A head unit asks for children the moment it connects
  *    and expects an answer in a second or two, so every call is one HTTP request and nothing is
- *    pre-warmed. The server pages; so does this.
+ *    pre-warmed. The server pages; so does this — and the paging has to be *the server's* for any
+ *    list that can be long. Playlists were fetched whole and sliced locally, which meant a
+ *    200-track playlist was 200 rows over mobile data for every twenty rows shown, once per page.
+ *    Whole-list fetches survive only where the list has an inherent ceiling (an album's tracks).
  *
  * 2. **Tapping a song plays the list it was in.** Android Auto sends the single item that was tapped
  *    and nothing else. [onSetMediaItems] rebuilds the album or playlist around it and starts at the
@@ -377,7 +380,9 @@ class MootifyLibraryService : MediaLibraryService() {
     private suspend fun tracksOf(id: MediaId): List<ApiTrack>? = when (id) {
         is MediaId.Album -> repository.album(id.id).map { it.tracks }.getOrNull()
         is MediaId.Artist -> repository.artistTracks(id.id).getOrNull()
-        is MediaId.Playlist -> repository.playlist(id.id).map { detail -> detail.items.map { it.track } }.getOrNull()
+        // Every page of it: this is a play queue, not a browse list, and a queue that stops at
+        // a hundred means the car goes quiet in the middle of a long playlist.
+        is MediaId.Playlist -> repository.playlistTracks(id.id).getOrNull()
         is MediaId.Search -> searchTracks(id.query)
         is MediaId.Track -> id.parent?.let { tracksOf(it) }
         else -> emptyList()
@@ -441,11 +446,14 @@ class MootifyLibraryService : MediaLibraryService() {
                     paged(detail.tracks, page, pageSize).map { MediaItems.playable(it, parent, repository) }
                 }
 
-            is MediaId.Playlist -> repository.playlist(parent.id).getOrNull()
-                ?.let { detail ->
-                    paged(detail.items.map { it.track }, page, pageSize)
-                        .map { MediaItems.playable(it, parent, repository) }
-                }
+            // Server-side, like artists and albums. This was the one long list still being pulled
+            // down whole and sliced here — so browsing a 200-track playlist fetched all 200 rows
+            // for every page the head unit drew.
+            is MediaId.Playlist -> repository
+                .playlistItems(parent.id, skip = page * size(pageSize), take = size(pageSize))
+                .getOrNull()
+                ?.items
+                ?.map { MediaItems.playable(it.track, parent, repository) }
 
             is MediaId.Search -> paged(searchItems(parent.query), page, pageSize)
 
@@ -486,7 +494,8 @@ class MootifyLibraryService : MediaLibraryService() {
     }
 
     /**
-     * Local paging, for lists the server hands over whole (a playlist, an album's tracks). Done in
+     * Local paging, for lists the server hands over whole (an album's tracks, an artist's albums,
+     * a search). Playlists used to be in that set and are not any more — see [childrenOf]. Done in
      * Long arithmetic because a browser asking for Integer.MAX_VALUE items is a real thing, and
      * `page * pageSize` in Int would come back negative.
      */

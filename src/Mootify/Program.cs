@@ -1,4 +1,4 @@
-using System.Security.Claims;
+﻿using System.Security.Claims;
 using System.Text.Json.Serialization;
 using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Authentication;
@@ -13,6 +13,7 @@ using Mootify.Endpoints;
 using Mootify.Endpoints.Api;
 using Mootify.Services.Admin;
 using Mootify.Services.Auth;
+using Mootify.Services.Ideas;
 using Mootify.Services.Import;
 using Mootify.Services.Library;
 using Microsoft.Extensions.Options;
@@ -21,6 +22,7 @@ using Mootify.Services.MusicBrainz;
 using Mootify.Services.Notifications;
 using Mootify.Services.Playback;
 using Mootify.Services.Playlists;
+using Mootify.Services.Recommendations;
 using Mootify.Services.Requests;
 using Mootify.Services.Settings;
 using Mootify.Services.Teams;
@@ -113,6 +115,7 @@ builder.Services.AddSingleton<SetupState>();
 builder.Services.AddMemoryCache(options => options.SizeLimit = 20_000);
 builder.Services.AddSingleton<LoginThrottle>();
 builder.Services.AddScoped<SettingsService>();
+builder.Services.AddScoped<PreferenceService>();
 builder.Services.AddScoped<AccountService>();
 builder.Services.AddScoped<AdminService>();
 builder.Services.AddScoped<CurrentUser>();
@@ -241,6 +244,7 @@ builder.Services.AddRateLimiter(options =>
 builder.Services.AddSingleton<NetworkShareConnector>();
 builder.Services.AddSingleton<LibraryFiler>();
 builder.Services.AddSingleton<LibraryScanner>();
+builder.Services.AddSingleton<LibraryOrganizer>();
 builder.Services.AddHostedService<LibraryScanService>();
 
 builder.Services.AddSingleton<NotificationDispatcher>();
@@ -249,8 +253,12 @@ builder.Services.AddSingleton<Transcoder>();
 builder.Services.AddSingleton<LibraryTranscodeService>();
 builder.Services.AddSingleton<TranscodeCache>();
 
+builder.Services.AddScoped<LibrarySearchService>();
 builder.Services.AddScoped<PlaylistService>();
 builder.Services.AddScoped<PlaylistEvents>();
+builder.Services.AddScoped<ListeningService>();
+builder.Services.AddScoped<TasteService>();
+builder.Services.AddScoped<IdeaService>();
 builder.Services.AddScoped<PlaylistImportService>();
 // Singleton: one import runs at a time and its progress outlives any circuit.
 builder.Services.AddSingleton<ImportRequestQueue>();
@@ -259,6 +267,8 @@ builder.Services.AddScoped<PlayerService>();
 builder.Services.AddScoped<RequestService>();
 builder.Services.AddScoped<RequestFulfiller>();
 builder.Services.AddScoped<ImportRequestMatcher>();
+// Scoped, because it reaches the request matcher, which reaches PlaylistService and the notifier.
+builder.Services.AddScoped<TrackUploadService>();
 builder.Services.AddScoped<RequestReconciler>();
 builder.Services.AddHostedService<RequestReconcilerService>();
 

@@ -1,0 +1,288 @@
+@page "/surprise"
+@attribute [Authorize]
+@inject TasteService Taste
+@inject PlaylistService Playlists
+@inject PlaylistEvents PlaylistEvents
+@inject PlayerService Player
+@inject CurrentUser CurrentUser
+@inject NavigationManager Nav
+@using Mootify.Services.Recommendations
+
+<PageTitle>Surprise me · Mootify</PageTitle>
+
+<div class="pagehead">
+    <div>
+        <h1>Surprise me</h1>
+        <p class="pagehead__meta">
+            A fresh run of songs picked from what you actually listen to. Play it, keep it, or
+            shake it again &mdash; and if you play it, it tops itself up rather than stopping.
+        </p>
+    </div>
+    @if (_ready)
+    {
+        <div class="pagehead__actions">
+            <button class="button" @onclick="PlayAll" disabled="@(_suggestions.Count == 0)">Play</button>
+            <button class="linkbutton" @onclick="Shuffle" disabled="@_working">Shake it again</button>
+        </div>
+    }
+</div>
+
+@if (_loading)
+{
+    <p class="muted">Working out what you like&hellip;</p>
+}
+else if (!_ready)
+{
+    @* The cold start, said plainly. Padding this with random tracks is the one thing that would
+       make the feature worse than not having it — see TasteService. *@
+    <div class="emptystate">
+        <img src="img/pietjecow-sm.png" alt="" />
+        <p>
+            Not yet &mdash; there isn't enough to go on.
+            @if (_profile.TracksHeard == 0)
+            {
+                <text>Nothing you've played has been recorded here so far.</text>
+            }
+            else
+            {
+                <text>
+                    You've listened to <strong>@_profile.TracksHeard</strong>
+                    song@(_profile.TracksHeard == 1 ? "" : "s") so far.
+                </text>
+            }
+        </p>
+        <p class="muted">
+            Play about @_profile.TracksStillNeeded more and this will start suggesting things.
+            Guessing before then would just hand you music you own and never listen to.
+        </p>
+    </div>
+}
+else
+{
+    <section class="managebox">
+        <h2>What this is based on</h2>
+        <p class="muted">
+            @_profile.PlaysCounted listen@(_profile.PlaysCounted == 1 ? "" : "s")
+            across @_profile.TracksHeard song@(_profile.TracksHeard == 1 ? "" : "s").
+            @if (_profile.Artists.Count > 0)
+            {
+                <text>Mostly @string.Join(", ", _profile.TopArtists(3)).</text>
+            }
+            @if (_profile.Genres.Count > 0)
+            {
+                <text> Leaning @string.Join(", ", _profile.TopGenres(3)).</text>
+            }
+        </p>
+    </section>
+
+    @if (_suggestions.Count == 0)
+    {
+        <p class="muted">
+            Nothing new to offer right now &mdash; you've recently played most of what fits.
+            Try again in a few days, or add some music.
+        </p>
+    }
+    else
+    {
+        <table class="tracklist">
+            <thead>
+                <tr>
+                    <th class="tracklist__num">#</th>
+                    <th>Title</th>
+                    <th>Artist</th>
+                    <th>Why</th>
+                    <th class="tracklist__dur">Time</th>
+                </tr>
+            </thead>
+            <tbody>
+                @for (var i = 0; i < _suggestions.Count; i++)
+                {
+                    var index = i;
+                    var suggestion = _suggestions[i];
+
+                    <tr @ondblclick="() => PlayFrom(index)">
+                        <td class="tracklist__num">@(index + 1)</td>
+                        <td class="tracklist__title">@suggestion.Title</td>
+                        <td class="tracklist__artist">@suggestion.ArtistName</td>
+                        @* The reason, in the user's terms. A suggestion nobody can account for
+                           is one nobody trusts. *@
+                        <td class="tracklist__artist">@suggestion.Reason</td>
+                        <td class="tracklist__dur">@Format(suggestion.Duration)</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+
+        <section class="managebox">
+            <h2>Keep it</h2>
+
+            <label for="destination">Where should these go?</label>
+            <select id="destination" @bind="_destination">
+                <option value="@NewPlaylist">Into a new playlist</option>
+                @if (_playlists.Count > 0)
+                {
+                    <optgroup label="Add to a playlist you already have">
+                        @foreach (var playlist in _playlists)
+                        {
+                            <option value="@playlist.Id">
+                                @playlist.Name@(playlist.IsTeamPlaylist ? $" · {playlist.TeamName}" : "")
+                            </option>
+                        }
+                    </optgroup>
+                }
+            </select>
+
+            @if (_destination == NewPlaylist)
+            {
+                <label for="name">Call it</label>
+                <input id="name" @bind="_newName" placeholder="Surprise me" />
+            }
+
+            @if (_error is not null) { <p class="error">@_error</p> }
+            @if (_saved is not null)
+            {
+                <p class="success">
+                    @_saved <a href="@($"/playlist/{_savedPlaylistId}")">open it</a>.
+                </p>
+            }
+
+            <div class="managebox__actions">
+                <button class="button" @onclick="Save" disabled="@_working">
+                    @(_destination == NewPlaylist
+                        ? $"Save {_suggestions.Count} songs as a playlist"
+                        : $"Add {_suggestions.Count} songs to {AppendTarget?.Name}")
+                </button>
+            </div>
+        </section>
+    }
+}
+
+@code {
+    /// <summary>Sentinel for the destination select; every other value is a playlist id.</summary>
+    private const string NewPlaylist = "new";
+
+    /// <summary>
+    /// A run long enough to be a listening session rather than a taster, short enough to read
+    /// down before deciding. Playing it grows it anyway.
+    /// </summary>
+    private const int RunLength = 25;
+
+    private TasteProfile _profile = TasteProfile.Empty;
+    private List<Suggestion> _suggestions = [];
+    private List<PlaylistSummary> _playlists = [];
+
+    private string _destination = NewPlaylist;
+    private string _newName = "Surprise me";
+    private string? _error;
+    private string? _saved;
+    private Guid? _savedPlaylistId;
+    private bool _loading = true;
+    private bool _working;
+    private Guid _userId;
+
+    private bool _ready => _profile.IsReady;
+
+    private PlaylistSummary? AppendTarget =>
+        Guid.TryParse(_destination, out var id) ? _playlists.FirstOrDefault(p => p.Id == id) : null;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _userId = await CurrentUser.GetRequiredIdAsync();
+        _playlists = await Playlists.GetForUserAsync(_userId);
+
+        await ShakeAsync();
+        _loading = false;
+    }
+
+    private async Task Shuffle()
+    {
+        _working = true;
+        _saved = null;
+        _error = null;
+
+        try
+        {
+            await ShakeAsync();
+        }
+        finally
+        {
+            _working = false;
+        }
+    }
+
+    private async Task ShakeAsync()
+    {
+        _profile = await Taste.GetProfileAsync(_userId);
+        _suggestions = _profile.IsReady ? await Taste.SuggestAsync(_userId, RunLength) : [];
+    }
+
+    // ---- playing ---------------------------------------------------------
+
+    /// <summary>
+    /// <c>alwaysGrow</c> is what makes this endless: a surprise queue tops itself up when it runs
+    /// out whatever the auto-continue preference says, because endlessness is the thing being
+    /// asked for rather than a side effect of a setting.
+    /// </summary>
+    private async Task PlayAll() => await PlayFrom(0);
+
+    private async Task PlayFrom(int index) =>
+        await Player.PlayQueueAsync(
+            [.. _suggestions.Select(s => s.TrackId)], index, alwaysGrow: true);
+
+    // ---- keeping it ------------------------------------------------------
+
+    private async Task Save()
+    {
+        _error = null;
+        _saved = null;
+        _working = true;
+
+        try
+        {
+            var trackIds = _suggestions.Select(s => s.TrackId).ToList();
+
+            if (_destination == NewPlaylist)
+            {
+                var name = string.IsNullOrWhiteSpace(_newName) ? "Surprise me" : _newName.Trim();
+                var created = await Playlists.CreateAsync(_userId, name);
+
+                if (created is null)
+                {
+                    _error = "Couldn't make that playlist.";
+                    return;
+                }
+
+                var added = await Playlists.AddTracksAsync(created.Value, _userId, trackIds);
+
+                _savedPlaylistId = created;
+                _saved = $"Saved {added} song{(added == 1 ? "" : "s")} as {name} —";
+            }
+            else
+            {
+                if (AppendTarget is not { } target) return;
+
+                // Ask first: AddTracksAsync answers 0 both for "refused" and "nothing to add".
+                if (!await Playlists.CanEditAsync(target.Id, _userId))
+                {
+                    _error = $"{target.Name} isn't yours to change.";
+                    return;
+                }
+
+                var added = await Playlists.AddTracksAsync(target.Id, _userId, trackIds);
+
+                _savedPlaylistId = target.Id;
+                _saved = $"Added {added} song{(added == 1 ? "" : "s")} to {target.Name} —";
+            }
+
+            _playlists = await Playlists.GetForUserAsync(_userId);
+            PlaylistEvents.NotifyChanged();
+        }
+        finally
+        {
+            _working = false;
+        }
+    }
+
+    private static string Format(TimeSpan t) =>
+        t.TotalHours >= 1 ? t.ToString(@"h\:mm\:ss") : t.ToString(@"m\:ss");
+}

@@ -33,9 +33,52 @@ public sealed class LibraryScanner(
 
     public event Action? Changed;
 
+    private int _suspensions;
+
+    /// <summary>
+    /// True while somebody is rearranging the library out from under the scanner —
+    /// <see cref="LibraryOrganizer"/> holds a suspension for the length of a pass.
+    /// </summary>
+    public bool IsSuspended => Volatile.Read(ref _suspensions) > 0;
+
+    /// <summary>
+    /// Stops scans starting until the returned handle is disposed. A pass that merges artists is
+    /// deleting the very rows a scan is upserting into, and a scan caught mid-merge saves tracks
+    /// pointing at an artist that stopped existing halfway through — so a suspended scan is
+    /// <i>refused</i> rather than queued: every caller here is a timer, a watcher or a button,
+    /// and all three would rather come back in a minute than block.
+    /// </summary>
+    public IDisposable Suspend()
+    {
+        Interlocked.Increment(ref _suspensions);
+        Changed?.Invoke();
+        return new Suspension(this);
+    }
+
+    private sealed class Suspension(LibraryScanner owner) : IDisposable
+    {
+        private int _disposed;
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+
+            Interlocked.Decrement(ref owner._suspensions);
+            owner.Changed?.Invoke();
+        }
+    }
+
     public async Task<ScanReport> ScanAllAsync(CancellationToken ct = default)
     {
         var root = options.CurrentValue.MusicRoot;
+
+        // Before the filer, not just before the scan: filing writes Track.Path on rows the pass
+        // may be about to merge away.
+        if (IsSuspended)
+        {
+            log.LogInformation("Scan skipped: the library is being organized.");
+            return ScanReport.Empty;
+        }
 
         // Here rather than only in LibraryScanService: the admin's "Rescan library" and the
         // home page's "Scan now" call this directly, so on a credentialled share they were the
@@ -166,6 +209,13 @@ public sealed class LibraryScanner(
 
     private async Task<ScanReport> ScanAsync(string path, bool isFullScan, CancellationToken ct)
     {
+        // Also checked here, because ScanPathAsync (the post-import rescan) comes straight in.
+        if (IsSuspended)
+        {
+            log.LogInformation("Scan of {Path} skipped: the library is being organized.", path);
+            return ScanReport.Empty;
+        }
+
         if (string.IsNullOrWhiteSpace(path))
         {
             log.LogWarning("Scan skipped: Library:MusicRoot is not configured.");
@@ -192,11 +242,22 @@ public sealed class LibraryScanner(
             // The drop folder is a mailbox, not part of the library: what's left in it after
             // the filer has run is a file still being copied, and a half-written MP3 has a
             // plausible size and unreadable tags — exactly the shape of a Track row nobody wants.
-            var files = EnumerateAudioFiles(path, exclude: filer.DropFolder).ToList();
+            var files = EnumerateAudioFiles(path, filer.NotLibrary).ToList();
             log.LogInformation("Scanning {Count} file(s) under {Path}", files.Count, path);
 
             // Cache lookups per scan; a 5,000-track library would otherwise issue 15,000 queries.
-            var artists = await db.Artists.ToDictionaryAsync(a => a.Name, StringComparer.OrdinalIgnoreCase, ct);
+            //
+            // Keyed the way LibraryNaming decides two names are the same artist rather than by
+            // the raw tag, so a file tagged "Black Eyed Peas" joins the existing "The Black Eyed
+            // Peas" instead of founding a second row a screen away from it in the library list.
+            // Built by hand rather than with ToDictionaryAsync because a library that predates
+            // that rule has both spellings in it, and a duplicate key would throw.
+            var artists = new Dictionary<string, Artist>(StringComparer.Ordinal);
+            foreach (var known in await db.Artists.ToListAsync(ct))
+            {
+                artists.TryAdd(LibraryNaming.ArtistKey(known.Name), known);
+            }
+
             var albums = await db.Albums.ToDictionaryAsync(a => (a.ArtistId, a.Title), ct);
             var existing = await db.Tracks
                 .Where(t => t.Path.StartsWith(path))
@@ -286,23 +347,32 @@ public sealed class LibraryScanner(
     {
         string artistName = "Unknown Artist";
         string? albumTitle = null;
-        string title = Path.GetFileNameWithoutExtension(file.Name);
+        string title = Tidy(Path.GetFileNameWithoutExtension(file.Name))!;
         int year = 0, trackNo = 0, disc = 0, bitrate = 0;
         var duration = TimeSpan.Zero;
         string? recordingMbid = null, artistMbid = null, albumMbid = null;
+        string? genre = null;
 
         try
         {
             using var tag = TagLib.File.Create(file.FullName);
 
-            artistName = ReadArtist(tag) ?? artistName;
-            albumTitle = Blank(tag.Tag.Album) ? null : tag.Tag.Album;
-            title = Blank(tag.Tag.Title) ? title : tag.Tag.Title!;
+            // Every name off a tag goes through the same rule, so a compilation ripped with the
+            // track's position written into the artist field ("09. Elton John") doesn't found an
+            // artist per track. LibraryOrganizer applies it to what is already stored; this is
+            // what stops the repair being undone by the next file to arrive.
+            artistName = Tidy(ReadArtist(tag)) ?? artistName;
+            albumTitle = Blank(tag.Tag.Album) ? null : Tidy(tag.Tag.Album);
+            title = Blank(tag.Tag.Title) ? title : Tidy(tag.Tag.Title)!;
             year = (int)tag.Tag.Year;
             trackNo = (int)tag.Tag.Track;
             disc = (int)tag.Tag.Disc;
             duration = tag.Properties?.Duration ?? TimeSpan.Zero;
             bitrate = tag.Properties?.AudioBitrate ?? 0;
+
+            // First only. Multi-genre tags are usually one genre plus somebody's opinion, and
+            // the taste profile wants a bucket rather than an essay.
+            genre = Blank(tag.Tag.FirstGenre) ? null : tag.Tag.FirstGenre!.Trim();
 
             recordingMbid = Blank(tag.Tag.MusicBrainzTrackId) ? null : tag.Tag.MusicBrainzTrackId;
             artistMbid = Blank(tag.Tag.MusicBrainzArtistId) ? null : tag.Tag.MusicBrainzArtistId;
@@ -318,19 +388,21 @@ public sealed class LibraryScanner(
         // to "Unknown Album" would collapse every untagged track by an artist into one bucket;
         // the folder layout Lidarr already writes (Artist/Album/track.mp3) says what the album
         // is, so use it.
-        albumTitle ??= AlbumFromFolder(file, artistName);
+        albumTitle ??= Tidy(AlbumFromFolder(file, artistName))!;
 
-        if (!artists.TryGetValue(artistName, out var artist))
+        var artistKey = LibraryNaming.ArtistKey(artistName);
+
+        if (!artists.TryGetValue(artistKey, out var artist))
         {
             artist = new Artist
             {
                 Id = Guid.NewGuid(),
                 Name = artistName,
-                SortName = SortName(artistName),
+                SortName = LibraryNaming.SortName(artistName),
                 MusicBrainzId = artistMbid,
             };
             db.Artists.Add(artist);
-            artists[artistName] = artist;
+            artists[artistKey] = artist;
         }
         else if (artist.MusicBrainzId is null && artistMbid is not null)
         {
@@ -365,6 +437,7 @@ public sealed class LibraryScanner(
         track.TrackNumber = trackNo;
         track.DiscNumber = disc;
         track.RecordingMusicBrainzId = recordingMbid;
+        track.Genre = genre;
         track.FileSize = file.Length;
         track.FileModifiedAt = file.LastWriteTimeUtc;
     }
@@ -410,7 +483,15 @@ public sealed class LibraryScanner(
     public static bool IsIndexable(string path) =>
         IndexedExtensions.Contains(Path.GetExtension(path), StringComparer.OrdinalIgnoreCase);
 
-    public static IEnumerable<FileInfo> EnumerateAudioFiles(string root, string? exclude = null)
+    /// <summary>
+    /// Everything indexable under <paramref name="root"/>, minus anything under one of the
+    /// <paramref name="exclude"/> folders — in practice <see cref="LibraryFiler.NotLibrary"/>.
+    /// Two of those exist and neither is optional: the drop folder, whose contents are still
+    /// being copied, and the duplicates folder, where <see cref="LibraryOrganizer"/> puts a copy
+    /// it has just merged away. Indexing either is how a file comes straight back as a row
+    /// nobody asked for, and in the duplicates case it silently undoes the merge.
+    /// </summary>
+    public static IEnumerable<FileInfo> EnumerateAudioFiles(string root, params string?[] exclude)
     {
         var opts = new EnumerationOptions
         {
@@ -419,26 +500,44 @@ public sealed class LibraryScanner(
             AttributesToSkip = FileAttributes.System,
         };
 
-        var excluded = string.IsNullOrWhiteSpace(exclude)
-            ? null
-            : exclude.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
+        var excluded = exclude.Where(e => !string.IsNullOrWhiteSpace(e)).ToArray();
 
         // One walk with a filter rather than a walk per pattern — over SMB the enumeration
         // is the expensive part, not the comparison.
         return new DirectoryInfo(root)
             .EnumerateFiles("*", opts)
             .Where(f => IsIndexable(f.Name))
-            .Where(f => excluded is null || !f.FullName.StartsWith(excluded, StringComparison.OrdinalIgnoreCase));
+            .Where(f => !excluded.Any(e => LibraryFiler.Contains(e!, f.FullName)));
     }
 
     /// <summary>Size + mtime, not a content hash. Hashing 40,000 files on every scan is not worth it.</summary>
-    private static string Fingerprint(FileInfo f) =>
-        string.Create(CultureInfo.InvariantCulture, $"{f.Length:x}-{f.LastWriteTimeUtc.Ticks:x}");
+    /// <summary>
+    /// Bumped whenever the scanner starts reading a tag it didn't read before.
+    ///
+    /// A file is skipped when its fingerprint is unchanged, which is what keeps a scan of 40,000
+    /// files cheap — and which also means a new column would stay null on every existing row for
+    /// ever. Changing this prefix invalidates every stored fingerprint, so the next scan re-reads
+    /// every file's tags once and then goes back to being cheap. It is a one-off cost measured in
+    /// minutes, and the alternative is a feature that silently has no data on any library that
+    /// existed before it.
+    ///
+    /// <b>v2</b> added <see cref="Track.Genre"/>.
+    /// </summary>
+    private const string FingerprintVersion = "v2";
 
-    private static string SortName(string name) =>
-        name.StartsWith("The ", StringComparison.OrdinalIgnoreCase) ? name[4..] : name;
+    private static string Fingerprint(FileInfo f) =>
+        string.Create(
+            CultureInfo.InvariantCulture,
+            $"{FingerprintVersion}-{f.Length:x}-{f.LastWriteTimeUtc.Ticks:x}");
 
     private static bool Blank(string? s) => string.IsNullOrWhiteSpace(s);
+
+    /// <summary>
+    /// Every name that comes off a file — tag, folder or file name — goes through here on its
+    /// way to a row. See <see cref="LibraryNaming.StripIndexPrefix"/>.
+    /// </summary>
+    private static string? Tidy(string? name) =>
+        Blank(name) ? name : LibraryNaming.StripIndexPrefix(name);
 
     /// <summary>
     /// The artist as the file actually names them.

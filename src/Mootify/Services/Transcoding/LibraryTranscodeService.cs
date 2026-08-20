@@ -34,6 +34,7 @@ public sealed record TranscodeProgress(
 public sealed class LibraryTranscodeService(
     Transcoder transcoder,
     LibraryScanner scanner,
+    LibraryFiler filer,
     IOptionsMonitor<LibraryOptions> options,
     ILogger<LibraryTranscodeService> log)
 {
@@ -62,6 +63,11 @@ public sealed class LibraryTranscodeService(
                         AttributesToSkip = FileAttributes.System,
                     })
                     .Where(Transcoder.NeedsTranscode)
+                    // The folders that aren't the library. Only MP3 and FLAC are ever quarantined
+                    // today, so nothing in there needs converting anyway — but "safe because two
+                    // unrelated lists happen not to overlap" is a fact that stops being true
+                    // quietly, and the sweep writes an MP3 next to whatever it finds.
+                    .Where(f => !filer.IsOutsideTheLibrary(f))
                     // Already converted on a previous run — the original is kept unless
                     // Transcode:DeleteSourceAfterTranscode says otherwise.
                     .Where(f => !File.Exists(Path.ChangeExtension(f, ".mp3")))

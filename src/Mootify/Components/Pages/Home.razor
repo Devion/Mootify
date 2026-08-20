@@ -40,8 +40,8 @@ else
     <section>
         <div class="sectionhead">
             <h2>Recently added</h2>
-            <button class="linkbutton" @onclick="Rescan" disabled="@Scanner.IsScanning">
-                @(Scanner.IsScanning ? "Scanning…" : "Rescan")
+            <button class="linkbutton" @onclick="Rescan" disabled="@(Scanner.IsScanning || Scanner.IsSuspended)">
+                @(Scanner.IsScanning ? "Scanning…" : Scanner.IsSuspended ? "Organizing…" : "Rescan")
             </button>
         </div>
         <TrackList Rows="_recent" EmptyMessage="Nothing added yet." />

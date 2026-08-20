@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Builder;
 using Mootify.Services.Auth;
+using Mootify.Services.Library;
 
 namespace Mootify.Endpoints.Api;
 
@@ -43,26 +44,14 @@ public static class ApiSetup
     /// <summary>
     /// A search box's contents, or null if there's nothing in it worth searching for.
     ///
-    /// Wildcards are dropped rather than escaped — no song title has a bare <c>%</c> somebody is
-    /// looking for, and escaping needs a <c>LIKE … ESCAPE</c> the provider may not translate. That
-    /// leaves the case where the term was <i>only</i> wildcards, which is why this returns null
-    /// rather than a string: <c>q=%</c> has to mean "you typed nothing useful", not "match the
-    /// entire library".
+    /// Forwarded to <see cref="LibraryMatch.Clean"/>, which is also where the predicates live: the
+    /// website and the API used to disagree about what a search term matches, and one of the two
+    /// answers was always wrong.
     /// </summary>
-    public static string? Clean(string? query)
-    {
-        if (query is null) return null;
+    public static string? Clean(string? query) => LibraryMatch.Clean(query);
 
-        var cleaned = query.Replace("%", "").Replace("_", "").Trim();
-        return cleaned.Length == 0 ? null : cleaned;
-    }
-
-    /// <summary>
-    /// Wraps a cleaned term for LIKE. SQLite's LIKE is case-insensitive for ASCII, which
-    /// <c>string.Contains</c> is not — EF translates that one to <c>instr()</c>, and a
-    /// case-sensitive library search finds nothing anybody typed.
-    /// </summary>
-    public static string LikePattern(string cleaned) => $"%{cleaned}%";
+    /// <inheritdoc cref="LibraryMatch.LikePattern"/>
+    public static string LikePattern(string cleaned) => LibraryMatch.LikePattern(cleaned);
 
     public static bool HasQuery(string? query) => Clean(query) is not null;
 }

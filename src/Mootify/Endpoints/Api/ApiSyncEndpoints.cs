@@ -5,6 +5,7 @@ using Mootify.Configuration;
 using Mootify.Data;
 using Mootify.Services.Auth;
 using Mootify.Services.Notifications;
+using Mootify.Services.Playlists;
 
 namespace Mootify.Endpoints.Api;
 
@@ -73,10 +74,16 @@ public static class ApiSyncEndpoints
             return Results.Ok(await LibraryQueries.TracksByIdAsync(db, ids, ct));
         });
 
+        // Also the listening-along heartbeat. One call rather than two on two timers: the client
+        // is already telling us where it is every twenty seconds and already knows which list the
+        // track came out of, and a second endpoint would be a second thing to keep in step with
+        // playback. What the server does with SourcePlaylistId is the account's business, not the
+        // client's — see ListeningService.
         api.MapPut("/playback", async (
             HttpContext http,
             SavePlaybackRequest body,
             IDbContextFactory<MootifyDbContext> dbFactory,
+            ListeningService listening,
             IOptionsMonitor<ApiOptions> options,
             CancellationToken ct) =>
         {
@@ -105,7 +112,43 @@ public static class ApiSyncEndpoints
             state.UpdatedAt = DateTimeOffset.UtcNow;
 
             await db.SaveChangesAsync(ct);
+
+            // After the state is safely written. Broadcasting is a courtesy to other people
+            // looking at a playlist; losing somebody's place in an album because of it would not be.
+            await listening.PublishAsync(
+                userId,
+                body.SourcePlaylistId,
+                body.CurrentTrackId,
+                body.PositionSeconds,
+                body.IsPlaying,
+                ct);
+
             return Results.NoContent();
+        });
+
+        // ---- listening along ----------------------------------------------
+
+        // The account-wide switch. Not a per-device setting: a phone that kept broadcasting after
+        // the website was told to stop is the bug this shape exists to make impossible.
+        api.MapGet("/listening", async (
+            HttpContext http, ListeningService listening, CancellationToken ct) =>
+        {
+            var userId = ApiPrincipal.GetRequiredUserId(http.User);
+            return Results.Ok(new { sharing = await listening.IsSharingAsync(userId, ct) });
+        });
+
+        api.MapPut("/listening", async (
+            HttpContext http,
+            SetListeningRequest body,
+            ListeningService listening,
+            CancellationToken ct) =>
+        {
+            var userId = ApiPrincipal.GetRequiredUserId(http.User);
+
+            // Turning it off takes down whatever is currently on somebody else's screen, inside
+            // this call — see SetSharingAsync.
+            var sharing = await listening.SetSharingAsync(userId, body.Sharing, ct);
+            return Results.Ok(new { sharing });
         });
 
         // ---- play history -------------------------------------------------

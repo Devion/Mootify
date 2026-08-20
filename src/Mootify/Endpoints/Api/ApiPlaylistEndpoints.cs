@@ -1,8 +1,7 @@
-using Microsoft.EntityFrameworkCore;
-using Mootify.Data;
+using Microsoft.Extensions.Options;
+using Mootify.Configuration;
 using Mootify.Services.Auth;
 using Mootify.Services.Playlists;
-using Mootify.Services.Teams;
 
 namespace Mootify.Endpoints.Api;
 
@@ -31,50 +30,86 @@ public static class ApiPlaylistEndpoints
                 .ToList());
         });
 
+        // skip/take, because a playlist is a list somebody can make arbitrarily long. It was
+        // unpaged, and a car browsing a 200-track playlist re-fetched all 200 rows for every
+        // twenty it showed. The page defaults to PlaylistService.DefaultPageSize and is clamped
+        // to the same ceiling every other list here uses.
         playlists.MapGet("/{playlistId:guid}", async (
             HttpContext http,
             Guid playlistId,
+            int? skip,
+            int? take,
             PlaylistService service,
-            IDbContextFactory<MootifyDbContext> dbFactory,
+            IOptionsMonitor<ApiOptions> options,
             CancellationToken ct) =>
         {
             var userId = ApiPrincipal.GetRequiredUserId(http.User);
+            var (s, t) = ApiSetup.Page(skip, take, options.CurrentValue.MaxPageSize, PlaylistService.DefaultPageSize);
 
-            // Returns null both for "no such playlist" and "not yours" — the client's move is the
-            // same either way, and telling them apart would leak the existence of other people's
-            // lists.
-            var playlist = await service.GetAsync(playlistId, userId, ct);
-            if (playlist is null) return Results.NotFound();
-
-            await using var db = await dbFactory.CreateDbContextAsync(ct);
-
-            var trackIds = playlist.Items
-                .Where(i => i.Track?.IsPresent == true)
-                .Select(i => i.TrackId)
-                .ToList();
-
-            var tracks = (await LibraryQueries.TracksByIdAsync(db, trackIds, ct))
-                .ToDictionary(t => t.Id);
-
-            // Items, not tracks: the same song can legitimately appear twice, so removing one is
-            // a per-item operation and the client needs the item id.
-            var items = playlist.Items
-                .Where(i => i.Track?.IsPresent == true && tracks.ContainsKey(i.TrackId))
-                .OrderBy(i => i.SortKey)
-                .Select(i => new ApiPlaylistItem(i.Id, tracks[i.TrackId], i.AddedAt))
-                .ToList();
-
-            var canDelete = await CanDeleteAsync(db, playlist, userId, ct);
+            // Null both for "no such playlist" and "not yours" — the client's move is the same
+            // either way, and telling them apart would leak the existence of other people's lists.
+            var page = await service.GetPageAsync(playlistId, userId, s, t, ct);
+            if (page is null) return Results.NotFound();
 
             return Results.Ok(new ApiPlaylistDetail(
-                playlist.Id,
-                playlist.Name,
-                playlist.Description,
-                playlist.TeamId,
-                playlist.Team?.Name,
-                CanEdit: true, // GetAsync already refused anything this user can't read, and read == edit
-                CanDelete: canDelete,
-                Items: items));
+                page.Id,
+                page.Name,
+                page.Description,
+                page.TeamId,
+                page.TeamName,
+                // GetPageAsync already refused anything this user can't read, and read == edit.
+                CanEdit: true,
+                CanDelete: page.CanDelete,
+                TrackCount: page.Total,
+                DurationMs: ApiMap.Ms(page.TotalDuration),
+                Items: Items(page)));
+        });
+
+        // Just the rows. What a browse tree asks for on page 2 and after — the header it already
+        // has, and re-sending it per page is the shape this endpoint exists to stop.
+        playlists.MapGet("/{playlistId:guid}/items", async (
+            HttpContext http,
+            Guid playlistId,
+            int? skip,
+            int? take,
+            PlaylistService service,
+            IOptionsMonitor<ApiOptions> options,
+            CancellationToken ct) =>
+        {
+            var userId = ApiPrincipal.GetRequiredUserId(http.User);
+            var (s, t) = ApiSetup.Page(skip, take, options.CurrentValue.MaxPageSize, PlaylistService.DefaultPageSize);
+
+            var page = await service.GetPageAsync(playlistId, userId, s, t, ct);
+            return page is null ? Results.NotFound() : Results.Ok(Items(page));
+        });
+
+        // Every track id, in order, in one column. This is what "play the whole playlist" needs,
+        // and it stays small however long the list is — a client building a queue does not have to
+        // page through metadata it already has or is about to fetch anyway.
+        playlists.MapGet("/{playlistId:guid}/trackids", async (
+            HttpContext http,
+            Guid playlistId,
+            PlaylistService service,
+            CancellationToken ct) =>
+        {
+            var userId = ApiPrincipal.GetRequiredUserId(http.User);
+            var ids = await service.GetTrackIdsAsync(playlistId, userId, ct);
+
+            return ids is null ? Results.NotFound() : Results.Ok(ids);
+        });
+
+        // Who else is on this playlist right now. Empty for a playlist this user can't read —
+        // the same answer as "nobody", so it can't be used to discover somebody else's list.
+        playlists.MapGet("/{playlistId:guid}/listeners", async (
+            HttpContext http,
+            Guid playlistId,
+            ListeningService listening,
+            CancellationToken ct) =>
+        {
+            var userId = ApiPrincipal.GetRequiredUserId(http.User);
+            var rows = await listening.GetForPlaylistAsync(playlistId, userId, ct);
+
+            return Results.Ok(rows.Select(ApiMap.Listener).ToList());
         });
 
         playlists.MapPost("", async (
@@ -158,14 +193,12 @@ public static class ApiPlaylistEndpoints
     }
 
     /// <summary>
-    /// Whether this user could destroy the playlist, so the app can hide a button that would
-    /// only fail. The decision itself is still made server-side on the delete call.
+    /// A page of rows as items. Items rather than tracks, because the same song can legitimately
+    /// appear in a playlist twice and removing one is addressed by the item's own id.
     /// </summary>
-    private static async Task<bool> CanDeleteAsync(
-        MootifyDbContext db, Playlist playlist, Guid userId, CancellationToken ct)
-    {
-        var teamIds = await TeamService.GetTeamIdsAsync(db, userId, ct);
-        var ownedTeamIds = await TeamService.GetOwnedTeamIdsAsync(db, userId, ct);
-        return PlaylistAccess.CanDelete(playlist, userId, teamIds, ownedTeamIds);
-    }
+    private static ApiPage<ApiPlaylistItem> Items(PlaylistTrackPage page) => new(
+        page.Total,
+        page.Skip,
+        page.Take,
+        [.. page.Rows.Select(ApiMap.PlaylistItem)]);
 }

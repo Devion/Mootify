@@ -186,7 +186,7 @@ private fun MootifyRoot(player: PlayerController) {
                         onOpenAlbum = { navController.navigate(Routes.album(it)) },
                         onOpenRequests = { navController.navigate(Routes.Requests) },
                         onPlayTrack = { tracks, index ->
-                            player.play(tracks, index, MediaId.Search(searchQuery))
+                            player.tap(tracks, index, MediaId.Search(searchQuery))
                         },
                     )
                 }
@@ -203,6 +203,7 @@ private fun MootifyRoot(player: PlayerController) {
                         absolute = viewModel::absolute,
                         currentTrackId = playerState.trackId,
                         onPlay = { tracks, index -> player.play(tracks, index, MediaId.Album(albumId)) },
+                        onTapTrack = { tracks, index -> player.tap(tracks, index, MediaId.Album(albumId)) },
                         onShuffle = { tracks -> playShuffled(player, tracks, MediaId.Album(albumId)) },
                         onAddToPlaylist = viewModel::addToPlaylist,
                     )
@@ -238,10 +239,11 @@ private fun MootifyRoot(player: PlayerController) {
                     LaunchedEffect(playlistId) { viewModel.loadPlaylist(playlistId) }
 
                     PlaylistScreen(
-                        detail = playlist,
+                        state = playlist,
                         absolute = viewModel::absolute,
                         currentTrackId = playerState.trackId,
                         onPlay = { tracks, index -> player.play(tracks, index, MediaId.Playlist(playlistId)) },
+                        onTapTrack = { tracks, index -> player.tap(tracks, index, MediaId.Playlist(playlistId)) },
                         onShuffle = { tracks -> playShuffled(player, tracks, MediaId.Playlist(playlistId)) },
                         onRemove = { itemId -> viewModel.removeFromPlaylist(playlistId, itemId) },
                     )

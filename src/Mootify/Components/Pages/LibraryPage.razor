@@ -1,61 +1,319 @@
 @page "/library"
 @attribute [Authorize]
-@inject IDbContextFactory<MootifyDbContext> DbFactory
+@implements IDisposable
+@inject LibrarySearchService Search
+@inject PlayerService Player
 
 <PageTitle>Library · Mootify</PageTitle>
 
 <h1>Library</h1>
 
-<input class="filterbox" type="search" placeholder="Filter artists…"
-       @bind="_filter" @bind:event="oninput" aria-label="Filter artists" />
+<input class="filterbox" type="search" placeholder="Artist, album or song…"
+       @bind="_query" @bind:event="oninput" @bind:after="OnQueryChanged"
+       aria-label="Search the library" />
 
-@if (_artists.Count == 0)
+@if (_searching)
 {
-    <div class="emptystate">
-        <img src="img/pietjecow-sm.png" alt="" />
-        <p>No artists yet. Scan the library from the home page.</p>
+    <p class="muted">Searching&hellip;</p>
+}
+
+@if (HasQuery)
+{
+    @* Tabs rather than three stacked lists: each kind pages on its own, and a page of albums
+       under a page of artists means neither is reachable past its first fifty. *@
+    <div class="adminnav adminnav--sub">
+        @foreach (var kind in Kinds)
+        {
+            <button class="linkbutton @(_kind == kind ? "is-active" : "")" @onclick="() => SwitchAsync(kind)">
+                @Label(kind)@(Count(kind) is { } n ? $" ({n})" : "")
+            </button>
+        }
     </div>
+}
+
+@if (_kind == ResultKind.Artists)
+{
+    @if (_artists.Rows.Count == 0)
+    {
+        <div class="emptystate">
+            <img src="img/pietjecow-sm.png" alt="" />
+            <p>@(HasQuery ? "No artists match that." : "No artists yet. Scan the library from the home page.")</p>
+        </div>
+    }
+    else
+    {
+        <ul class="artistgrid">
+            @foreach (var a in _artists.Rows)
+            {
+                <li>
+                    <a href="@($"/artist/{a.Id}")">
+                        <span class="artistgrid__name">@a.Name</span>
+                        <span class="artistgrid__meta">
+                            @a.AlbumCount album@(a.AlbumCount == 1 ? "" : "s") &middot; @a.TrackCount tracks
+                        </span>
+                    </a>
+                </li>
+            }
+        </ul>
+    }
+
+    <Pager Page="_artists.PageNumber" Of="_artists.PageCount" Total="_artists.Total" Noun="artist"
+           HasPrevious="_artists.HasPrevious" HasNext="_artists.HasNext"
+           OnGoTo="GoTo" Skip="_artists.Skip" Take="_artists.Take" />
+}
+else if (_kind == ResultKind.Albums)
+{
+    @if (_albums.Rows.Count == 0)
+    {
+        <p class="muted">No albums match that.</p>
+    }
+    else
+    {
+        <ul class="artistgrid">
+            @foreach (var album in _albums.Rows)
+            {
+                <li>
+                    <a href="@($"/album/{album.Id}")">
+                        <span class="artistgrid__name">@album.Title</span>
+                        <span class="artistgrid__meta">
+                            @album.ArtistName@(album.Year is { } y ? $" · {y}" : "") &middot; @album.TrackCount tracks
+                        </span>
+                    </a>
+                </li>
+            }
+        </ul>
+    }
+
+    <Pager Page="_albums.PageNumber" Of="_albums.PageCount" Total="_albums.Total" Noun="album"
+           HasPrevious="_albums.HasPrevious" HasNext="_albums.HasNext"
+           OnGoTo="GoTo" Skip="_albums.Skip" Take="_albums.Take" />
 }
 else
 {
-    <ul class="artistgrid">
-        @foreach (var a in Filtered)
-        {
-            <li>
-                <a href="@($"/artist/{a.Id}")">
-                    <span class="artistgrid__name">@a.Name</span>
-                    <span class="artistgrid__meta">@a.AlbumCount album@(a.AlbumCount == 1 ? "" : "s") &middot; @a.TrackCount tracks</span>
-                </a>
-            </li>
-        }
-    </ul>
+    @if (_tracks.Rows.Count > 0)
+    {
+        <div class="sectionhead">
+            <h2>@_tracks.Total song@(_tracks.Total == 1 ? "" : "s")</h2>
+            <button class="button" @onclick="PlayMatches">Play these</button>
+        </div>
+    }
+
+    <TrackList Rows="_trackRows" EmptyMessage="No songs match that." />
+
+    <Pager Page="_tracks.PageNumber" Of="_tracks.PageCount" Total="_tracks.Total" Noun="song"
+           HasPrevious="_tracks.HasPrevious" HasNext="_tracks.HasNext"
+           OnGoTo="GoTo" Skip="_tracks.Skip" Take="_tracks.Take" />
 }
 
 @code {
-    private sealed record ArtistRow(Guid Id, string Name, string SortName, int AlbumCount, int TrackCount);
+    private enum ResultKind { Artists, Albums, Tracks }
 
-    private List<ArtistRow> _artists = [];
-    private string _filter = "";
+    private static readonly ResultKind[] Kinds = [ResultKind.Artists, ResultKind.Albums, ResultKind.Tracks];
 
-    private IEnumerable<ArtistRow> Filtered =>
-        string.IsNullOrWhiteSpace(_filter)
-            ? _artists
-            : _artists.Where(a => a.Name.Contains(_filter, StringComparison.OrdinalIgnoreCase));
+    /// <summary>
+    /// Arrives from the search box's "see them all" link. Songs are what that link is about, so a
+    /// term in the URL opens on the songs tab rather than on the artist grid.
+    /// </summary>
+    [SupplyParameterFromQuery(Name = "q")] public string? InitialQuery { get; set; }
 
-    protected override async Task OnInitializedAsync()
+    private string _query = "";
+    private ResultKind _kind = ResultKind.Artists;
+    private int _skip;
+    private bool _searching;
+
+    private SearchPage<ArtistHit> _artists = SearchPage<ArtistHit>.Empty;
+    private SearchPage<AlbumHit> _albums = SearchPage<AlbumHit>.Empty;
+    private SearchPage<TrackHit> _tracks = SearchPage<TrackHit>.Empty;
+    private List<TrackList.Row> _trackRows = [];
+
+    private bool HasQuery => !string.IsNullOrWhiteSpace(_query);
+
+    /// <summary>
+    /// Debounce and cancellation, together. Every query is a scan (see <see cref="LibraryMatch"/>),
+    /// so firing one per keystroke would mean eight scans to type "nirvana" and only the last
+    /// answer mattering — and the seven that lost would still have cost the database.
+    /// </summary>
+    private CancellationTokenSource? _debounceCts;
+
+    private static readonly TimeSpan Debounce = TimeSpan.FromMilliseconds(250);
+
+    /// <summary>
+    /// The <c>?q=</c> this page has already acted on. <c>OnParametersSetAsync</c> runs on every
+    /// cascading update as well as on navigation, and re-running a scan — and resetting the tab
+    /// and the page somebody is reading — because an auth-state renewal fired is the bug this
+    /// prevents. Null is a real value here, so a separate flag tracks "have we loaded at all".
+    /// </summary>
+    private string? _appliedQuery;
+    private bool _loaded;
+
+    protected override async Task OnParametersSetAsync()
     {
-        await using var db = await DbFactory.CreateDbContextAsync();
+        if (_loaded && InitialQuery == _appliedQuery) return;
 
-        _artists = await db.Artists
-            .AsNoTracking()
-            .Where(a => a.Tracks.Any(t => t.IsPresent))
-            .OrderBy(a => a.SortName)
-            .Select(a => new ArtistRow(
-                a.Id,
-                a.Name,
-                a.SortName,
-                a.Albums.Count,
-                a.Tracks.Count(t => t.IsPresent)))
-            .ToListAsync();
+        _appliedQuery = InitialQuery;
+        _loaded = true;
+
+        if (!string.IsNullOrWhiteSpace(InitialQuery))
+        {
+            _query = InitialQuery;
+            _kind = ResultKind.Tracks;
+        }
+
+        _skip = 0;
+        await LoadAsync(CancellationToken.None);
+    }
+
+    private void OnQueryChanged()
+    {
+        // A new term starts at the top; page 4 of the previous search means nothing here.
+        _skip = 0;
+
+        _debounceCts?.Cancel();
+        _debounceCts?.Dispose();
+        _debounceCts = new CancellationTokenSource();
+        var token = _debounceCts.Token;
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await Task.Delay(Debounce, token);
+
+                // Rendered before the query, not after — otherwise "Searching…" is set and
+                // cleared inside one method and nobody ever sees it.
+                _searching = true;
+                await InvokeAsync(StateHasChanged);
+
+                await LoadAsync(token);
+                await InvokeAsync(StateHasChanged);
+            }
+            catch (OperationCanceledException)
+            {
+                // Superseded by the next keystroke.
+            }
+        }, CancellationToken.None);
+    }
+
+    /// <summary>
+    /// Picking a tab is a decision, so it is honoured even when the tab is empty —
+    /// <paramref name="autoPick"/> is off here for exactly that reason.
+    /// </summary>
+    private async Task SwitchAsync(ResultKind kind)
+    {
+        _kind = kind;
+        _skip = 0;
+        await LoadAsync(CancellationToken.None, autoPick: false);
+    }
+
+    private async Task GoTo(int skip)
+    {
+        _skip = Math.Max(0, skip);
+        await LoadAsync(CancellationToken.None, autoPick: false);
+    }
+
+    /// <summary>
+    /// Loads the tab being looked at, and — only while a term is in the box — the counts for the
+    /// other two, so the tabs can say how much is behind them. With an empty box there is nothing
+    /// to count and the page is just the artist list it always was.
+    /// </summary>
+    private async Task LoadAsync(CancellationToken ct, bool autoPick = true)
+    {
+        try
+        {
+            await LoadTabAsync(_kind, ct);
+
+            if (!HasQuery) return;
+
+            await LoadOtherCountsAsync(ct);
+
+            if (autoPick) await MoveToResultsAsync(ct);
+        }
+        finally
+        {
+            _searching = false;
+        }
+    }
+
+    private async Task LoadTabAsync(ResultKind kind, CancellationToken ct)
+    {
+        switch (kind)
+        {
+            case ResultKind.Albums:
+                _albums = await Search.AlbumsAsync(_query, _skip, ct: ct);
+                break;
+
+            case ResultKind.Tracks:
+                _tracks = await Search.TracksAsync(_query, _skip, ct: ct);
+                _trackRows =
+                [
+                    .. _tracks.Rows.Select(t => new TrackList.Row(t.Id, t.Title, t.ArtistName, t.Duration))
+                ];
+                break;
+
+            default:
+                _artists = await Search.ArtistsAsync(_query, _skip, ct: ct);
+                break;
+        }
+    }
+
+    /// <summary>
+    /// Types "pasture" and the page opens on "Artists (0)" — which looks exactly like a search
+    /// that found nothing, next to two tabs saying it found plenty. So a term that leaves the
+    /// open tab empty moves to the first tab that has something.
+    ///
+    /// It can't oscillate: it decides from counts that were just loaded, moves only towards a
+    /// non-empty tab, and never runs when the person picked the tab themselves.
+    /// </summary>
+    private async Task MoveToResultsAsync(CancellationToken ct)
+    {
+        if (Count(_kind) > 0) return;
+
+        var target = Kinds.Where(k => Count(k) > 0).Select(k => (ResultKind?)k).FirstOrDefault();
+        if (target is not { } kind || kind == _kind) return;
+
+        _kind = kind;
+        _skip = 0;
+        await LoadTabAsync(kind, ct);
+    }
+
+    /// <summary>
+    /// The two tabs that aren't open. One page of each, asked for at size 1 — the row is thrown
+    /// away and the total is what the tab needs, so this is a count rather than a second search.
+    /// </summary>
+    private async Task LoadOtherCountsAsync(CancellationToken ct)
+    {
+        if (_kind != ResultKind.Artists) _artists = await Search.ArtistsAsync(_query, 0, 1, ct);
+        if (_kind != ResultKind.Albums) _albums = await Search.AlbumsAsync(_query, 0, 1, ct);
+        if (_kind != ResultKind.Tracks) _tracks = await Search.TracksAsync(_query, 0, 1, ct);
+    }
+
+    private int? Count(ResultKind kind) => kind switch
+    {
+        ResultKind.Artists => _artists.Total,
+        ResultKind.Albums => _albums.Total,
+        _ => _tracks.Total,
+    };
+
+    private static string Label(ResultKind kind) => kind switch
+    {
+        ResultKind.Artists => "Artists",
+        ResultKind.Albums => "Albums",
+        _ => "Songs",
+    };
+
+    /// <summary>
+    /// Queues everything that matched, not just the page — but bounded, because a term like "the"
+    /// matches thousands and a queue that long is a mistake made in one click.
+    /// </summary>
+    private async Task PlayMatches()
+    {
+        var ids = await Search.TrackIdsAsync(_query);
+        if (ids.Count > 0) await Player.PlayQueueAsync(ids, 0);
+    }
+
+    public void Dispose()
+    {
+        _debounceCts?.Cancel();
+        _debounceCts?.Dispose();
     }
 }

@@ -39,9 +39,11 @@ public sealed class LibraryTranscodeServiceTests : IAsyncLifetime
         services.AddSingleton<IDbContextFactory<MootifyDbContext>>(_db);
         services.AddScoped(sp => sp.GetRequiredService<IDbContextFactory<MootifyDbContext>>().CreateDbContext());
 
+        var filer = new LibraryFiler(options, NullLogger<LibraryFiler>.Instance);
+
         var scanner = new LibraryScanner(
             services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>(),
-            new LibraryFiler(options, NullLogger<LibraryFiler>.Instance),
+            filer,
             new NetworkShareConnector(options, NullLogger<NetworkShareConnector>.Instance),
             options,
             NullLogger<LibraryScanner>.Instance);
@@ -50,7 +52,7 @@ public sealed class LibraryTranscodeServiceTests : IAsyncLifetime
             new StaticOptionsMonitor<TranscodeOptions>(new TranscodeOptions()),
             NullLogger<Transcoder>.Instance);
 
-        return new LibraryTranscodeService(transcoder, scanner, options, NullLogger<LibraryTranscodeService>.Instance);
+        return new LibraryTranscodeService(transcoder, scanner, filer, options, NullLogger<LibraryTranscodeService>.Instance);
     }
 
     private void Write(string relativePath)

@@ -1,0 +1,136 @@
+@page "/ideas"
+@attribute [Authorize]
+@inject IdeaService Ideas
+@inject CurrentUser CurrentUser
+@using Mootify.Services.Ideas
+
+<PageTitle>Ideabox · Mootify</PageTitle>
+
+<h1>Ideabox</h1>
+<p class="pagehead__meta">
+    Something missing, something broken, something you'd like? Leave a note and whoever runs
+    this will see it. Plain text, @IdeaText.MaxLength characters, no reply &mdash; if it gets
+    done you'll notice.
+</p>
+
+<section class="managebox">
+    <label for="idea">Your idea</label>
+    @* The placeholder ends in a real ellipsis character, not &hellip;. Razor escapes the
+       ampersand inside an attribute value, so the entity renders as literal text — and a Razor
+       comment inside the tag's attribute list is read as an attribute name, which is worse. *@
+    <textarea id="idea" class="ideabox__input" rows="4" maxlength="@IdeaText.MaxLength"
+              placeholder="Shuffle should remember where it was…"
+              @bind="_draft" @bind:event="oninput"></textarea>
+
+    <p class="managebox__hint">
+        @_draft.Length of @IdeaText.MaxLength characters.
+    </p>
+
+    @if (_error is not null)
+    {
+        <p class="error">@_error</p>
+    }
+    @if (_posted)
+    {
+        <p class="success">Sent. Thanks.</p>
+    }
+
+    <div class="managebox__actions">
+        <button class="button" @onclick="Post" disabled="@(_working || _draft.Trim().Length == 0)">
+            Send it
+        </button>
+    </div>
+</section>
+
+<section class="managebox">
+    <h2>What you've sent</h2>
+
+    @if (_mine.Count == 0)
+    {
+        <p class="muted">Nothing yet.</p>
+    }
+    else
+    {
+        <ul class="idealist">
+            @foreach (var idea in _mine)
+            {
+                <li class="idea @(idea.IsArchived ? "is-archived" : "")">
+                    @* Rendered as text, with the line breaks handled by CSS (white-space:
+                       pre-wrap) rather than by turning newlines into <br>. Building markup out
+                       of a user's message is exactly the step this feature does not take —
+                       see IdeaText for the other half of that argument. *@
+                    <p class="idea__message">@idea.Message</p>
+                    <p class="idea__meta">
+                        <time datetime="@idea.CreatedAt.ToString("o")">
+                            @idea.CreatedAt.ToLocalTime().ToString("d MMM HH:mm")
+                        </time>
+                        @if (idea.IsArchived)
+                        {
+                            <span class="badge badge--quiet">read and filed</span>
+                        }
+                        else
+                        {
+                            <span class="muted">&middot; waiting</span>
+                        }
+                        <button class="linkbutton linkbutton--danger" @onclick="() => Withdraw(idea.Id)">
+                            Withdraw
+                        </button>
+                    </p>
+                </li>
+            }
+        </ul>
+    }
+</section>
+
+@code {
+    private string _draft = "";
+    private List<IdeaRow> _mine = [];
+    private string? _error;
+    private bool _posted;
+    private bool _working;
+    private Guid _userId;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _userId = await CurrentUser.GetRequiredIdAsync();
+        _mine = await Ideas.GetMineAsync(_userId);
+    }
+
+    private async Task Post()
+    {
+        _error = null;
+        _posted = false;
+        _working = true;
+
+        try
+        {
+            // The service validates rather than the page: it is the only door, and the API or a
+            // future client would otherwise each need their own copy of the same rules.
+            var result = await Ideas.PostAsync(_userId, _draft);
+
+            if (!result.Ok)
+            {
+                _error = result.Error;
+                return;
+            }
+
+            _draft = "";
+            _posted = true;
+            _mine = await Ideas.GetMineAsync(_userId);
+        }
+        finally
+        {
+            _working = false;
+        }
+    }
+
+    /// <summary>
+    /// Taking back something you regret sending. Scoped to the author by passing the user id —
+    /// the service refuses anybody else's row rather than trusting the page to have checked.
+    /// </summary>
+    private async Task Withdraw(Guid ideaId)
+    {
+        await Ideas.DeleteAsync(ideaId, _userId);
+        _mine = await Ideas.GetMineAsync(_userId);
+    }
+}

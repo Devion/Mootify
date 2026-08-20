@@ -53,6 +53,9 @@ fun AlbumScreen(
     absolute: (String?) -> String?,
     currentTrackId: String?,
     onPlay: (List<ApiTrack>, Int) -> Unit,
+    // Separate from onPlay on purpose: tapping the row you are listening to should not restart it,
+    // but pressing the header's Play button should. See PlayerController.tap.
+    onTapTrack: (List<ApiTrack>, Int) -> Unit,
     onShuffle: (List<ApiTrack>) -> Unit,
     onAddToPlaylist: (playlistId: String, trackIds: List<String>) -> Unit,
 ) {
@@ -108,7 +111,7 @@ fun AlbumScreen(
                 showArt = false,
                 isCurrent = track.id == currentTrackId,
                 playlists = playlists,
-                onClick = { onPlay(detail.tracks, index) },
+                onClick = { onTapTrack(detail.tracks, index) },
                 onAddToPlaylist = { playlistId -> onAddToPlaylist(playlistId, listOf(track.id)) },
             )
         }
@@ -178,21 +181,32 @@ fun ArtistScreen(
     }
 }
 
+/**
+ * Unlike the album and artist screens, this one is fed a list that arrives in pieces — the server
+ * pages playlists, and the view model fills the rest in behind the first page. Two consequences are
+ * visible here: the header counts come from the playlist ([ApiPlaylistDetail.trackCount]) rather
+ * than from the rows on screen, and Play and Shuffle wait for [MootifyViewModel.PlaylistUi.complete]
+ * so neither can quietly queue a prefix of a long list.
+ */
 @Composable
 fun PlaylistScreen(
-    detail: ApiPlaylistDetail?,
+    state: MootifyViewModel.PlaylistUi?,
     absolute: (String?) -> String?,
     currentTrackId: String?,
     onPlay: (List<ApiTrack>, Int) -> Unit,
+    // See AlbumScreen: the rows toggle, the header's Play button restarts.
+    onTapTrack: (List<ApiTrack>, Int) -> Unit,
     onShuffle: (List<ApiTrack>) -> Unit,
     onRemove: (itemId: String) -> Unit,
 ) {
-    if (detail == null) {
+    if (state == null) {
         Loading()
         return
     }
 
-    val tracks = detail.items.map { it.track }
+    val detail = state.detail
+    val tracks = state.tracks
+    val ready = state.complete && tracks.isNotEmpty()
 
     LazyColumn(Modifier.fillMaxSize()) {
         item {
@@ -200,20 +214,21 @@ fun PlaylistScreen(
                 Text(detail.name, style = MaterialTheme.typography.headlineSmall)
                 Text(
                     buildString {
-                        append(describeCollection(tracks.size, tracks.sumOf { it.durationMs }))
+                        append(describeCollection(detail.trackCount, detail.durationMs))
                         detail.teamName?.let { append(" · ").append(it) }
+                        if (!state.complete) append(" · loading…")
                     },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Spacer(Modifier.height(12.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = { onPlay(tracks, 0) }, enabled = tracks.isNotEmpty()) {
+                    Button(onClick = { onPlay(tracks, 0) }, enabled = ready) {
                         Icon(Icons.Filled.PlayArrow, contentDescription = null)
                         Spacer(Modifier.width(4.dp))
                         Text("Play")
                     }
-                    OutlinedButton(onClick = { onShuffle(tracks) }, enabled = tracks.isNotEmpty()) {
+                    OutlinedButton(onClick = { onShuffle(tracks) }, enabled = ready) {
                         Icon(Icons.Filled.Shuffle, contentDescription = null)
                         Spacer(Modifier.width(4.dp))
                         Text("Shuffle")
@@ -222,11 +237,11 @@ fun PlaylistScreen(
             }
         }
 
-        if (detail.items.isEmpty()) {
+        if (detail.trackCount == 0) {
             item { EmptyState("Nothing in here yet.") }
         }
 
-        itemsIndexed(detail.items, key = { _, item -> item.id }) { index, item ->
+        itemsIndexed(state.items, key = { _, item -> item.id }) { index, item ->
             var menuOpen by remember { mutableStateOf(false) }
 
             Box {
@@ -234,7 +249,9 @@ fun PlaylistScreen(
                     track = item.track,
                     artUrl = absolute(item.track.artUrl),
                     isCurrent = item.track.id == currentTrackId,
-                    onClick = { onPlay(tracks, index) },
+                    // Tapping a row plays from the rows that have arrived. That is always a
+                    // prefix of the real order, so the index is right even mid-fill.
+                    onClick = { onTapTrack(tracks, index) },
                     onMenu = if (detail.canEdit) ({ menuOpen = true }) else null,
                 )
 

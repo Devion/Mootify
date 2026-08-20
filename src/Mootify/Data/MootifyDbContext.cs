@@ -21,6 +21,8 @@ public sealed class MootifyDbContext(DbContextOptions<MootifyDbContext> options)
     public DbSet<Notification> Notifications => Set<Notification>();
     public DbSet<PlaybackState> PlaybackStates => Set<PlaybackState>();
     public DbSet<PlayEvent> PlayEvents => Set<PlayEvent>();
+    public DbSet<ListeningSession> ListeningSessions => Set<ListeningSession>();
+    public DbSet<Idea> Ideas => Set<Idea>();
 
     protected override void ConfigureConventions(ModelConfigurationBuilder builder)
     {
@@ -82,6 +84,8 @@ public sealed class MootifyDbContext(DbContextOptions<MootifyDbContext> options)
             e.HasIndex(x => x.Path).IsUnique();
             e.HasIndex(x => x.RecordingMusicBrainzId);
             e.HasIndex(x => x.Title);
+            // Suggestions filter the candidate pool by genre, so it is a lookup rather than a scan.
+            e.HasIndex(x => x.Genre);
             e.HasOne(x => x.Artist)
              .WithMany(x => x.Tracks)
              .HasForeignKey(x => x.ArtistId)
@@ -195,5 +199,44 @@ public sealed class MootifyDbContext(DbContextOptions<MootifyDbContext> options)
         });
 
         b.Entity<PlayEvent>(e => e.HasIndex(x => new { x.UserId, x.PlayedAt }));
+
+        b.Entity<ListeningSession>(e =>
+        {
+            // One row per person: you are only listening to one thing, and moving to another
+            // playlist has to replace the row rather than add a second one somebody is still
+            // shown as being in.
+            e.HasKey(x => x.UserId);
+
+            // Every read is "who is on this playlist, recently", so the index carries both.
+            e.HasIndex(x => new { x.PlaylistId, x.UpdatedAt });
+
+            e.HasOne(x => x.User)
+             .WithMany()
+             .HasForeignKey(x => x.UserId)
+             .OnDelete(DeleteBehavior.Cascade);
+
+            // Deleting the playlist or the track takes the broadcast with it. There is nothing
+            // to show once either is gone, and a dangling row would be rendered as a blank.
+            e.HasOne(x => x.Playlist)
+             .WithMany()
+             .HasForeignKey(x => x.PlaylistId)
+             .OnDelete(DeleteBehavior.Cascade);
+            e.HasOne(x => x.Track)
+             .WithMany()
+             .HasForeignKey(x => x.TrackId)
+             .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        b.Entity<Idea>(e =>
+        {
+            // The admin list is "everything not yet dealt with, newest first"; the author's own
+            // list is the same query scoped to them.
+            e.HasIndex(x => new { x.ArchivedAt, x.CreatedAt });
+            e.HasIndex(x => new { x.UserId, x.CreatedAt });
+            e.HasOne(x => x.User)
+             .WithMany()
+             .HasForeignKey(x => x.UserId)
+             .OnDelete(DeleteBehavior.Cascade);
+        });
     }
 }

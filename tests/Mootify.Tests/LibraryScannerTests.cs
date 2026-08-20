@@ -67,6 +67,88 @@ public sealed class LibraryScannerTests : IAsyncLifetime
         File.WriteAllBytes(full, new byte[512]);
     }
 
+    /// <summary>A tagged file, for the things that turn on what the tags actually say.</summary>
+    private void WriteTagged(string relativePath, string artist, string album, string? genre = null)
+    {
+        var full = Path.Combine(_root, relativePath);
+        TestAudio.Write(full, artist, album, title: Path.GetFileNameWithoutExtension(relativePath));
+
+        if (genre is null) return;
+
+        using var tag = TagLib.File.Create(full);
+        tag.Tag.Genres = [genre];
+        tag.Save();
+    }
+
+    [Fact]
+    public async Task The_genre_tag_is_indexed()
+    {
+        // It is half of what TasteService works from, and nothing else in the app reads it.
+        WriteTagged("Cowbells/Album/01 Moo.mp3", "The Cowbells", "Pasture Sounds", "Grunge");
+
+        await CreateScanner().ScanAllAsync();
+
+        await using var db = _db.CreateDbContext();
+        Assert.Equal("Grunge", (await db.Tracks.SingleAsync()).Genre);
+    }
+
+    [Fact]
+    public async Task A_file_with_no_genre_tag_has_no_genre()
+    {
+        WriteTagged("Cowbells/Album/01 Moo.mp3", "The Cowbells", "Pasture Sounds");
+
+        await CreateScanner().ScanAllAsync();
+
+        await using var db = _db.CreateDbContext();
+        Assert.Null((await db.Tracks.SingleAsync()).Genre);
+    }
+
+    [Fact]
+    public async Task A_track_indexed_before_genres_existed_is_re_read()
+    {
+        // The scan skips files whose fingerprint is unchanged, which is what keeps it cheap — and
+        // which would have left Genre null on every row of every library that already existed.
+        // LibraryScanner.FingerprintVersion is what forces the one-time re-read; this is the test
+        // that says so, because the failure is silent and looks exactly like "no genre tags".
+        WriteTagged("Cowbells/Album/01 Moo.mp3", "The Cowbells", "Pasture Sounds", "Grunge");
+
+        var scanner = CreateScanner();
+        await scanner.ScanAllAsync();
+
+        // Roll the row back to what an older install looks like: right path, right size and
+        // mtime, no genre, and a fingerprint in the format that version used.
+        await using (var db = _db.CreateDbContext())
+        {
+            var track = await db.Tracks.SingleAsync();
+            var file = new FileInfo(track.Path);
+
+            track.Genre = null;
+            track.FingerPrint = $"{file.Length:x}-{file.LastWriteTimeUtc.Ticks:x}";
+            await db.SaveChangesAsync();
+        }
+
+        var report = await scanner.ScanAllAsync();
+
+        await using var check = _db.CreateDbContext();
+        Assert.Equal("Grunge", (await check.Tracks.SingleAsync()).Genre);
+        Assert.Equal(1, report.Updated);
+    }
+
+    [Fact]
+    public async Task A_second_scan_still_skips_everything_once_the_re_read_has_happened()
+    {
+        // The other half of that bargain: the re-read is one-off, not every scan for ever.
+        WriteTagged("Cowbells/Album/01 Moo.mp3", "The Cowbells", "Pasture Sounds", "Grunge");
+
+        var scanner = CreateScanner();
+        await scanner.ScanAllAsync();
+
+        var second = await scanner.ScanAllAsync();
+
+        Assert.Equal(0, second.Added);
+        Assert.Equal(0, second.Updated);
+    }
+
     [Fact]
     public async Task Mp3_and_flac_both_become_tracks()
     {
@@ -83,8 +165,11 @@ public sealed class LibraryScannerTests : IAsyncLifetime
         Assert.Equal(2, report.Added);
 
         await using var db = _db.CreateDbContext();
+        // The file name is the fallback title when there's no tag, and it goes through the same
+        // rule as a tag does — the leading track number is where the file sat in a folder, not
+        // part of the song's name. See LibraryNaming.StripIndexPrefix.
         var titles = await db.Tracks.Select(t => t.Title).OrderBy(t => t).ToListAsync();
-        Assert.Equal(["01 - Morning Graze", "02 - Lossless Lament"], titles);
+        Assert.Equal(["Lossless Lament", "Morning Graze"], titles);
     }
 
     [Theory]
@@ -278,5 +363,55 @@ public sealed class LibraryScannerTests : IAsyncLifetime
 
         await using var db = _db.CreateDbContext();
         Assert.Equal(RequestStatus.Available, (await db.Requests.SingleAsync()).Status);
+    }
+
+    [Fact]
+    public async Task A_numbered_artist_tag_does_not_found_an_artist_per_track()
+    {
+        // The compilation rip that started all this: the track's position written into the
+        // artist field. Every one of these would otherwise be its own artist with one song
+        // under it, which is what makes the library list unusable.
+        WriteTagged("Various/Party/01.mp3", artist: "09. Elton John", album: "Party Hits");
+        WriteTagged("Various/Party/02.mp3", artist: "12 - Shocking Blue", album: "Party Hits");
+
+        await CreateScanner().ScanAllAsync();
+
+        await using var db = _db.CreateDbContext();
+        var names = await db.Artists.Select(a => a.Name).OrderBy(n => n).ToListAsync();
+        Assert.Equal(["Elton John", "Shocking Blue"], names);
+    }
+
+    [Fact]
+    public async Task Both_spellings_of_one_band_land_on_one_artist_row()
+    {
+        // What makes the Organize pass a repair rather than a chore somebody redoes weekly:
+        // a file tagged the other way joins the row that is already there.
+        WriteTagged(@"Peas\Elephunk\hey.mp3", artist: "The Black Eyed Peas", album: "Elephunk");
+        WriteTagged(@"Peas\Monkey Business\pump.mp3", artist: "Black Eyed Peas", album: "Monkey Business");
+
+        await CreateScanner().ScanAllAsync();
+
+        await using var db = _db.CreateDbContext();
+        var artist = Assert.Single(await db.Artists.ToListAsync());
+
+        Assert.Equal("The Black Eyed Peas", artist.Name);
+        Assert.Equal("Black Eyed Peas", artist.SortName);
+        Assert.Equal(2, await db.Tracks.CountAsync(t => t.ArtistId == artist.Id));
+    }
+
+    [Fact]
+    public async Task The_duplicates_folder_is_never_indexed()
+    {
+        // Organize moves a merged-away copy in there. A scan that walks it puts the row
+        // straight back, and the merge silently undoes itself on the next pass.
+        WriteTagged(@"Cowbells\Bored\keep.mp3", artist: "Cowbells", album: "Bored");
+        WriteTagged(@"duplicates\Cowbells\gone.mp3", artist: "Cowbells", album: "Bored");
+
+        var report = await CreateScanner().ScanAllAsync();
+
+        Assert.Equal(1, report.Added);
+
+        await using var db = _db.CreateDbContext();
+        Assert.EndsWith("keep.mp3", await db.Tracks.Select(t => t.Path).SingleAsync());
     }
 }

@@ -1,0 +1,279 @@
+@page "/admin/organize"
+@attribute [Authorize(Policy = MootifyAuth.AdminPolicy)]
+@implements IDisposable
+@inject LibraryOrganizer Organizer
+@inject LibraryScanner Scanner
+@inject AdminService Admin
+@inject CurrentUser CurrentUser
+@using Mootify.Services.Admin
+@using Mootify.Services.Library
+
+<PageTitle>Organize · Admin · Mootify</PageTitle>
+
+<h1>Organize</h1>
+<AdminNav />
+
+<section class="managebox">
+    <h2>What this does</h2>
+    <p class="muted">
+        A track's artist comes from the file's tag and from nowhere else, so a shelf full of
+        <code>09. Elton John</code> and <code>12. Shocking Blue</code> is a shelf full of files
+        whose tags say exactly that &mdash; usually a compilation ripped with each track's position
+        written into the artist field. Every one of those is its own artist with one album and one
+        song under it, which is what turns the library list into a wall.
+    </p>
+    <p class="muted">
+        Organize strips the leading track number off artists, albums and songs, folds the spellings
+        that mean the same artist into one (<code>The Black Eyed Peas</code> and
+        <code>Black Eyed Peas</code> are one band), and collapses the same song stored twice.
+        Playlists, play counts and whatever anybody is listening to right now follow the copy that
+        stays. The scanner applies the same rules from now on, so this doesn't need doing twice.
+    </p>
+    <p class="managebox__hint">
+        Duplicate <strong>files</strong> are moved to
+        <code>@(Organizer.Quarantine ?? "— nowhere: Library:DuplicatesFolder is blank")</code>,
+        never deleted, and that folder is never indexed. Moving them is what makes the merge stick:
+        leave the file where it is and the next scan indexes it straight back in.
+    </p>
+</section>
+
+@{ var progress = Organizer.Progress; }
+
+@if (progress.IsRunning)
+{
+    <section class="managebox">
+        <h2>Working</h2>
+        <p>
+            @progress.Phase
+            @if (progress.Total > 0)
+            {
+                <text> &mdash; <strong>@progress.Done.ToString("N0")</strong> of @progress.Total.ToString("N0")</text>
+            }
+        </p>
+        @if (progress.Total > 0)
+        {
+            <div class="progressbar"><span style="width:@(progress.Percent)%"></span></div>
+        }
+        <p class="muted">You can leave this page; it keeps going.</p>
+        <div class="managebox__actions">
+            <button class="linkbutton linkbutton--danger" @onclick="() => Organizer.Cancel()">Stop</button>
+        </div>
+    </section>
+}
+else
+{
+    <section class="managebox">
+        <h2>Have a look first</h2>
+
+        @* Merging artists can't be undone, and the only way to see the one mistake that matters
+           — two bands that were never the same band — is to read the pair of names. *@
+        <p class="muted">
+            Nothing is changed until you say so. Check what it's proposing: the interesting
+            mistake is two names that were never the same artist, and it's only visible by reading
+            them.
+        </p>
+
+        <div class="checkline">
+            <label>
+                <input type="checkbox" @bind="_tidyNames" />
+                Tidy names &mdash; strip leading track numbers, merge the artists that turn out to
+                be the same one
+            </label>
+            <label>
+                <input type="checkbox" @bind="_removeDuplicates" />
+                Remove duplicate copies &mdash; keep the best copy of each song, move the rest to
+                the duplicates folder
+            </label>
+        </div>
+
+        <div class="managebox__actions">
+            <button class="button" @onclick="Look" disabled="@(_busy || !(_tidyNames || _removeDuplicates))">
+                @(_busy ? "Looking…" : "Look for problems")
+            </button>
+            @if (_plan is { HasWork: true })
+            {
+                <button class="linkbutton linkbutton--danger" @onclick="Run">Organize the library</button>
+            }
+        </div>
+
+        @if (_error is not null)
+        {
+            <p class="error">@_error</p>
+        }
+    </section>
+}
+
+@if (_plan is { } plan)
+{
+    <section class="managebox">
+        <h2>What it would change</h2>
+
+        @if (!plan.HasWork)
+        {
+            <p class="muted">Nothing to do &mdash; every name is already tidy and no song is stored twice.</p>
+        }
+        else
+        {
+            <div class="statrow">
+                <div class="stat"><strong>@plan.ArtistsRenamed.ToString("N0")</strong><span>artists renamed</span></div>
+                <div class="stat"><strong>@plan.ArtistsMerged.ToString("N0")</strong><span>artists merged away</span></div>
+                <div class="stat"><strong>@plan.AlbumsRenamed.ToString("N0")</strong><span>albums renamed</span></div>
+                <div class="stat"><strong>@plan.AlbumsMerged.ToString("N0")</strong><span>albums merged away</span></div>
+                <div class="stat"><strong>@plan.TrackTitlesFixed.ToString("N0")</strong><span>song titles fixed</span></div>
+                <div class="stat"><strong>@plan.DuplicateTracks.ToString("N0")</strong><span>duplicate copies</span></div>
+            </div>
+
+            <p class="muted">
+                @if (plan.DuplicateTracks > 0)
+                {
+                    <text>
+                        @plan.DuplicateGroups.ToString("N0") song@(plan.DuplicateGroups == 1 ? " is" : "s are") stored
+                        more than once; moving the extras aside frees @Megabytes(plan.DuplicateBytes).
+                    </text>
+                }
+                @if (plan.EmptyAlbums + plan.EmptyArtists > 0)
+                {
+                    <text>
+                        @plan.EmptyArtists.ToString("N0") artist(s) and @plan.EmptyAlbums.ToString("N0") album(s)
+                        end up with nothing on them and are cleared out.
+                    </text>
+                }
+            </p>
+
+            <table class="admintable">
+                <thead>
+                    <tr><th>Change</th><th>From</th><th>To</th><th></th></tr>
+                </thead>
+                <tbody>
+                    @foreach (var sample in plan.Samples)
+                    {
+                        <tr>
+                            <td class="muted">@sample.Kind</td>
+                            <td><strong>@sample.From</strong></td>
+                            <td>@sample.To</td>
+                            <td class="muted">@sample.Detail</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+
+            @if (plan.SampleTotal > plan.Samples.Count)
+            {
+                <p class="managebox__hint">
+                    Showing the first @plan.Samples.Count of @plan.SampleTotal.ToString("N0") changes,
+                    merges first.
+                </p>
+            }
+        }
+    </section>
+}
+
+@if (Organizer.Progress is { IsRunning: false, Last: { } report })
+{
+    <section class="managebox">
+        <h2>Last run</h2>
+        <ul class="statuslist">
+            <li>@report.ArtistsRenamed.ToString("N0") artist(s) renamed, @report.ArtistsMerged.ToString("N0") merged away</li>
+            <li>@report.AlbumsRenamed.ToString("N0") album(s) renamed, @report.AlbumsMerged.ToString("N0") merged away</li>
+            <li>@report.TrackTitlesFixed.ToString("N0") song title(s) fixed</li>
+            <li>
+                @report.DuplicatesMerged.ToString("N0") duplicate(s) merged &mdash;
+                @report.FilesQuarantined.ToString("N0") file(s) moved aside (@Megabytes(report.BytesQuarantined))
+                @if (report.FilesFailed > 0)
+                {
+                    @* The row is kept when the file can't be moved, so the database still
+                       describes what is actually on the disk. *@
+                    <span class="error">
+                        , @report.FilesFailed.ToString("N0") couldn't be moved and were left alone
+                    </span>
+                }
+            </li>
+            <li>
+                @report.PlaylistEntriesRepointed.ToString("N0") playlist entr@(report.PlaylistEntriesRepointed == 1 ? "y" : "ies")
+                moved onto the copy that stayed@(report.PlaylistEntriesRemoved > 0
+                    ? $", {report.PlaylistEntriesRemoved:N0} dropped as the same song listed twice"
+                    : "")
+            </li>
+            <li>@report.EmptyArtistsRemoved.ToString("N0") empty artist(s) and @report.EmptyAlbumsRemoved.ToString("N0") empty album(s) cleared out</li>
+            <li class="muted">Took @report.Elapsed.TotalSeconds.ToString("0.0")s</li>
+        </ul>
+
+        @if (Organizer.Progress.Error is { } error)
+        {
+            <p class="error">@error</p>
+        }
+    </section>
+}
+else if (Organizer.Progress is { IsRunning: false, Error: { } error })
+{
+    <section class="managebox">
+        <h2>Last run</h2>
+        <p class="error">@error</p>
+    </section>
+}
+
+@code {
+    private OrganizePlan? _plan;
+    private bool _tidyNames = true;
+    private bool _removeDuplicates = true;
+    private bool _busy;
+    private string? _error;
+    private Guid _userId;
+
+    private OrganizeSettings Settings => new(_tidyNames, _removeDuplicates);
+
+    protected override async Task OnInitializedAsync()
+    {
+        _userId = await CurrentUser.GetRequiredIdAsync();
+        Organizer.Changed += OnProgress;
+    }
+
+    public void Dispose() => Organizer.Changed -= OnProgress;
+
+    private void OnProgress() => _ = InvokeAsync(() =>
+    {
+        // The plan described a library that no longer exists once a pass has run.
+        if (!Organizer.Progress.IsRunning) _plan = null;
+        StateHasChanged();
+    });
+
+    private async Task Look()
+    {
+        _busy = true;
+        _error = null;
+
+        try
+        {
+            _plan = await Organizer.PreviewAsync(Settings);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task Run()
+    {
+        // [Authorize] on the page decides what gets drawn; this decides what happens. The
+        // organizer is a singleton with no idea who is asking, so the check has to be here.
+        if (!await Admin.IsAdminAsync(_userId))
+        {
+            _error = "Admins only.";
+            return;
+        }
+
+        // Both walk the library and write to the same rows, and neither knows about the other's
+        // gate. A scan halfway through adding tracks under an artist this is about to delete is
+        // not a race worth surviving.
+        if (Scanner.IsScanning)
+        {
+            _error = "A library scan is running. Let it finish first.";
+            return;
+        }
+
+        _error = Organizer.Start(Settings, _userId) ? null : "There's already a pass running.";
+        _plan = null;
+    }
+
+    private static string Megabytes(long bytes) => $"{bytes / 1024d / 1024d:N0}MB";
+}
