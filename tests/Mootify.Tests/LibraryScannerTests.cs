@@ -1,4 +1,4 @@
-using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Mootify.Configuration;
@@ -17,6 +17,10 @@ public sealed class LibraryScannerTests : IAsyncLifetime
     private TestDatabase _db = null!;
     private string _root = null!;
 
+    /// <summary>The one the scanner was built with, so a test can ask what it now believes.</summary>
+    private AlbumArtService _art = null!;
+    private string _artCache = null!;
+
     public Task InitializeAsync()
     {
         _db = new TestDatabase();
@@ -29,6 +33,10 @@ public sealed class LibraryScannerTests : IAsyncLifetime
     {
         await _db.DisposeAsync();
         try { Directory.Delete(_root, recursive: true); } catch { /* best effort */ }
+        if (_artCache is not null)
+        {
+            try { Directory.Delete(_artCache, recursive: true); } catch { /* best effort */ }
+        }
     }
 
     private LibraryScanner CreateScanner(LibraryOptions? options = null)
@@ -54,6 +62,7 @@ public sealed class LibraryScannerTests : IAsyncLifetime
             new LibraryFiler(monitor, NullLogger<LibraryFiler>.Instance),
             // No credentials configured, so this is a no-op that reports "nothing to connect".
             new NetworkShareConnector(monitor, NullLogger<NetworkShareConnector>.Instance),
+            _art = TestArt.Service(_db, out _artCache),
             monitor,
             NullLogger<LibraryScanner>.Instance);
     }
@@ -413,5 +422,63 @@ public sealed class LibraryScannerTests : IAsyncLifetime
 
         await using var db = _db.CreateDbContext();
         Assert.EndsWith("keep.mp3", await db.Tracks.Select(t => t.Path).SingleAsync());
+    }
+
+    // ---- cover art -------------------------------------------------------
+
+    [Fact]
+    public async Task A_scan_forgets_the_art_of_the_albums_it_touched()
+    {
+        WriteTagged(@"Cowbells\Pasture Sounds\01 moo.mp3", artist: "Cowbells", album: "Pasture Sounds");
+
+        var scanner = CreateScanner();
+        await scanner.ScanAllAsync();
+
+        var albumId = await AlbumIdAsync();
+
+        // Nothing to find yet, and AlbumArtService remembers that — including on disk, as a
+        // marker file. Without the line the scan now runs, this album would answer "no cover"
+        // until somebody restarted the process.
+        Assert.Null(await _art.GetAsync(albumId));
+
+        File.WriteAllBytes(Path.Combine(_root, "Cowbells", "Pasture Sounds", "cover.jpg"), new byte[8]);
+        WriteTagged(@"Cowbells\Pasture Sounds\02 bell.mp3", artist: "Cowbells", album: "Pasture Sounds");
+
+        await scanner.ScanAllAsync();
+
+        Assert.NotNull(await _art.GetAsync(albumId));
+    }
+
+    [Fact]
+    public async Task A_scan_that_changed_nothing_leaves_the_art_alone()
+    {
+        // The limitation, asserted rather than assumed: a cover dropped beside files the scan
+        // finds unchanged is invisible to it, because nothing about the *music* changed. That
+        // case is what the admin's "Forget cached album art" button is for, and pretending
+        // otherwise here would be a test that agrees with a comment rather than with the code.
+        WriteTagged(@"Cowbells\Pasture Sounds\01 moo.mp3", artist: "Cowbells", album: "Pasture Sounds");
+
+        var scanner = CreateScanner();
+        await scanner.ScanAllAsync();
+
+        var albumId = await AlbumIdAsync();
+        Assert.Null(await _art.GetAsync(albumId));
+
+        File.WriteAllBytes(Path.Combine(_root, "Cowbells", "Pasture Sounds", "cover.jpg"), new byte[8]);
+
+        var report = await scanner.ScanAllAsync();
+
+        Assert.Equal(0, report.TouchedCount);
+        Assert.Null(await _art.GetAsync(albumId));
+
+        // And the hammer still works.
+        _art.Clear();
+        Assert.NotNull(await _art.GetAsync(albumId));
+    }
+
+    private async Task<Guid> AlbumIdAsync()
+    {
+        await using var db = _db.CreateDbContext();
+        return await db.Albums.Select(a => a.Id).SingleAsync();
     }
 }

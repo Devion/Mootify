@@ -157,9 +157,16 @@ public sealed class PlayerService(
     ///
     /// Here rather than in the component because it is a decision about playback state, and this
     /// is the thing that owns playback state.
+    ///
+    /// <paramref name="alwaysGrow"/> rides through to <see cref="PlayQueueAsync"/> so a list that
+    /// is endless by nature stays endless whichever control started it — pressing row 4 of a
+    /// surprise run means the same thing as pressing Play above it.
     /// </summary>
     public async Task PressRowAsync(
-        IReadOnlyList<Guid> trackIds, int index, Guid? sourcePlaylistId = null)
+        IReadOnlyList<Guid> trackIds,
+        int index,
+        Guid? sourcePlaylistId = null,
+        bool alwaysGrow = false)
     {
         if (index < 0 || index >= trackIds.Count) return;
 
@@ -169,7 +176,7 @@ public sealed class PlayerService(
             return;
         }
 
-        await PlayQueueAsync(trackIds, index, sourcePlaylistId);
+        await PlayQueueAsync(trackIds, index, sourcePlaylistId, alwaysGrow);
     }
 
     /// <summary>

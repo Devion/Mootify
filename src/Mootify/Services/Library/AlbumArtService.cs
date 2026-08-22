@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using Mootify.Configuration;
@@ -23,6 +24,20 @@ public sealed record AlbumArt(string Path, string ContentType);
 /// Albums with no art at all get an empty marker file, so the miss is as cheap as the hit. A
 /// car browsing a library of 800 albums asks for 800 covers, and most libraries answer "no" for
 /// a good share of them.
+///
+/// <b>The answer is memoized, and that is the layer that actually makes this cheap.</b> The disk
+/// cache above only ever spared the <i>extraction</i>: every call still opened a
+/// <c>DbContext</c> to find a track, and then swept the album's folder for six names in four
+/// extensions before it looked at the cache at all. On a network share that is up to 24 SMB
+/// stats per cover, and the library grid asks for fifty at once. <see cref="_resolved"/> holds
+/// what the sweep concluded — <i>including</i> that there is nothing — so the second ask is a
+/// dictionary lookup. It is bounded by the number of albums, because that is what the keys are.
+///
+/// Two things therefore have to invalidate it, and both did not exist before it did:
+/// <see cref="Forget(IReadOnlyCollection{Guid})"/>, which the scanner calls with the albums a
+/// pass touched, and <see cref="Clear"/>, which is the admin's hammer for a library that was
+/// re-tagged underneath us. Both drop the disk entries too — a <c>.none</c> marker left behind
+/// would keep answering "no art" for an album that has just gained some.
 /// </summary>
 public sealed class AlbumArtService(
     IDbContextFactory<MootifyDbContext> dbFactory,
@@ -31,6 +46,18 @@ public sealed class AlbumArtService(
 {
     /// <summary>One extraction at a time — the same reasoning as <c>TranscodeCache.Gate</c>.</summary>
     private static readonly SemaphoreSlim Gate = new(1, 1);
+
+    /// <summary>
+    /// What the last look concluded, per album, null included. Not size-limited on purpose: the
+    /// keys are album ids out of our own database, so this is bounded by the library rather than
+    /// by whatever a caller asks for — unlike <c>LoginThrottle</c>, where the keys come from
+    /// outside and the cap is the whole defence.
+    ///
+    /// Two requests for the same cold album both resolve; the extraction below is gated anyway
+    /// and the loser finds the file the winner wrote, so a per-key lock would cost more than the
+    /// duplicate it prevents.
+    /// </summary>
+    private readonly ConcurrentDictionary<Guid, AlbumArt?> _resolved = new();
 
     /// <summary>
     /// What a folder of music calls its cover, in the order worth trying. Case-insensitive:
@@ -62,6 +89,48 @@ public sealed class AlbumArtService(
     }
 
     public async Task<AlbumArt?> GetAsync(Guid albumId, CancellationToken ct = default)
+    {
+        if (_resolved.TryGetValue(albumId, out var known)) return known;
+
+        var found = await ResolveAsync(albumId, ct);
+
+        // Cached after the await rather than around it, so a cancelled request leaves no
+        // half-formed answer behind for the next one to trust.
+        _resolved[albumId] = found;
+        return found;
+    }
+
+    /// <summary>
+    /// Forget one album, so the next request goes and looks again. The endpoint calls this when
+    /// the path it was handed no longer exists — a cover deleted under us is otherwise an answer
+    /// that 404s for ever, since the memo would keep handing back the same dead path.
+    /// </summary>
+    public void Forget(Guid albumId)
+    {
+        _resolved.TryRemove(albumId, out _);
+        DeleteCached(albumId);
+    }
+
+    /// <summary>
+    /// Forget the albums a scan touched. Precise rather than wholesale on purpose: the watcher
+    /// fires on every file dropped into the import folder, and re-extracting every embedded
+    /// cover in the library because one album gained a track is a tag parse per album, over the
+    /// share, for nothing. Returns how many were actually holding an answer.
+    /// </summary>
+    public int Forget(IReadOnlyCollection<Guid> albumIds)
+    {
+        var dropped = 0;
+
+        foreach (var albumId in albumIds)
+        {
+            if (_resolved.TryRemove(albumId, out _)) dropped++;
+            DeleteCached(albumId);
+        }
+
+        return dropped;
+    }
+
+    private async Task<AlbumArt?> ResolveAsync(Guid albumId, CancellationToken ct)
     {
         // Any present track will do — art belongs to the folder, and the whole album lives in one.
         var trackPath = await FirstTrackPathAsync(albumId, ct);
@@ -180,28 +249,60 @@ public sealed class AlbumArtService(
     private string MissPath(Guid albumId) => Path.Combine(CacheDirectory, $"{albumId:n}{MissExtension}");
 
     /// <summary>
-    /// Dropped wholesale after a rescan replaces files, and by the admin panel. Misses are
-    /// cached too, so a library that gains art has to be told to look again.
+    /// Everything, for a library that was re-tagged or re-covered underneath us. This is the
+    /// admin's hammer; the scan uses <see cref="Forget(IReadOnlyCollection{Guid})"/>, which knows
+    /// which albums it changed.
+    ///
+    /// The memo is emptied last rather than first, so anything a request repopulates while the
+    /// files are being deleted goes with it.
     /// </summary>
     public int Clear()
     {
-        if (!Directory.Exists(CacheDirectory)) return 0;
-
         var removed = 0;
-        foreach (var file in Directory.GetFiles(CacheDirectory))
+
+        if (Directory.Exists(CacheDirectory))
         {
-            try
+            foreach (var file in Directory.GetFiles(CacheDirectory))
             {
-                File.Delete(file);
-                removed++;
-            }
-            catch (Exception ex)
-            {
-                log.LogWarning(ex, "Could not delete {File}", file);
+                try
+                {
+                    File.Delete(file);
+                    removed++;
+                }
+                catch (Exception ex)
+                {
+                    log.LogWarning(ex, "Could not delete {File}", file);
+                }
             }
         }
 
+        _resolved.Clear();
         return removed;
+    }
+
+    /// <summary>
+    /// The album's extracted cover and its "nothing here" marker. Deleting the marker is the
+    /// half that matters: it is what stands between an album that has just gained a cover and
+    /// anybody seeing it.
+    /// </summary>
+    private void DeleteCached(Guid albumId)
+    {
+        if (!Directory.Exists(CacheDirectory)) return;
+
+        foreach (var extension in AdjacentExtensions.Append(MissExtension))
+        {
+            var candidate = Path.Combine(CacheDirectory, $"{albumId:n}{extension}");
+
+            try
+            {
+                if (File.Exists(candidate)) File.Delete(candidate);
+            }
+            catch (Exception ex)
+            {
+                // A cover we can't delete is a stale picture, not a broken library.
+                log.LogWarning(ex, "Could not delete {File}", candidate);
+            }
+        }
     }
 
     internal static string ContentTypeFor(string path) =>

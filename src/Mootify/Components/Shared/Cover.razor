@@ -1,0 +1,23 @@
+@* Album art for a tile, and a square that looks deliberate when there isn't any.
+
+   Whether an album has a cover is only knowable by going and looking — AlbumArtService checks
+   for an adjacent cover.jpg and then parses an ID3 tag, on a file that may be on a NAS. Asking
+   that fifty times to render one page of a grid would put a network round trip in front of the
+   markup, so nothing here asks: the browser requests the art lazily and the endpoint answers 404
+   when there is none, which the placeholder underneath is already sized and styled for.
+
+   The img is removed on error rather than hidden, because a broken <img> is drawn differently by
+   every browser and one of the drawings is a grey icon in the middle of the tile. *@
+
+<span class="cover" aria-hidden="true">
+    @if (AlbumId is { } id)
+    {
+        <img class="cover__art" src="@($"/art/album/{id}")" alt="" loading="lazy" decoding="async"
+             onerror="this.remove()" />
+    }
+</span>
+
+@code {
+    /// <summary>Null when there is no album to ask about — an artist with nothing playable.</summary>
+    [Parameter] public Guid? AlbumId { get; set; }
+}

@@ -1,4 +1,4 @@
-@page "/admin"
+﻿@page "/admin"
 @attribute [Authorize(Policy = MootifyAuth.AdminPolicy)]
 @implements IDisposable
 @inject LibraryTranscodeService LibraryTranscode
@@ -7,6 +7,7 @@
 @inject LibraryScanner Scanner
 @inject LibraryFiler Filer
 @inject NetworkShareConnector Shares
+@inject AlbumArtService AlbumArt
 @inject LidarrClient Lidarr
 @inject Transcoder Transcoder
 @inject CurrentUser CurrentUser
@@ -171,6 +172,9 @@
             <button class="linkbutton" @onclick="Reconnect">Reconnect to share</button>
         }
         <button class="linkbutton" @onclick="Prune">Prune missing tracks from playlists</button>
+        @* A scan already forgets the art of the albums it touched. This is for the other case:
+           covers that changed without the music files changing, which no scan can notice. *@
+        <button class="linkbutton" @onclick="ForgetArt">Forget cached album art</button>
     </div>
 
     @if (_message is not null)
@@ -372,6 +376,20 @@
         var report = await Scanner.ScanAllAsync();
         await LoadAsync();
         _message = $"Scanned in {report.Elapsed.TotalSeconds:0.0}s: +{report.Added} ~{report.Updated} -{report.Removed}";
+    }
+
+    /// <summary>
+    /// Drops every extracted cover and every "this album has none" marker, so the next request
+    /// for each goes and looks again. Cheap to be wrong about: the worst case is re-reading tags
+    /// once per album, spread over whoever browses next.
+    /// </summary>
+    private void ForgetArt()
+    {
+        var removed = AlbumArt.Clear();
+
+        _message = removed == 0
+            ? "No cached art to forget — covers will be found the next time they're asked for."
+            : $"Forgot {removed} cached art file{(removed == 1 ? "" : "s")}. They'll be found again on the next look.";
     }
 
     private async Task Prune()

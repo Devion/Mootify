@@ -181,6 +181,58 @@ public sealed class LibrarySearchServiceTests : IAsyncLifetime
         Assert.Equal(LibrarySearchService.DefaultPageSize, zero.Take);
     }
 
+    [Fact]
+    public async Task Consecutive_pages_cover_the_list_exactly_once()
+    {
+        // What infinite scrolling is: page after page appended to what is already on screen.
+        // A gap or a repeat between two of them is invisible in a pager — you're looking at one
+        // page — and is the whole list once they're stacked.
+        await _db.AddAlbumAsync("Padding", "Filler", [.. Enumerable.Range(0, 25).Select(i => $"Filler Song {i}")]);
+
+        var shown = new List<Guid>();
+        while (true)
+        {
+            var page = await _service.TracksAsync("filler song", skip: shown.Count, take: 10);
+            if (page.Rows.Count == 0) break;
+
+            shown.AddRange(page.Rows.Select(r => r.Id));
+            if (!page.HasNext) break;
+        }
+
+        var all = await _service.TrackIdsAsync("filler song", limit: 100);
+
+        Assert.Equal(all, shown);
+        Assert.Equal(25, shown.Distinct().Count());
+    }
+
+    // ---- covers -------------------------------------------------------------
+
+    [Fact]
+    public async Task An_artist_carries_an_album_for_its_cover()
+    {
+        // Artists have no art of their own, so a tile borrows one of their albums'. Earliest
+        // first, which is stable between page loads rather than whichever row came back first.
+        await _db.AddAlbumAsync("Nirvana", "Bleach", ["About a Girl"], year: 1989);
+
+        var nirvana = Assert.Single((await _service.ArtistsAsync("nirvana")).Rows);
+        var bleach = Assert.Single((await _service.AlbumsAsync("bleach")).Rows);
+
+        Assert.Equal(bleach.Id, nirvana.ArtAlbumId);
+    }
+
+    [Fact]
+    public async Task An_album_with_nothing_playable_is_not_borrowed_for_a_cover()
+    {
+        // Art is found by looking at a present track's folder, so an absent album has no picture
+        // to give — and picking it would leave the artist showing the placeholder for ever.
+        await _db.AddAlbumAsync("Nirvana", "Lost Tapes", ["Missing"], year: 1988, present: false);
+
+        var nirvana = Assert.Single((await _service.ArtistsAsync("nirvana")).Rows);
+        var nevermind = Assert.Single((await _service.AlbumsAsync("nevermind")).Rows);
+
+        Assert.Equal(nevermind.Id, nirvana.ArtAlbumId);
+    }
+
     // ---- ordering and absence ---------------------------------------------
 
     [Fact]

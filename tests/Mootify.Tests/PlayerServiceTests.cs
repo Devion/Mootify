@@ -403,4 +403,24 @@ public sealed class PlayerServiceTests : IAsyncLifetime
         Assert.Equal(tracks[2], player.Current!.Id);
         Assert.True(player.IsPlaying);
     }
+
+    [Fact]
+    public async Task Pressing_a_row_of_a_surprise_run_keeps_the_endlessness()
+    {
+        // Picking the fourth suggestion is the same request as pressing Play above it, started
+        // later — so the row button has to carry alwaysGrow the way the Play button does.
+        var heard = await AddTracksAsync(TasteService.MinimumTracksHeard);
+        await SeedHistoryAsync(heard);
+        await AddTracksAsync(20, "Another Band");
+
+        await new PreferenceService(_db).SetAutoContinueAsync(_user.Id, false);
+
+        var player = CreatePlayer();
+        var queue = await AddTracksAsync(1, "Starter Band");
+
+        await player.PressRowAsync(queue, 0, alwaysGrow: true);
+        await player.NextAsync();
+
+        Assert.True(player.Queue.Count > 1, "a surprise queue should keep going");
+    }
 }

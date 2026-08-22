@@ -30,7 +30,17 @@ public static class ArtEndpoints
             CancellationToken ct) =>
         {
             var found = await service.GetAsync(albumId, ct);
-            if (found is null || !File.Exists(found.Path)) return Results.NotFound();
+            if (found is null) return Results.NotFound();
+
+            // The answer is memoized, so a path that has gone would otherwise 404 for ever
+            // rather than until the next look. Forgetting it here is what makes a cover deleted
+            // — or moved by the organizer — heal on the following request instead of on a
+            // restart.
+            if (!File.Exists(found.Path))
+            {
+                service.Forget(albumId);
+                return Results.NotFound();
+            }
 
             var info = new FileInfo(found.Path);
 

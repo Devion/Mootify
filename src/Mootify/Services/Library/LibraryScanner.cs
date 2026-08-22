@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using Mootify.Configuration;
@@ -21,6 +21,7 @@ public sealed class LibraryScanner(
     IServiceScopeFactory scopeFactory,
     LibraryFiler filer,
     NetworkShareConnector shares,
+    AlbumArtService art,
     IOptionsMonitor<LibraryOptions> options,
     ILogger<LibraryScanner> log)
 {
@@ -265,6 +266,12 @@ public sealed class LibraryScanner(
 
             var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
+            // Every album whose files changed. AlbumArtService memoizes what it found — a cover
+            // next to the files, one out of a tag, or nothing at all — and "nothing at all" is
+            // the answer that goes stale: an album that has just gained a cover.jpg would keep
+            // answering 404 until somebody restarted the app.
+            var touchedAlbums = new HashSet<Guid>();
+
             foreach (var file in files)
             {
                 ct.ThrowIfCancellationRequested();
@@ -284,6 +291,7 @@ public sealed class LibraryScanner(
                         ApplyTags(track, file, db, artists, albums);
                         track.FingerPrint = fingerprint;
                         track.IsPresent = true;
+                        touchedAlbums.Add(track.AlbumId);
                         updated++;
                     }
                     else
@@ -298,6 +306,7 @@ public sealed class LibraryScanner(
                         ApplyTags(track, file, db, artists, albums);
                         db.Tracks.Add(track);
                         existing[file.FullName] = track;
+                        touchedAlbums.Add(track.AlbumId);
                         added++;
                     }
                 }
@@ -314,11 +323,17 @@ public sealed class LibraryScanner(
                 if (!seen.Contains(trackPath) && track.IsPresent)
                 {
                     track.IsPresent = false;
+                    touchedAlbums.Add(track.AlbumId);
                     removed++;
                 }
             }
 
             await db.SaveChangesAsync(ct);
+
+            // After the save, so a scan that fails to commit doesn't throw away art for changes
+            // that never happened.
+            var forgotten = art.Forget(touchedAlbums);
+            if (forgotten > 0) log.LogDebug("Dropped cached art for {Count} album(s)", forgotten);
         }
         finally
         {

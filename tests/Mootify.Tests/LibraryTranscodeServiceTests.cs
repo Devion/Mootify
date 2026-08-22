@@ -1,4 +1,4 @@
-using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Mootify.Configuration;
@@ -45,6 +45,7 @@ public sealed class LibraryTranscodeServiceTests : IAsyncLifetime
             services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>(),
             filer,
             new NetworkShareConnector(options, NullLogger<NetworkShareConnector>.Instance),
+            TestArt.Service(_db),
             options,
             NullLogger<LibraryScanner>.Instance);
 

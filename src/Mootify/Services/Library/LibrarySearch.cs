@@ -1,4 +1,4 @@
-using System.Linq.Expressions;
+﻿using System.Linq.Expressions;
 using Microsoft.EntityFrameworkCore;
 using Mootify.Data;
 
@@ -103,7 +103,14 @@ public static class LibraryMatch
     }
 }
 
-public sealed record ArtistHit(Guid Id, string Name, int AlbumCount, int TrackCount);
+/// <summary>
+/// <paramref name="ArtAlbumId"/> is one of the artist's albums, there so a tile can show a cover.
+/// Artists have no art of their own — <c>/art/album/{id}</c> is the only picture in the app — so
+/// the earliest album with something playable on it stands in for the artist, which is stable
+/// between page loads rather than whichever row the database felt like returning first.
+/// </summary>
+public sealed record ArtistHit(
+    Guid Id, string Name, int AlbumCount, int TrackCount, Guid? ArtAlbumId);
 
 public sealed record AlbumHit(
     Guid Id, string Title, Guid ArtistId, string ArtistName, int? Year, int TrackCount);
@@ -167,7 +174,12 @@ public sealed class LibrarySearchService(IDbContextFactory<MootifyDbContext> dbF
                 a.Id,
                 a.Name,
                 a.Albums.Count(al => al.Tracks.Any(t => t.IsPresent)),
-                a.Tracks.Count(t => t.IsPresent)))
+                a.Tracks.Count(t => t.IsPresent),
+                a.Albums
+                    .Where(al => al.Tracks.Any(t => t.IsPresent))
+                    .OrderBy(al => al.Year).ThenBy(al => al.Title)
+                    .Select(al => (Guid?)al.Id)
+                    .FirstOrDefault()))
             .ToListAsync(ct);
 
         return new SearchPage<ArtistHit>(rows, await TotalAsync(matching, rows.Count, skip, take, ct), skip, take);

@@ -1,5 +1,6 @@
 @page "/surprise"
 @attribute [Authorize]
+@implements IDisposable
 @inject TasteService Taste
 @inject PlaylistService Playlists
 @inject PlaylistEvents PlaylistEvents
@@ -100,8 +101,28 @@ else
                     var index = i;
                     var suggestion = _suggestions[i];
 
-                    <tr @ondblclick="() => PlayFrom(index)">
-                        <td class="tracklist__num">@(index + 1)</td>
+                    var isCurrent = Player.IsCurrent(suggestion.TrackId);
+                    var willPause = isCurrent && Player.IsPlaying;
+
+                    @* Double-click starts the row whatever the button is showing; the button
+                       stops it from reaching here and undoing what the press just did. *@
+                    <tr class="@(isCurrent ? "is-current" : "")" @ondblclick="() => PlayFrom(index)">
+                        <td class="tracklist__num">
+                            <button class="tracklist__play" @onclick="() => Press(index)"
+                                    @ondblclick:stopPropagation="true"
+                                    title="@(willPause ? "Pause" : "Play")"
+                                    aria-label="@($"{(willPause ? "Pause" : "Play")} {suggestion.Title}")">
+                                @if (willPause)
+                                {
+                                    <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M7 5h4v14H7zm6 0h4v14h-4z"/></svg>
+                                }
+                                else
+                                {
+                                    <span class="tracklist__index">@(index + 1)</span>
+                                    <svg class="tracklist__playicon" viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>
+                                }
+                            </button>
+                        </td>
                         <td class="tracklist__title">@suggestion.Title</td>
                         <td class="tracklist__artist">@suggestion.ArtistName</td>
                         @* The reason, in the user's terms. A suggestion nobody can account for
@@ -185,8 +206,15 @@ else
     private PlaylistSummary? AppendTarget =>
         Guid.TryParse(_destination, out var id) ? _playlists.FirstOrDefault(p => p.Id == id) : null;
 
+    /// <summary>
+    /// The rows show which track is playing, so they have to follow the player rather than only
+    /// their own state: pressing next moves the audio and the play bar, and a routed page isn't
+    /// re-rendered by the layout above it.
+    /// </summary>
     protected override async Task OnInitializedAsync()
     {
+        Player.StateChanged += OnPlayerChanged;
+
         _userId = await CurrentUser.GetRequiredIdAsync();
         _playlists = await Playlists.GetForUserAsync(_userId);
 
@@ -225,9 +253,25 @@ else
     /// </summary>
     private async Task PlayAll() => await PlayFrom(0);
 
+    /// <summary>
+    /// Double-clicking a row always starts it, even if it is the current track — the gesture
+    /// means "play this", and there is no icon under the cursor claiming otherwise.
+    /// </summary>
     private async Task PlayFrom(int index) =>
-        await Player.PlayQueueAsync(
-            [.. _suggestions.Select(s => s.TrackId)], index, alwaysGrow: true);
+        await Player.PlayQueueAsync(TrackIds(), index, alwaysGrow: true);
+
+    /// <summary>
+    /// The button on the row: a pause on the track that is already playing, and otherwise the
+    /// run started from here. The decision lives in <see cref="PlayerService.PressRowAsync"/>
+    /// rather than here, so the icon and the click can't drift apart.
+    ///
+    /// The queue is the whole run from that point rather than one song, and it still grows —
+    /// picking the fourth suggestion is the same request as pressing Play, started later.
+    /// </summary>
+    private async Task Press(int index) =>
+        await Player.PressRowAsync(TrackIds(), index, alwaysGrow: true);
+
+    private List<Guid> TrackIds() => [.. _suggestions.Select(s => s.TrackId)];
 
     // ---- keeping it ------------------------------------------------------
 
@@ -282,6 +326,10 @@ else
             _working = false;
         }
     }
+
+    private async Task OnPlayerChanged() => await InvokeAsync(StateHasChanged);
+
+    public void Dispose() => Player.StateChanged -= OnPlayerChanged;
 
     private static string Format(TimeSpan t) =>
         t.TotalHours >= 1 ? t.ToString(@"h\:mm\:ss") : t.ToString(@"m\:ss");

@@ -1,4 +1,4 @@
-using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Mootify.Configuration;
@@ -66,6 +66,7 @@ public sealed class TrackUploadServiceTests : IAsyncLifetime
             new LibraryFiler(monitor, NullLogger<LibraryFiler>.Instance),
             // No credentials configured, so this is a no-op that reports "nothing to connect".
             new NetworkShareConnector(monitor, NullLogger<NetworkShareConnector>.Instance),
+            TestArt.Service(_db),
             monitor,
             NullLogger<LibraryScanner>.Instance);
 

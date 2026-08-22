@@ -1,0 +1,123 @@
+@* The bottom of a list that keeps going.
+
+   It replaced the Pager on the library page rather than sitting next to it: a grid of covers is
+   something people flick through, and "Next →" makes them stop and aim at a button to see the
+   fifty-first artist.
+
+   The sentinel is a real button, and that is deliberate on two counts. It is the fallback when
+   IntersectionObserver isn't there or the module didn't load — an infinite list that silently
+   stops is indistinguishable from the end of the library — and it is the only way to reach the
+   rest of the list with a keyboard, since nothing else here is focusable. *@
+
+@implements IAsyncDisposable
+@inject IJSRuntime JS
+
+@if (HasMore)
+{
+    <div class="loadmore" @ref="_sentinel">
+        <button class="linkbutton" disabled="@Busy" @onclick="ReachedAsync">
+            @(Busy ? "Loading…" : Label)
+        </button>
+    </div>
+}
+else if (!string.IsNullOrEmpty(EndLabel))
+{
+    <p class="loadmore loadmore--end muted">@EndLabel</p>
+}
+
+@code {
+    [Parameter, EditorRequired] public bool HasMore { get; set; }
+
+    /// <summary>Owned by the caller, because the caller is what knows a load is in flight.</summary>
+    [Parameter] public bool Busy { get; set; }
+
+    [Parameter, EditorRequired] public EventCallback OnLoadMore { get; set; }
+
+    [Parameter] public string Label { get; set; } = "Load more";
+
+    /// <summary>Shown once there is nothing left. Empty means say nothing.</summary>
+    [Parameter] public string? EndLabel { get; set; }
+
+    /// <summary>
+    /// How far ahead of the sentinel to start loading. One tall screen: far enough that the rows
+    /// have arrived before anybody scrolls to where they go, near enough that flicking past a
+    /// section doesn't fetch the whole library.
+    /// </summary>
+    private const int LookaheadPixels = 600;
+
+    private ElementReference _sentinel;
+    private IJSObjectReference? _module;
+    private IJSObjectReference? _watcher;
+    private DotNetObjectReference<InfiniteScroll>? _self;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        try
+        {
+            // No sentinel in the DOM to watch. Letting the observer go here is also what makes a
+            // new search work: the next one starts a fresh watcher on the element it renders.
+            if (!HasMore)
+            {
+                await StopAsync();
+                return;
+            }
+
+            if (_watcher is null)
+            {
+                _module ??= await JS.InvokeAsync<IJSObjectReference>("import", "./js/infinite-scroll.js");
+                _self ??= DotNetObjectReference.Create(this);
+                _watcher = await _module.InvokeAsync<IJSObjectReference>(
+                    "watch", _sentinel, _self, LookaheadPixels);
+            }
+            else
+            {
+                await _watcher.InvokeVoidAsync("recheck");
+            }
+        }
+        catch (JSDisconnectedException)
+        {
+            // The circuit went away. There is no list left to scroll.
+        }
+    }
+
+    /// <summary>
+    /// Called by the observer and by the button. The guards are here rather than only in the
+    /// caller because both can arrive while a load is already running — the observer re-checks
+    /// after every render, and a render happens the moment <see cref="Busy"/> goes true.
+    /// </summary>
+    [JSInvokable]
+    public async Task ReachedAsync()
+    {
+        if (!HasMore || Busy) return;
+
+        await OnLoadMore.InvokeAsync();
+    }
+
+    private async Task StopAsync()
+    {
+        if (_watcher is null) return;
+
+        var watcher = _watcher;
+        _watcher = null;
+
+        await watcher.InvokeVoidAsync("dispose");
+        await watcher.DisposeAsync();
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        try
+        {
+            await StopAsync();
+            if (_module is not null) await _module.DisposeAsync();
+        }
+        catch (JSDisconnectedException)
+        {
+            // Nothing to clean up on a connection that has already gone.
+        }
+        finally
+        {
+            _self?.Dispose();
+        }
+    }
+}

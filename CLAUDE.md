@@ -229,6 +229,38 @@ wrong at 2,000. It searches artists, albums and songs as three tabs — and a te
 open tab empty moves to the first tab that has results, because landing on "Artists (0)" next to
 "Songs (12)" looks exactly like a search that failed.
 
+**The pages are appended rather than turned.** `Pager` was replaced on this page by
+`Components/Shared/InfiniteScroll.razor` — a grid of covers is something people flick through, and
+"Next →" makes them stop and aim at a button to see the fifty-first artist. `PlaylistPage` keeps
+the pager: a numbered list somebody is editing is a place you want to be able to return to.
+
+Three things about it are load-bearing:
+
+- **The sentinel is a real button.** It is the fallback when `IntersectionObserver` isn't there or
+  the module didn't load — an endless list that silently stops is indistinguishable from the end
+  of the library — and it is the only way to reach the rest with a keyboard, since nothing else on
+  a tile grid is focusable.
+- **The observer's root is the element that scrolls, found rather than named.** The app scrolls
+  inside `.shell__main`, and a clipping ancestor trims the intersection *before* `rootMargin` is
+  applied — with the default root the lookahead would be worth nothing and rows would arrive
+  exactly when somebody had already scrolled past where they go.
+- **It re-checks after every render, and `_more` must be able to go false.** An
+  `IntersectionObserver` reports a *change*, and appending rows above a sentinel that never left
+  the screen isn't one, so a short list in a tall window would load one page and stop. The
+  re-check is what fills the viewport — and it is also why `LibraryPage.Advance` refuses to claim
+  there is more after a page came back empty: with the sentinel asking again after every render,
+  a total that disagrees with reality is an infinite loop rather than a wrong number.
+
+Tiles carry album art (`Components/Shared/Cover.razor`, `/art/album/{id}`). Whether an album has
+any is only knowable by going and looking — `AlbumArtService` checks for an adjacent `cover.jpg`
+and then parses an ID3 tag on a file that may be on a NAS — so nothing asks on the server: the
+browser lazy-loads it and the 404 leaves the placeholder the tile already had. Fifty of those at
+once is what forced the memo in `AlbumArtService`; see **The Android app and its API**. Artists have no art
+of their own, so `ArtistHit.ArtAlbumId` borrows their earliest album with something playable on
+it, which is stable between page loads rather than whichever row came back first. Every tile is
+the same size on purpose (square art, both text lines clamped): a grid whose boxes shift height
+with the length of a title reads as a mess however good the artwork is.
+
 **The ceiling is real and is worth knowing before optimising the wrong thing.** Somewhere in the
 low hundreds of thousands of tracks a scan per keystroke stops being free, and the answer then is
 SQLite's FTS5 — a virtual table kept in step by the scanner, queried with `MATCH`. That is
@@ -657,6 +689,31 @@ on the front of the record. **Audio is not treated this way.** `AlbumArtService`
 the library actually stores it: an adjacent `cover.jpg` is served straight off disk, embedded ID3 art
 is extracted once into a cache, and albums with no art get an empty marker file so the miss is as
 cheap as the hit (a car scrolling 800 albums asks 800 times).
+
+**The answer is memoized, and that is the layer that made it actually cheap.** The disk cache above
+only ever spared the *extraction*: every call still opened a `DbContext` to find a track and then
+swept the folder for six names in four extensions before looking at the cache at all — up to 24 SMB
+stats per cover on a network share, and the library grid asks for fifty at once. `AlbumArtService`
+now holds what the sweep concluded, misses included, so the second ask is a dictionary lookup. It is
+bounded by the album count rather than size-limited, because the keys are ids out of our own
+database — unlike `LoginThrottle`, where the keys come from outside and the cap is the defence.
+
+Three things invalidate it, and none of them existed before it did:
+
+- **A scan forgets the albums it touched** (`LibraryScanner` collects `Track.AlbumId` as it adds,
+  updates and marks absent, then calls `AlbumArtService.Forget`). Precise rather than wholesale
+  because the watcher fires on every file dropped into the import folder, and re-extracting every
+  cover in the library because one album gained a track is a tag parse per album, over the share,
+  for nothing.
+- **The endpoint forgets a path that has gone.** A memoized answer pointing at a deleted cover would
+  otherwise 404 for ever rather than until the next look.
+- **`/admin` has a "Forget cached album art" button**, and it is not redundant with the first:
+  **a cover dropped beside files a scan finds unchanged is invisible to that scan**, because nothing
+  about the music changed. `LibraryScannerTests.A_scan_that_changed_nothing_leaves_the_art_alone`
+  asserts that limitation rather than leaving it to be assumed.
+
+Forgetting always drops the on-disk entries too. A `.none` marker left behind is what stands between
+an album that has just gained a cover and anybody seeing it.
 
 **Durations are milliseconds and URLs are relative** across the whole API. A `TimeSpan` serializes as
 `"00:03:41.2340000"`, and a proxied server doesn't reliably know its own public name, so the client

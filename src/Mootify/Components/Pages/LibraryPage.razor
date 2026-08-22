@@ -19,8 +19,8 @@
 
 @if (HasQuery)
 {
-    @* Tabs rather than three stacked lists: each kind pages on its own, and a page of albums
-       under a page of artists means neither is reachable past its first fifty. *@
+    @* Tabs rather than three stacked lists: each kind scrolls on its own, and one endless list
+       below another means the second is never reached. *@
     <div class="adminnav adminnav--sub">
         @foreach (var kind in Kinds)
         {
@@ -33,7 +33,7 @@
 
 @if (_kind == ResultKind.Artists)
 {
-    @if (_artists.Rows.Count == 0)
+    @if (_artistRows.Count == 0 && !_more)
     {
         <div class="emptystate">
             <img src="img/pietjecow-sm.png" alt="" />
@@ -42,13 +42,14 @@
     }
     else
     {
-        <ul class="artistgrid">
-            @foreach (var a in _artists.Rows)
+        <ul class="covergrid">
+            @foreach (var a in _artistRows)
             {
                 <li>
                     <a href="@($"/artist/{a.Id}")">
-                        <span class="artistgrid__name">@a.Name</span>
-                        <span class="artistgrid__meta">
+                        <Cover AlbumId="a.ArtAlbumId" />
+                        <span class="covergrid__name">@a.Name</span>
+                        <span class="covergrid__meta">
                             @a.AlbumCount album@(a.AlbumCount == 1 ? "" : "s") &middot; @a.TrackCount tracks
                         </span>
                     </a>
@@ -56,26 +57,23 @@
             }
         </ul>
     }
-
-    <Pager Page="_artists.PageNumber" Of="_artists.PageCount" Total="_artists.Total" Noun="artist"
-           HasPrevious="_artists.HasPrevious" HasNext="_artists.HasNext"
-           OnGoTo="GoTo" Skip="_artists.Skip" Take="_artists.Take" />
 }
 else if (_kind == ResultKind.Albums)
 {
-    @if (_albums.Rows.Count == 0)
+    @if (_albumRows.Count == 0 && !_more)
     {
         <p class="muted">No albums match that.</p>
     }
     else
     {
-        <ul class="artistgrid">
-            @foreach (var album in _albums.Rows)
+        <ul class="covergrid">
+            @foreach (var album in _albumRows)
             {
                 <li>
                     <a href="@($"/album/{album.Id}")">
-                        <span class="artistgrid__name">@album.Title</span>
-                        <span class="artistgrid__meta">
+                        <Cover AlbumId="album.Id" />
+                        <span class="covergrid__name">@album.Title</span>
+                        <span class="covergrid__meta">
                             @album.ArtistName@(album.Year is { } y ? $" · {y}" : "") &middot; @album.TrackCount tracks
                         </span>
                     </a>
@@ -83,14 +81,10 @@ else if (_kind == ResultKind.Albums)
             }
         </ul>
     }
-
-    <Pager Page="_albums.PageNumber" Of="_albums.PageCount" Total="_albums.Total" Noun="album"
-           HasPrevious="_albums.HasPrevious" HasNext="_albums.HasNext"
-           OnGoTo="GoTo" Skip="_albums.Skip" Take="_albums.Take" />
 }
 else
 {
-    @if (_tracks.Rows.Count > 0)
+    @if (_trackRows.Count > 0)
     {
         <div class="sectionhead">
             <h2>@_tracks.Total song@(_tracks.Total == 1 ? "" : "s")</h2>
@@ -99,11 +93,11 @@ else
     }
 
     <TrackList Rows="_trackRows" EmptyMessage="No songs match that." />
-
-    <Pager Page="_tracks.PageNumber" Of="_tracks.PageCount" Total="_tracks.Total" Noun="song"
-           HasPrevious="_tracks.HasPrevious" HasNext="_tracks.HasNext"
-           OnGoTo="GoTo" Skip="_tracks.Skip" Take="_tracks.Take" />
 }
+
+@* One sentinel for all three tabs, because only one of them is on screen at a time. *@
+<InfiniteScroll HasMore="_more" Busy="_loadingMore" OnLoadMore="LoadMoreAsync"
+                Label="@MoreLabel" EndLabel="@EndLabel" />
 
 @code {
     private enum ResultKind { Artists, Albums, Tracks }
@@ -118,13 +112,37 @@ else
 
     private string _query = "";
     private ResultKind _kind = ResultKind.Artists;
-    private int _skip;
     private bool _searching;
 
+    /// <summary>
+    /// The tab's <i>latest</i> page, kept for its <c>Total</c> — which is what the tab labels
+    /// count and what "528 songs" says. The rows on it have already been folded into the lists
+    /// below and are not read again.
+    /// </summary>
     private SearchPage<ArtistHit> _artists = SearchPage<ArtistHit>.Empty;
     private SearchPage<AlbumHit> _albums = SearchPage<AlbumHit>.Empty;
     private SearchPage<TrackHit> _tracks = SearchPage<TrackHit>.Empty;
-    private List<TrackList.Row> _trackRows = [];
+
+    /// <summary>
+    /// Everything fetched so far on the open tab. Only one of the three is ever on screen, and
+    /// switching tabs or changing the term empties all of them — there is no half-scrolled list
+    /// to come back to, because coming back to one the term no longer matches is worse.
+    /// </summary>
+    private readonly List<ArtistHit> _artistRows = [];
+    private readonly List<AlbumHit> _albumRows = [];
+    private readonly List<TrackList.Row> _trackRows = [];
+
+    /// <summary>How many rows are on screen for the open tab — and so the next request's offset.</summary>
+    private int _shown;
+
+    /// <summary>
+    /// Starts true so the sentinel is in the DOM for the very first load, and goes false the
+    /// moment a page comes back proving there is nothing after it. It is also what tells an empty
+    /// tab from one that simply hasn't answered yet, which is why the empty states check it.
+    /// </summary>
+    private bool _more = true;
+
+    private bool _loadingMore;
 
     private bool HasQuery => !string.IsNullOrWhiteSpace(_query);
 
@@ -139,8 +157,8 @@ else
 
     /// <summary>
     /// The <c>?q=</c> this page has already acted on. <c>OnParametersSetAsync</c> runs on every
-    /// cascading update as well as on navigation, and re-running a scan — and resetting the tab
-    /// and the page somebody is reading — because an auth-state renewal fired is the bug this
+    /// cascading update as well as on navigation, and re-running a scan — and throwing away what
+    /// somebody has scrolled through — because an auth-state renewal fired is the bug this
     /// prevents. Null is a real value here, so a separate flag tracks "have we loaded at all".
     /// </summary>
     private string? _appliedQuery;
@@ -159,15 +177,11 @@ else
             _kind = ResultKind.Tracks;
         }
 
-        _skip = 0;
         await LoadAsync(CancellationToken.None);
     }
 
     private void OnQueryChanged()
     {
-        // A new term starts at the top; page 4 of the previous search means nothing here.
-        _skip = 0;
-
         _debounceCts?.Cancel();
         _debounceCts?.Dispose();
         _debounceCts = new CancellationTokenSource();
@@ -201,13 +215,6 @@ else
     private async Task SwitchAsync(ResultKind kind)
     {
         _kind = kind;
-        _skip = 0;
-        await LoadAsync(CancellationToken.None, autoPick: false);
-    }
-
-    private async Task GoTo(int skip)
-    {
-        _skip = Math.Max(0, skip);
         await LoadAsync(CancellationToken.None, autoPick: false);
     }
 
@@ -234,26 +241,71 @@ else
         }
     }
 
+    /// <summary>Starts a tab over: what is on screen goes, and the first page replaces it.</summary>
     private async Task LoadTabAsync(ResultKind kind, CancellationToken ct)
+    {
+        _artistRows.Clear();
+        _albumRows.Clear();
+        _trackRows.Clear();
+        _shown = 0;
+        _more = true;
+
+        await FetchAsync(kind, ct);
+    }
+
+    /// <summary>
+    /// One more page onto the end of the open tab. The guard matters: the sentinel re-checks
+    /// itself after every render, so this is asked again the moment the page grows.
+    /// </summary>
+    private async Task LoadMoreAsync()
+    {
+        if (_loadingMore || !_more) return;
+
+        _loadingMore = true;
+        try
+        {
+            await FetchAsync(_kind, CancellationToken.None);
+        }
+        finally
+        {
+            _loadingMore = false;
+        }
+    }
+
+    private async Task FetchAsync(ResultKind kind, CancellationToken ct)
     {
         switch (kind)
         {
             case ResultKind.Albums:
-                _albums = await Search.AlbumsAsync(_query, _skip, ct: ct);
+                _albums = await Search.AlbumsAsync(_query, _shown, ct: ct);
+                _albumRows.AddRange(_albums.Rows);
+                Advance(_albums.Rows.Count, _albumRows.Count, _albums.Total);
                 break;
 
             case ResultKind.Tracks:
-                _tracks = await Search.TracksAsync(_query, _skip, ct: ct);
-                _trackRows =
-                [
-                    .. _tracks.Rows.Select(t => new TrackList.Row(t.Id, t.Title, t.ArtistName, t.Duration))
-                ];
+                _tracks = await Search.TracksAsync(_query, _shown, ct: ct);
+                _trackRows.AddRange(
+                    _tracks.Rows.Select(t => new TrackList.Row(t.Id, t.Title, t.ArtistName, t.Duration)));
+                Advance(_tracks.Rows.Count, _trackRows.Count, _tracks.Total);
                 break;
 
             default:
-                _artists = await Search.ArtistsAsync(_query, _skip, ct: ct);
+                _artists = await Search.ArtistsAsync(_query, _shown, ct: ct);
+                _artistRows.AddRange(_artists.Rows);
+                Advance(_artists.Rows.Count, _artistRows.Count, _artists.Total);
                 break;
         }
+    }
+
+    /// <summary>
+    /// Both halves of this are needed and the first is the important one: the sentinel asks again
+    /// after every render, so a tab that claims there is more and then keeps returning nothing is
+    /// an infinite loop rather than a wrong number.
+    /// </summary>
+    private void Advance(int fetched, int shown, int total)
+    {
+        _shown = shown;
+        _more = fetched > 0 && shown < total;
     }
 
     /// <summary>
@@ -272,7 +324,6 @@ else
         if (target is not { } kind || kind == _kind) return;
 
         _kind = kind;
-        _skip = 0;
         await LoadTabAsync(kind, ct);
     }
 
@@ -301,9 +352,26 @@ else
         _ => "Songs",
     };
 
+    private string MoreLabel => $"Load more {Label(_kind).ToLowerInvariant()}";
+
     /// <summary>
-    /// Queues everything that matched, not just the page — but bounded, because a term like "the"
-    /// matches thousands and a queue that long is a mistake made in one click.
+    /// Only worth saying once the list is longer than one page — "All 3 artists" under three
+    /// tiles is noise. It is the one thing a scrolling list can't otherwise tell you: that this
+    /// is the end, rather than the end of what has loaded so far.
+    /// </summary>
+    private string? EndLabel
+    {
+        get
+        {
+            if (_more || _shown <= LibrarySearchService.DefaultPageSize) return null;
+
+            return $"That's all {_shown} {Label(_kind).ToLowerInvariant()}.";
+        }
+    }
+
+    /// <summary>
+    /// Queues everything that matched, not just what has been scrolled to — but bounded, because
+    /// a term like "the" matches thousands and a queue that long is a mistake made in one click.
     /// </summary>
     private async Task PlayMatches()
     {
