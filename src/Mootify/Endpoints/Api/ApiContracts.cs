@@ -24,7 +24,7 @@ public sealed record ApiUser(Guid Id, string DisplayName, bool IsAdmin);
 public sealed record ApiServerInfo(
     string Name,
     int ApiVersion,
-    bool LidarrConfigured,
+    bool SoulseekConfigured,
     bool RegistrationOpen,
     int MaxPageSize);
 
@@ -147,18 +147,17 @@ public sealed record ApiLibraryStats(
     long DurationMs,
     DateTimeOffset? LastAddedAt);
 
-/// <summary>An album Lidarr could fetch — not in the library yet, so it has no track ids.</summary>
-public sealed record ApiRemoteAlbum(
-    string? MusicBrainzId,
-    string Title,
-    string ArtistName,
-    string? ArtistMusicBrainzId,
-    int? Year,
-    string? AlbumType,
-    string? CoverUrl,
-    bool AlreadyInLibrary);
-
-public sealed record ApiRemoteTrack(int Position, string Title, string? RecordingId, long? DurationMs);
+public sealed record ApiSoulseekFile(
+    Guid ResultId,
+    string Name,
+    string Folder,
+    string Extension,
+    long Size,
+    int? BitRate,
+    int? BitDepth,
+    int? LengthSeconds,
+    bool HasFreeUploadSlot,
+    int QueueLength);
 
 public sealed record ApiRequest(
     Guid Id,
@@ -208,17 +207,10 @@ public sealed record RenamePlaylistRequest(string Name);
 public sealed record AddTracksRequest(List<Guid> TrackIds);
 
 /// <summary>
-/// <paramref name="SearchTerm"/> is the term that produced the album on the client's screen.
-/// Lidarr has no "get by MBID" for something it hasn't adopted yet, so if the server's memory of
-/// the search has expired it re-runs that term and matches on the MBID rather than failing.
+/// <paramref name="ResultId"/> identifies a short-lived, server-cached Soulseek result. The raw
+/// peer username and path never need to be trusted from a client.
 /// </summary>
-public sealed record CreateRequestBody(
-    string? AlbumMusicBrainzId,
-    RequestKind Kind,
-    string? TrackTitle,
-    string? RecordingMusicBrainzId,
-    Guid? TargetPlaylistId,
-    string? SearchTerm);
+public sealed record CreateRequestBody(Guid ResultId, Guid? TargetPlaylistId, string? SearchTerm);
 
 /// <summary>
 /// A heartbeat from whichever client is playing.
@@ -261,7 +253,7 @@ public static class ApiMap
     /// Bumped to 2 when playlist contents became a page — see <see cref="ApiPlaylistDetail"/>.
     /// Clients check this before assuming an endpoint or a shape exists.
     /// </summary>
-    public const int Version = 2;
+    public const int Version = 3;
 
     public static string StreamUrl(Guid trackId) => $"/media/{trackId}";
 

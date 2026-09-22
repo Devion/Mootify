@@ -146,7 +146,7 @@ public sealed class Artist
     [MaxLength(512)]
     public string SortName { get; set; } = "";
 
-    /// <summary>MusicBrainz artist ID — the join key to Lidarr.</summary>
+    /// <summary>MusicBrainz artist ID, retained for metadata matching.</summary>
     [MaxLength(64)]
     public string? MusicBrainzId { get; set; }
 
@@ -163,7 +163,7 @@ public sealed class Album
 
     public int? Year { get; set; }
 
-    /// <summary>MusicBrainz release-group ID — the join key to Lidarr.</summary>
+    /// <summary>MusicBrainz release-group ID, retained for metadata matching.</summary>
     [MaxLength(64)]
     public string? MusicBrainzId { get; set; }
 
@@ -432,7 +432,7 @@ public sealed class Request
     [MaxLength(64)]
     public string? ArtistMusicBrainzId { get; set; }
 
-    /// <summary>Release-group MBID. Lidarr works in albums, so a track request resolves to one of these.</summary>
+    /// <summary>Release-group MBID when the request originated from metadata-backed import data.</summary>
     [MaxLength(64)]
     public string? AlbumMusicBrainzId { get; set; }
 
@@ -440,8 +440,14 @@ public sealed class Request
     [MaxLength(64)]
     public string? RecordingMusicBrainzId { get; set; }
 
-    public int? LidarrArtistId { get; set; }
-    public int? LidarrAlbumId { get; set; }
+    /// <summary>The slskd batch uses the request id for new rows; nullable for upgraded databases.</summary>
+    public Guid? SoulseekBatchId { get; set; }
+
+    [MaxLength(512)]
+    public string? SoulseekUsername { get; set; }
+
+    [MaxLength(2048)]
+    public string? SoulseekFilename { get; set; }
 
     /// <summary>Captured at request time so completion is silent and automatic. Null = don't add anywhere.</summary>
     public Guid? TargetPlaylistId { get; set; }
@@ -449,19 +455,6 @@ public sealed class Request
 
     [MaxLength(1024)]
     public string? FailureReason { get; set; }
-
-    /// <summary>
-    /// When Lidarr was last told to go looking. A search that finds nothing leaves no trace in
-    /// Lidarr, so without this the reconciler cannot tell "asked once an hour ago and still
-    /// nothing" from "never asked" — and 500 requests queued in one import are mostly the former.
-    /// </summary>
-    public DateTimeOffset? LastSearchAt { get; set; }
-
-    /// <summary>
-    /// How many times we've asked. Bounded, because an album no indexer carries would otherwise
-    /// be re-searched every ten minutes for a week.
-    /// </summary>
-    public int SearchAttempts { get; set; }
 
     public DateTimeOffset CreatedAt { get; set; }
     public DateTimeOffset UpdatedAt { get; set; }

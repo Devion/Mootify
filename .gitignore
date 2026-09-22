@@ -481,7 +481,7 @@ $RECYCLE.BIN/
 # Vim temporary swap files
 *.swp
 
-# Local config: holds the Lidarr API key.
+# Local config: holds the slskd API key.
 mootify.json
 
 # The SQLite database and the on-disk caches. Ignored as files rather than as a folder: the

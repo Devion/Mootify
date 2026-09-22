@@ -3,7 +3,7 @@ using Microsoft.Extensions.Options;
 using Mootify.Configuration;
 using Mootify.Data;
 using Mootify.Services.Library;
-using Mootify.Services.Lidarr;
+using Mootify.Services.Soulseek;
 using Mootify.Services.Settings;
 using Mootify.Services.Transcoding;
 
@@ -71,8 +71,7 @@ public static class StartupChecks
         else if (!Directory.Exists(library.MusicRoot))
         {
             log.LogWarning(
-                "Library:MusicRoot ({Root}) is not reachable. Remember Lidarr's root folder is a path " +
-                "inside its own container; this one has to be the path Mootify can see. If it's a share " +
+                "Library:MusicRoot ({Root}) is not reachable. This has to be the path Mootify can see. If it's a share " +
                 "that needs a login, set Library:Username and Library:Password.",
                 library.MusicRoot);
         }
@@ -94,30 +93,30 @@ public static class StartupChecks
         else
         {
             log.LogWarning(
-                "FFmpeg was not found. Mootify runs, but anything Lidarr grabs that isn't an MP3 " +
+                "FFmpeg was not found. Mootify runs, but Soulseek downloads needing conversion " +
                 "will fail its request instead of being converted.");
         }
 
-        // ---- lidarr ---------------------------------------------------------
-        var lidarr = services.GetRequiredService<LidarrClient>();
-        var lidarrOptions = services.GetRequiredService<IOptions<LidarrOptions>>().Value;
+        // ---- soulseek -------------------------------------------------------
+        var soulseek = services.GetRequiredService<SoulseekClient>();
+        var soulseekOptions = services.GetRequiredService<IOptions<SoulseekOptions>>().Value;
 
-        if (!lidarrOptions.IsConfigured)
+        if (!soulseekOptions.IsConfigured)
         {
-            log.LogInformation("Lidarr is not configured; requests are disabled.");
+            log.LogInformation("Soulseek is not configured; requests are disabled.");
         }
         else
         {
-            var (ok, version, error) = await lidarr.CheckAsync();
+            var (ok, version, error) = await soulseek.CheckAsync();
             if (ok)
             {
-                log.LogInformation("Lidarr {Version} at {Url}", version, lidarrOptions.BaseUrl);
+                log.LogInformation("slskd {Version} at {Url}", version, soulseekOptions.BaseUrl);
             }
             else
             {
-                // Don't throw: a Lidarr that's down shouldn't stop people playing the music
+                // Don't throw: a Soulseek daemon that's down shouldn't stop people playing the music
                 // they already have.
-                log.LogError("Lidarr check failed: {Error}", error);
+                log.LogError("slskd check failed: {Error}", error);
             }
         }
     }

@@ -1,6 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using Mootify.Data;
-using Mootify.Services.Lidarr;
+using Mootify.Services.Soulseek;
 using Mootify.Services.Settings;
 
 namespace Mootify.Services.Requests;
@@ -53,7 +53,7 @@ public sealed record RequestPage(List<Request> Rows, int Total, int Skip, int Ta
 
 public sealed class RequestService(
     IDbContextFactory<MootifyDbContext> dbFactory,
-    LidarrClient lidarr,
+    SoulseekClient soulseek,
     SettingsService settings,
     ILogger<RequestService> log)
 {
@@ -69,45 +69,30 @@ public sealed class RequestService(
     /// about is worse than no check at all.
     /// </summary>
     public static string DuplicateKey(
-        RequestKind kind,
-        string albumMbid,
-        string? trackTitle,
-        string? recordingMbid,
+        string username,
+        string filename,
         Guid? targetPlaylistId,
         Guid requesterId)
     {
-        // A track is identified by its recording where MusicBrainz gave us one and by title
-        // otherwise. Five songs off one album are five different requests against one release —
-        // keying on the album alone would silently drop four of them.
-        var what = kind switch
-        {
-            RequestKind.Track when !string.IsNullOrWhiteSpace(recordingMbid) => $"rec:{recordingMbid}",
-            RequestKind.Track => $"title:{(trackTitle ?? "").Trim().ToLowerInvariant()}",
-            _ => "whole",
-        };
-
         // A playlist is a shared destination, so two people asking for the same song for the
         // same playlist is one request. With no playlist there is nothing shared to collide
         // with, and it is only a duplicate of that person's own ask.
         var where = targetPlaylistId is { } id ? $"pl:{id}" : $"user:{requesterId}";
 
-        return $"{kind}|{albumMbid}|{what}|{where}";
+        return $"{username.Trim().ToLowerInvariant()}|{filename.Trim().ToLowerInvariant()}|{where}";
     }
 
     private static string DuplicateKey(Request r) =>
-        DuplicateKey(r.Kind, r.AlbumMusicBrainzId ?? "", r.TrackTitle, r.RecordingMusicBrainzId,
-            r.TargetPlaylistId, r.RequesterId);
+        DuplicateKey(r.SoulseekUsername ?? "", r.SoulseekFilename ?? "", r.TargetPlaylistId, r.RequesterId);
 
     /// <summary>
-    /// Dispatches straight to Lidarr — no approval step, by design. The quota is the only
+    /// Dispatches the exact selected Soulseek file straight to slskd. The quota is the only
     /// brake, and it exists to protect the disk rather than to police anyone.
     /// </summary>
     public async Task<CreateRequestResult> CreateAsync(
         Guid userId,
-        LidarrAlbum album,
-        RequestKind kind,
-        string? trackTitle,
-        string? recordingMbid,
+        SoulseekFile file,
+        string query,
         Guid? targetPlaylistId,
         CancellationToken ct = default,
         /// <summary>
@@ -136,67 +121,14 @@ public sealed class RequestService(
             }
         }
 
-        int? artistId = null;
-        int? albumId = null;
-
-        if (album.MusicBrainzId is { } albumMbid)
-        {
-            // Everything already asked for against this release, in one read. Both the duplicate
-            // check and the Lidarr-id reuse below need it, and it is a handful of rows.
-            var siblings = await db.Requests
-                .AsNoTracking()
-                .Where(r => r.AlbumMusicBrainzId == albumMbid)
-                .Select(r => new
-                {
-                    r.Kind,
-                    r.Status,
-                    r.TrackTitle,
-                    r.RecordingMusicBrainzId,
-                    r.TargetPlaylistId,
-                    r.RequesterId,
-                    r.LidarrArtistId,
-                    r.LidarrAlbumId,
-                })
-                .ToListAsync(ct);
-
-            var wanted = DuplicateKey(kind, albumMbid, trackTitle, recordingMbid, targetPlaylistId, userId);
-
-            var duplicate = siblings.Any(s =>
-                s.Status != RequestStatus.NotFound
-                && s.Status != RequestStatus.Failed
-                && DuplicateKey(s.Kind, albumMbid, s.TrackTitle, s.RecordingMusicBrainzId,
-                       s.TargetPlaylistId, s.RequesterId) == wanted);
-
-            if (duplicate)
-            {
-                return new CreateRequestResult(false, null, "That one's already been requested.");
-            }
-
-            // Lidarr already knows this release, so don't tell it again. Re-adding costs a full
-            // artist list and a second AlbumSearch per ask — which is how a 500-song import turns
-            // into hundreds of redundant commands queued behind each other in Lidarr.
-            var known = siblings.FirstOrDefault(s => s.LidarrAlbumId is not null);
-            if (known is not null)
-            {
-                artistId = known.LidarrArtistId;
-                albumId = known.LidarrAlbumId;
-            }
-        }
-
-        var searchedNow = false;
-
-        if (albumId is null)
-        {
-            var (addedArtistId, addedAlbumId, error) = await lidarr.AddAlbumAsync(album, ct);
-            if (error is not null)
-            {
-                return new CreateRequestResult(false, null, error);
-            }
-
-            artistId = addedArtistId;
-            albumId = addedAlbumId;
-            searchedNow = lidarr.SearchesOnAdd;
-        }
+        var wanted = DuplicateKey(file.Username, file.Filename, targetPlaylistId, userId);
+        var active = await db.Requests.AsNoTracking()
+            .Where(r => (r.RequesterId == userId || r.TargetPlaylistId != null)
+                     && r.SoulseekUsername != null && r.SoulseekFilename != null
+                     && r.Status != RequestStatus.NotFound && r.Status != RequestStatus.Failed)
+            .ToListAsync(ct);
+        if (active.Any(r => DuplicateKey(r) == wanted))
+            return new CreateRequestResult(false, null, "That file is already being downloaded.");
 
         var now = DateTimeOffset.UtcNow;
 
@@ -204,30 +136,40 @@ public sealed class RequestService(
         {
             Id = Guid.NewGuid(),
             RequesterId = userId,
-            Kind = kind,
-            Status = RequestStatus.Searching,
-            Query = trackTitle ?? album.Title,
-            ArtistName = album.Artist?.ArtistName ?? "",
-            AlbumTitle = album.Title,
-            TrackTitle = trackTitle,
-            ArtistMusicBrainzId = album.Artist?.MusicBrainzId,
-            AlbumMusicBrainzId = album.MusicBrainzId,
-            RecordingMusicBrainzId = recordingMbid,
-            LidarrArtistId = artistId,
-            LidarrAlbumId = albumId,
+            Kind = RequestKind.Track,
+            Status = RequestStatus.Pending,
+            Query = query.Trim(),
+            ArtistName = query.Trim(),
+            TrackTitle = file.DisplayName,
+            SoulseekUsername = file.Username,
+            SoulseekFilename = file.Filename,
             TargetPlaylistId = targetPlaylistId,
-            // Riding on somebody else's add means nobody searched on our behalf. Leaving this
-            // null is what tells the reconciler to pick it up on its next pass.
-            LastSearchAt = searchedNow ? now : null,
-            SearchAttempts = searchedNow ? 1 : 0,
             CreatedAt = now,
             UpdatedAt = now,
         };
 
+        request.SoulseekBatchId = request.Id;
+
+        // Persist first so the request remains visible with a useful failure reason if slskd
+        // refuses it; a successful enqueue then advances it to Downloading.
         db.Requests.Add(request);
         await db.SaveChangesAsync(ct);
 
-        log.LogInformation("{User} requested {Album} (Lidarr album {LidarrId})", userId, album.Title, albumId);
+        var (enqueued, error) = await soulseek.EnqueueAsync(request.Id, file, ct);
+        if (!enqueued)
+        {
+            request.Status = RequestStatus.Failed;
+            request.FailureReason = string.IsNullOrWhiteSpace(error) ? "slskd refused the download." : error;
+            request.CompletedAt = DateTimeOffset.UtcNow;
+            request.UpdatedAt = request.CompletedAt.Value;
+            await db.SaveChangesAsync(ct);
+            return new CreateRequestResult(false, request.Id, request.FailureReason);
+        }
+
+        request.Status = RequestStatus.Downloading;
+        request.UpdatedAt = DateTimeOffset.UtcNow;
+        await db.SaveChangesAsync(ct);
+        log.LogInformation("{User} requested {File} from Soulseek user {Peer}", userId, file.Filename, file.Username);
 
         return new CreateRequestResult(true, request.Id, null);
     }
@@ -329,23 +271,21 @@ public sealed class RequestService(
         var rows = await db.Requests
             .AsNoTracking()
             .Where(r => (r.RequesterId == userId || r.TargetPlaylistId != null)
-                     && r.AlbumMusicBrainzId != null
+                     && r.SoulseekUsername != null
+                     && r.SoulseekFilename != null
                      && r.Status != RequestStatus.NotFound
                      && r.Status != RequestStatus.Failed)
             .Select(r => new
             {
-                r.Kind,
-                r.AlbumMusicBrainzId,
-                r.TrackTitle,
-                r.RecordingMusicBrainzId,
+                r.SoulseekUsername,
+                r.SoulseekFilename,
                 r.TargetPlaylistId,
                 r.RequesterId,
             })
             .ToListAsync(ct);
 
         return [.. rows.Select(r => DuplicateKey(
-            r.Kind, r.AlbumMusicBrainzId!, r.TrackTitle, r.RecordingMusicBrainzId,
-            r.TargetPlaylistId, r.RequesterId))];
+            r.SoulseekUsername!, r.SoulseekFilename!, r.TargetPlaylistId, r.RequesterId))];
     }
 
     /// <summary>
@@ -375,28 +315,13 @@ public sealed class RequestService(
         }
 
         var wasOpen = request.IsOpen;
-        var albumId = request.LidarrAlbumId;
+        var batchId = request.SoulseekBatchId;
 
         db.Requests.Remove(request);
         await db.SaveChangesAsync(ct);
 
-        // Stop Lidarr chasing something nobody is waiting for — but only once the last request
-        // for that release is gone, or cancelling one song off an album would abandon the rest.
-        // A download already handed to the client still finishes; unmonitoring only stops the
-        // searching, and the file is welcome either way.
-        if (wasOpen && albumId is { } id && lidarr.IsConfigured)
-        {
-            var stillWanted = await db.Requests.AnyAsync(
-                r => r.LidarrAlbumId == id
-                  && r.Status != RequestStatus.Available
-                  && r.Status != RequestStatus.NotFound
-                  && r.Status != RequestStatus.Failed, ct);
-
-            if (!stillWanted)
-            {
-                await lidarr.SetAlbumsMonitoredAsync([id], false, ct);
-            }
-        }
+        if (wasOpen && batchId is { } id && soulseek.IsConfigured)
+            await soulseek.CancelBatchAsync(id, ct);
 
         log.LogInformation("Request {RequestId} cancelled by {User}", requestId, userId);
 

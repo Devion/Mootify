@@ -368,7 +368,7 @@ public sealed class TrackUploadService(
 
     /// <summary>
     /// The same pass the drop folder gets, for the same reason: somebody who gave up waiting for
-    /// Lidarr and fetched the file themselves has answered their own request, and the request
+    /// Soulseek and fetched the file themselves has answered their own request, and the request
     /// should close, land in the playlist it was aimed at and ring the cowbell — not sit there
     /// saying "nothing found" next to music that is now in the library.
     /// </summary>

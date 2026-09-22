@@ -5,7 +5,7 @@ using Mootify.Configuration;
 namespace Mootify.Services.Transcoding;
 
 /// <summary>
-/// Converts anything Lidarr imported that isn't an MP3 into one, in place.
+/// Converts downloaded audio that the library cannot play directly into MP3, in place.
 ///
 /// This runs *before* the library rescan, and that ordering is the whole design: a FLAC
 /// never becomes a Track row, so it can never reach a playlist or the player. The invariant

@@ -11,10 +11,9 @@ import kiwi.lazy.mootify.data.ApiArtist
 import kiwi.lazy.mootify.data.ApiArtistDetail
 import kiwi.lazy.mootify.data.ApiPlaylist
 import kiwi.lazy.mootify.data.ApiPlaylistDetail
-import kiwi.lazy.mootify.data.ApiRemoteAlbum
 import kiwi.lazy.mootify.data.ApiPlaylistItem
-import kiwi.lazy.mootify.data.ApiRemoteTrack
 import kiwi.lazy.mootify.data.ApiRequest
+import kiwi.lazy.mootify.data.ApiSoulseekFile
 import kiwi.lazy.mootify.data.ApiSearchResults
 import kiwi.lazy.mootify.data.ApiTrack
 import kiwi.lazy.mootify.data.MootifyRepository
@@ -272,10 +271,7 @@ class MootifyViewModel(application: Application) : AndroidViewModel(application)
     data class RequestState(
         val query: String = "",
         val busy: Boolean = false,
-        val results: List<ApiRemoteAlbum> = emptyList(),
-        val expanded: String? = null,
-        val tracklist: List<ApiRemoteTrack> = emptyList(),
-        val loadingTracklist: Boolean = false,
+        val results: List<ApiSoulseekFile> = emptyList(),
         val targetPlaylistId: String? = null,
         val message: String? = null,
     )
@@ -295,7 +291,7 @@ class MootifyViewModel(application: Application) : AndroidViewModel(application)
         val query = _requestState.value.query.trim()
         if (query.isBlank()) return
 
-        _requestState.value = _requestState.value.copy(busy = true, message = null, expanded = null)
+        _requestState.value = _requestState.value.copy(busy = true, message = null)
 
         viewModelScope.launch {
             repository.searchRemote(query).fold(
@@ -307,56 +303,18 @@ class MootifyViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    /**
-     * Expanding an album fetches its tracklist from MusicBrainz through the server. Lidarr's album
-     * lookup has a track count and no titles, which is why picking one song needs a second call.
-     */
-    fun toggleAlbum(album: ApiRemoteAlbum) {
-        val mbid = album.musicBrainzId ?: return
-        val state = _requestState.value
-
-        if (state.expanded == mbid) {
-            _requestState.value = state.copy(expanded = null, tracklist = emptyList())
-            return
-        }
-
-        _requestState.value = state.copy(expanded = mbid, tracklist = emptyList(), loadingTracklist = true)
-
-        viewModelScope.launch {
-            val tracks = repository.remoteTracks(mbid).getOrNull().orEmpty()
-            _requestState.value = _requestState.value.copy(tracklist = tracks, loadingTracklist = false)
-        }
-    }
-
-    fun requestAlbum(album: ApiRemoteAlbum) {
+    fun requestFile(file: ApiSoulseekFile) {
         val state = _requestState.value
 
         viewModelScope.launch {
-            repository.requestAlbum(album, state.query.trim(), state.targetPlaylistId).fold(
-                onSuccess = { message("Requested ${album.title}. You'll get a cowbell when it lands.") },
+            repository.requestFile(file, state.query.trim(), state.targetPlaylistId).fold(
+                onSuccess = { message("Downloading \"${file.name}\".") },
                 onFailure = { message(it.message) },
             )
             refreshRequests()
         }
     }
 
-    fun requestTrack(album: ApiRemoteAlbum, track: ApiRemoteTrack) {
-        val state = _requestState.value
-
-        viewModelScope.launch {
-            repository.requestTrack(album, track, state.query.trim(), state.targetPlaylistId).fold(
-                onSuccess = { message("Requested \"${track.title}\".") },
-                onFailure = { message(it.message) },
-            )
-            refreshRequests()
-        }
-    }
-
-    /**
-     * Takes a request back off the list. Cancelling the last one wanted off a release also stops
-     * Lidarr chasing it — the server works that out, because it's the one that knows who else is
-     * still waiting on the same album.
-     */
     fun cancelRequest(request: ApiRequest) {
         viewModelScope.launch {
             repository.cancelRequest(request.id).fold(

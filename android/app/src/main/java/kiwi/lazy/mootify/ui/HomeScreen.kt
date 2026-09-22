@@ -380,7 +380,7 @@ private fun SearchTab(
                         Text("Nothing in the library matches that.", textAlign = TextAlign.Center)
                         Spacer(Modifier.height(8.dp))
                         Text(
-                            "The Requests tab can ask Lidarr to fetch it.",
+                            "The Requests tab can ask Soulseek to fetch it.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             textAlign = TextAlign.Center,

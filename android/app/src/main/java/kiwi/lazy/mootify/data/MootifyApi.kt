@@ -127,10 +127,7 @@ interface MootifyApi {
     suspend fun cancelRequest(@Path("id") id: String): Response<Unit>
 
     @GET("api/v1/requests/search")
-    suspend fun searchRemote(@Query("q") query: String): Response<List<ApiRemoteAlbum>>
-
-    @GET("api/v1/requests/albums/{mbid}/tracks")
-    suspend fun remoteTracks(@Path("mbid") albumMbid: String): Response<List<ApiRemoteTrack>>
+    suspend fun searchRemote(@Query("q") query: String): Response<List<ApiSoulseekFile>>
 
     @POST("api/v1/requests")
     suspend fun createRequest(@Body body: CreateRequestBody): Response<CreatedId>

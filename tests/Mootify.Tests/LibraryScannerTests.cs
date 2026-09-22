@@ -161,7 +161,7 @@ public sealed class LibraryScannerTests : IAsyncLifetime
     [Fact]
     public async Task Mp3_and_flac_both_become_tracks()
     {
-        // FLAC is what Lidarr actually fetches and every current browser decodes it, so
+        // FLAC is common on Soulseek and every current browser decodes it, so
         // indexing MP3 only left most of the library invisible. Browsers that can't cope
         // get a transcoded copy from /media/{id}/mp3 instead of losing the original.
         WriteFile(@"Cowbells\Album\01 - Morning Graze.mp3");

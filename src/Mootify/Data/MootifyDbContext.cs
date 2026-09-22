@@ -168,7 +168,7 @@ public sealed class MootifyDbContext(DbContextOptions<MootifyDbContext> options)
         b.Entity<Request>(e =>
         {
             e.HasIndex(x => new { x.RequesterId, x.Status });
-            e.HasIndex(x => x.LidarrAlbumId);
+            e.HasIndex(x => x.SoulseekBatchId);
             e.HasOne(x => x.Requester)
              .WithMany()
              .HasForeignKey(x => x.RequesterId)

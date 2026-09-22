@@ -105,19 +105,18 @@ public sealed class SchemaPatchTests : IAsyncDisposable
     }
 
     [Fact]
-    public async Task The_search_bookkeeping_reaches_a_database_that_predates_it()
+    public async Task Soulseek_download_identity_reaches_a_database_that_predates_it()
     {
-        // A nullable timestamp and a counter. The timestamp is the one worth checking, because
-        // DateTimeOffset goes into SQLite as a converted integer rather than as text — DDL
-        // written to match what EnsureCreated would have produced is the whole job here.
-        await ExecAsync("""ALTER TABLE "Requests" DROP COLUMN "LastSearchAt" """);
-        await ExecAsync("""ALTER TABLE "Requests" DROP COLUMN "SearchAttempts" """);
+        await ExecAsync("""DROP INDEX "IX_Requests_SoulseekBatchId" """);
+        await ExecAsync("""ALTER TABLE "Requests" DROP COLUMN "SoulseekBatchId" """);
+        await ExecAsync("""ALTER TABLE "Requests" DROP COLUMN "SoulseekUsername" """);
+        await ExecAsync("""ALTER TABLE "Requests" DROP COLUMN "SoulseekFilename" """);
 
         await using var db = Db();
         await ApplyAsync(db);
 
         var requester = await AddUserAsync(db, "devion");
-        var searchedAt = new DateTimeOffset(2026, 8, 16, 9, 30, 0, TimeSpan.Zero);
+        var batchId = Guid.NewGuid();
 
         db.Requests.Add(new Request
         {
@@ -127,8 +126,9 @@ public sealed class SchemaPatchTests : IAsyncDisposable
             Status = RequestStatus.Searching,
             Query = "Numb",
             ArtistName = "Linkin Park",
-            LastSearchAt = searchedAt,
-            SearchAttempts = 3,
+            SoulseekBatchId = batchId,
+            SoulseekUsername = "peer",
+            SoulseekFilename = "music\\Numb.mp3",
             CreatedAt = DateTimeOffset.UtcNow,
             UpdatedAt = DateTimeOffset.UtcNow,
         });
@@ -136,19 +136,18 @@ public sealed class SchemaPatchTests : IAsyncDisposable
 
         var saved = await db.Requests.SingleAsync();
 
-        Assert.Equal(searchedAt, saved.LastSearchAt);
-        Assert.Equal(3, saved.SearchAttempts);
-
-        // And it has to be orderable, since the reconciler picks least-recently-searched first.
-        Assert.Single(await db.Requests.OrderBy(r => r.LastSearchAt).ToListAsync());
+        Assert.Equal(batchId, saved.SoulseekBatchId);
+        Assert.Equal("peer", saved.SoulseekUsername);
+        Assert.Equal("music\\Numb.mp3", saved.SoulseekFilename);
     }
 
     [Fact]
-    public async Task Requests_made_before_the_patch_read_as_never_searched()
+    public async Task Requests_made_before_the_patch_have_no_soulseek_batch()
     {
-        // Which is what the reconciler needs them to say: null means "ask Lidarr about this one".
-        await ExecAsync("""ALTER TABLE "Requests" DROP COLUMN "LastSearchAt" """);
-        await ExecAsync("""ALTER TABLE "Requests" DROP COLUMN "SearchAttempts" """);
+        await ExecAsync("""DROP INDEX "IX_Requests_SoulseekBatchId" """);
+        await ExecAsync("""ALTER TABLE "Requests" DROP COLUMN "SoulseekBatchId" """);
+        await ExecAsync("""ALTER TABLE "Requests" DROP COLUMN "SoulseekUsername" """);
+        await ExecAsync("""ALTER TABLE "Requests" DROP COLUMN "SoulseekFilename" """);
         await ExecAsync("""
             INSERT INTO "Users" ("Id", "DisplayName", "NormalizedName", "PasswordHash", "IsAdmin",
                                  "IsBanned", "MustChangePassword", "CreatedAt", "LastSeenAt")
@@ -166,9 +165,9 @@ public sealed class SchemaPatchTests : IAsyncDisposable
 
         var request = await db.Requests.SingleAsync();
 
-        Assert.Null(request.LastSearchAt);
-        Assert.Equal(0, request.SearchAttempts);
-        Assert.True(RequestReconciler.DueForSearch(request.SearchAttempts, request.LastSearchAt, DateTimeOffset.UtcNow));
+        Assert.Null(request.SoulseekBatchId);
+        Assert.Null(request.SoulseekUsername);
+        Assert.Null(request.SoulseekFilename);
     }
 
     [Fact]

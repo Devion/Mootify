@@ -167,7 +167,7 @@ public sealed class LibraryScanner(
     }
 
     /// <summary>
-    /// A file somebody fetched by hand answers a request just as well as one Lidarr found. The
+    /// A file somebody fetched by hand answers a request just as well as one Soulseek found. The
     /// matcher is resolved per call rather than injected: it reaches PlaylistService and the
     /// notifier, both scoped, and this scanner is a singleton that outlives all of them.
     /// </summary>
@@ -202,7 +202,7 @@ public sealed class LibraryScanner(
     }
 
     /// <summary>
-    /// Targeted rescan of one folder, used after a Lidarr import. The request pipeline must not
+    /// Targeted rescan of one folder, used after a Soulseek download. The request pipeline must not
     /// wait out a full scan of 40,000 files to add one song to a playlist.
     /// </summary>
     public Task<ScanReport> ScanPathAsync(string path, CancellationToken ct = default) =>
@@ -401,7 +401,7 @@ public sealed class LibraryScanner(
 
         // No album tag is the common case in a real library, not the exception. Falling back
         // to "Unknown Album" would collapse every untagged track by an artist into one bucket;
-        // the folder layout Lidarr already writes (Artist/Album/track.mp3) says what the album
+        // the folder layout already written on disk (Artist/Album/track.mp3) says what the album
         // is, so use it.
         albumTitle ??= Tidy(AlbumFromFolder(file, artistName))!;
 
@@ -490,7 +490,7 @@ public sealed class LibraryScanner(
 
     /// <summary>
     /// What the library indexes. MP3 plays everywhere; FLAC plays in every current browser
-    /// and is what Lidarr actually fetches, so refusing it left most of the music invisible.
+    /// and is common on Soulseek, so refusing it would leave much of the music invisible.
     /// Anything else still needs converting before it can be a library entry.
     /// </summary>
     public static readonly string[] IndexedExtensions = [".mp3", ".flac"];

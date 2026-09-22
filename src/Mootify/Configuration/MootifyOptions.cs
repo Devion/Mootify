@@ -88,32 +88,25 @@ public sealed class ApiOptions
     public string ArtCacheDirectory { get; set; } = "";
 }
 
-public sealed class LidarrOptions
+public sealed class SoulseekOptions
 {
-    public const string Section = "Lidarr";
+    public const string Section = "Soulseek";
 
-    /// <summary>Blank disables every Lidarr-backed feature instead of failing at startup.</summary>
+    /// <summary>Blank disables remote search and download without disabling the music library.</summary>
     public string BaseUrl { get; set; } = "";
-
     public string ApiKey { get; set; } = "";
+    [Range(5, 60)] public int SearchTimeoutSeconds { get; set; } = 8;
+    [Range(1, 10000)] public int FileLimit { get; set; } = 1000;
+    [Range(1, 1000)] public int ResponseLimit { get; set; } = 100;
+    [Range(0, 1000000)] public int MaximumPeerQueueLength { get; set; } = 100;
+    [Range(1, 500)] public int MaxResults { get; set; } = 100;
+    public TimeSpan PollInterval { get; set; } = TimeSpan.FromSeconds(15);
 
-    public int QualityProfileId { get; set; } = 1;
-    public int MetadataProfileId { get; set; } = 1;
-    public string RootFolderPath { get; set; } = "";
-    public bool SearchOnAdd { get; set; } = true;
+    /// <summary>Relative to slskd's configured downloads directory.</summary>
+    public string DownloadDestination { get; set; } = "Mootify";
 
-    /// <summary>Reconciliation interval. Webhooks are the fast path; this poll is the source of truth.</summary>
-    public TimeSpan PollInterval { get; set; } = TimeSpan.FromMinutes(10);
-
-    /// <summary>
-    /// How many albums one reconciliation pass may re-ask Lidarr to search for.
-    ///
-    /// The brake is not Lidarr, it's the indexers behind it: a 500-song import is a couple of
-    /// hundred albums, and asking for all of them at once earns a rate limit and a run of empty
-    /// searches. Passes work through the backlog oldest-first, so a low number is slower rather
-    /// than incomplete.
-    /// </summary>
-    public int MaxSearchesPerPass { get; set; } = 50;
+    /// <summary>The same slskd downloads directory as Mootify sees it. Blank uses Library:MusicRoot.</summary>
+    public string LocalDownloadRoot { get; set; } = "";
 
     public bool IsConfigured =>
         !string.IsNullOrWhiteSpace(BaseUrl) && !string.IsNullOrWhiteSpace(ApiKey);
@@ -146,7 +139,7 @@ public sealed class LibraryOptions
 {
     public const string Section = "Library";
 
-    /// <summary>Root folder that Lidarr writes into and the scanner reads from.</summary>
+    /// <summary>Root folder containing the library and, normally, slskd's downloads directory.</summary>
     [Required(AllowEmptyStrings = false)]
     public string MusicRoot { get; set; } = "";
 

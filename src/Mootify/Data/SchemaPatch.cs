@@ -102,12 +102,12 @@ public static class SchemaPatch
         ("Users", "MustChangePassword",
             """ALTER TABLE "Users" ADD COLUMN "MustChangePassword" INTEGER NOT NULL DEFAULT 0"""),
 
-        // Null on every existing row means "never re-searched", which is exactly what the
-        // reconciler should assume about requests made before it could re-search at all.
-        ("Requests", "LastSearchAt",
-            """ALTER TABLE "Requests" ADD COLUMN "LastSearchAt" INTEGER NULL"""),
-        ("Requests", "SearchAttempts",
-            """ALTER TABLE "Requests" ADD COLUMN "SearchAttempts" INTEGER NOT NULL DEFAULT 0"""),
+        ("Requests", "SoulseekBatchId",
+            """ALTER TABLE "Requests" ADD COLUMN "SoulseekBatchId" TEXT NULL"""),
+        ("Requests", "SoulseekUsername",
+            """ALTER TABLE "Requests" ADD COLUMN "SoulseekUsername" TEXT NULL"""),
+        ("Requests", "SoulseekFilename",
+            """ALTER TABLE "Requests" ADD COLUMN "SoulseekFilename" TEXT NULL"""),
 
         // 0 is the default the entity carries too: nobody's listening is shared until they say so,
         // and an upgrade that started broadcasting everyone's playback would be a privacy bug.
@@ -140,6 +140,8 @@ public static class SchemaPatch
     /// </summary>
     private static readonly (string Table, string Name, string Ddl)[] AddedIndexes =
     [
+        ("Requests", "IX_Requests_SoulseekBatchId",
+            """CREATE INDEX IF NOT EXISTS "IX_Requests_SoulseekBatchId" ON "Requests" ("SoulseekBatchId")"""),
         ("Tracks", "IX_Tracks_Genre",
             """CREATE INDEX IF NOT EXISTS "IX_Tracks_Genre" ON "Tracks" ("Genre")"""),
     ];

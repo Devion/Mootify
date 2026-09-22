@@ -420,7 +420,7 @@ public sealed class AdminService(
 
     /// <summary>
     /// Drops playlist entries whose track has vanished from disk. The everyday mess that
-    /// accumulates when Lidarr reorganises a folder.
+    /// accumulates when files are reorganised on disk.
     /// </summary>
     public async Task<(int Removed, string? Error)> PruneMissingTracksAsync(
         Guid actingUserId, CancellationToken ct = default)

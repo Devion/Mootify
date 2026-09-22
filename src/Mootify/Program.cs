@@ -17,7 +17,7 @@ using Mootify.Services.Ideas;
 using Mootify.Services.Import;
 using Mootify.Services.Library;
 using Microsoft.Extensions.Options;
-using Mootify.Services.Lidarr;
+using Mootify.Services.Soulseek;
 using Mootify.Services.MusicBrainz;
 using Mootify.Services.Notifications;
 using Mootify.Services.Playback;
@@ -37,7 +37,7 @@ builder.Configuration.AddJsonFile("mootify.json", optional: true, reloadOnChange
 
 // Re-added so it sits *above* mootify.json in precedence. Configuration is last-wins, and the
 // default builder registers environment variables before this file — so without this line the
-// file would quietly override Lidarr__ApiKey and Library__Password, which is the opposite of
+// file would quietly override Soulseek__ApiKey and Library__Password, which is the opposite of
 // what secrets are for.
 builder.Configuration.AddEnvironmentVariables();
 
@@ -53,8 +53,8 @@ builder.Services.AddOptions<AuthOptions>()
     .ValidateDataAnnotations()
     .ValidateOnStart();
 
-builder.Services.AddOptions<LidarrOptions>()
-    .Bind(builder.Configuration.GetSection(LidarrOptions.Section))
+builder.Services.AddOptions<SoulseekOptions>()
+    .Bind(builder.Configuration.GetSection(SoulseekOptions.Section))
     .ValidateDataAnnotations()
     .ValidateOnStart();
 
@@ -272,8 +272,8 @@ builder.Services.AddScoped<TrackUploadService>();
 builder.Services.AddScoped<RequestReconciler>();
 builder.Services.AddHostedService<RequestReconcilerService>();
 
-// Retry + circuit breaker: a Lidarr that's down must not take Mootify down with it.
-builder.Services.AddHttpClient<LidarrClient>(client => client.Timeout = TimeSpan.FromSeconds(30))
+// Retry + circuit breaker: a Soulseek daemon that's down must not take Mootify down with it.
+builder.Services.AddHttpClient<SoulseekClient>(client => client.Timeout = TimeSpan.FromSeconds(90))
     .AddStandardResilienceHandler();
 
 // MusicBrainz insists on an identifying User-Agent and throttles anyone without one.

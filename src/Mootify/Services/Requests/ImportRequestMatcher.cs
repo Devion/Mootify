@@ -12,7 +12,7 @@ public sealed record ImportMatchSummary(int Requests, int Tracks)
 /// <summary>
 /// Links music that arrived by hand to the requests that asked for it.
 ///
-/// Lidarr is one way a request gets satisfied, not the only one: when it can't find something
+/// Soulseek is one way a request gets satisfied, not the only one: when it can't find something
 /// — which is what most of the <see cref="RequestStatus.NotFound"/> rows are — somebody
 /// tends to go and get the file themselves and drop it in the import folder. Without this it
 /// lands in the library as an unrelated track and the request sits there saying "nothing
@@ -35,7 +35,7 @@ public sealed class ImportRequestMatcher(
         await using var db = await dbFactory.CreateDbContextAsync(ct);
 
         // Anything not already delivered. NotFound and Failed are included deliberately: those
-        // are exactly the rows somebody gives up on Lidarr for and fetches by hand, so they are
+        // are exactly the rows somebody gives up on Soulseek for and fetches by hand, so they are
         // the likeliest thing a dropped file is answering.
         var open = await db.Requests
             .Where(r => r.Status != RequestStatus.Available)

@@ -2,9 +2,9 @@
 @attribute [Authorize]
 @inject RequestService Requests
 @inject RequestReconciler Reconciler
-@inject LidarrClient Lidarr
+@inject SoulseekClient Soulseek
 @inject CurrentUser CurrentUser
-@using Mootify.Services.Lidarr
+@using Mootify.Services.Soulseek
 @using Mootify.Services.Requests
 
 <PageTitle>Requests · Mootify</PageTitle>
@@ -13,13 +13,13 @@
     <div>
         <h1>Requests</h1>
         <p class="pagehead__meta">
-            @if (_lidarrOk is true)
+            @if (_soulseekOk is true)
             {
-                <span class="dot dot--ok"></span> <text>Lidarr @_lidarrVersion</text>
+                <span class="dot dot--ok"></span> <text>slskd @_soulseekVersion</text>
             }
-            else if (_lidarrOk is false)
+            else if (_soulseekOk is false)
             {
-                <span class="dot dot--bad"></span> @(_lidarrError ?? "Lidarr unreachable")
+                <span class="dot dot--bad"></span> @(_soulseekError ?? "slskd unreachable")
             }
         </p>
     </div>
@@ -97,12 +97,6 @@ else
                             @* "It didn't work" with no detail is what generates support messages. *@
                             <div class="muted">@r.FailureReason</div>
                         }
-                        else if (r.Status == Data.RequestStatus.Searching && r.SearchAttempts > 1)
-                        {
-                            @* Otherwise a row that's been asked for six times looks identical to
-                               one asked for a minute ago, and only one of those is worth waiting on. *@
-                            <div class="muted">asked @r.SearchAttempts times</div>
-                        }
                     </td>
                     <td>
                         @if (r.TargetPlaylist is not null)
@@ -158,9 +152,9 @@ else
     private RequestFilter _filter = RequestFilter.All;
     private int _skip;
 
-    private bool? _lidarrOk;
-    private string? _lidarrVersion;
-    private string? _lidarrError;
+    private bool? _soulseekOk;
+    private string? _soulseekVersion;
+    private string? _soulseekError;
     private bool _checking, _clearing;
     private Guid? _removing;
 
@@ -171,10 +165,10 @@ else
     {
         await LoadAsync();
 
-        var (ok, version, error) = await Lidarr.CheckAsync();
-        _lidarrOk = ok;
-        _lidarrVersion = version;
-        _lidarrError = error;
+        var (ok, version, error) = await Soulseek.CheckAsync();
+        _soulseekOk = ok;
+        _soulseekVersion = version;
+        _soulseekError = error;
     }
 
     private async Task LoadAsync()
@@ -235,15 +229,14 @@ else
 
         if (s.Downloading > 0) parts.Add($"{s.Downloading} downloading");
         if (s.Completed > 0) parts.Add($"{s.Completed} just landed");
-        if (s.Searched > 0) parts.Add($"asked Lidarr again for {s.Searched} album{(s.Searched == 1 ? "" : "s")}");
         if (s.AwaitingSearch > 0) parts.Add($"{s.AwaitingSearch} queued for the next pass");
-        if (s.GaveUp > 0) parts.Add($"{s.GaveUp} gave up");
+        if (s.Failed > 0) parts.Add($"{s.Failed} failed");
 
         var what = parts.Count == 0
             ? "nothing to do this pass"
             : string.Join(", ", parts);
 
-        return $"Checked {s.Open} open request{(s.Open == 1 ? "" : "s")} across {s.Albums} album{(s.Albums == 1 ? "" : "s")}: {what}.";
+        return $"Checked {s.Open} open request{(s.Open == 1 ? "" : "s")} across {s.Batches} download{(s.Batches == 1 ? "" : "s")}: {what}.";
     }
 
     private async Task Remove(Data.Request request)

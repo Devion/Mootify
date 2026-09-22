@@ -432,7 +432,7 @@ public sealed class PlaylistService(
     }
 
     /// <summary>
-    /// Appends tracks. Idempotent when <paramref name="requestId"/> is set: the Lidarr webhook
+    /// Appends tracks. Idempotent when <paramref name="requestId"/> is set: the download poller
     /// and the reconciliation poller will both fire for the same request eventually.
     /// </summary>
     public async Task<int> AddTracksAsync(

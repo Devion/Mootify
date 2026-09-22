@@ -29,7 +29,7 @@ data class Session(
     val token: String,
     val userId: String,
     val displayName: String,
-    val lidarrConfigured: Boolean,
+    val soulseekConfigured: Boolean,
 )
 
 class SessionStore(private val context: Context) {
@@ -39,7 +39,7 @@ class SessionStore(private val context: Context) {
         val Token = stringPreferencesKey("token")
         val UserId = stringPreferencesKey("user_id")
         val DisplayName = stringPreferencesKey("display_name")
-        val LidarrConfigured = booleanPreferencesKey("lidarr_configured")
+        val SoulseekConfigured = booleanPreferencesKey("soulseek_configured")
     }
 
     private val _current = MutableStateFlow<Session?>(null)
@@ -71,7 +71,7 @@ class SessionStore(private val context: Context) {
             it[Keys.Token] = response.token
             it[Keys.UserId] = response.user.id
             it[Keys.DisplayName] = response.user.displayName
-            it[Keys.LidarrConfigured] = response.server.lidarrConfigured
+            it[Keys.SoulseekConfigured] = response.server.soulseekConfigured
         }
 
         _lastServerUrl.value = normalized
@@ -80,14 +80,14 @@ class SessionStore(private val context: Context) {
             token = response.token,
             userId = response.user.id,
             displayName = response.user.displayName,
-            lidarrConfigured = response.server.lidarrConfigured,
+            soulseekConfigured = response.server.soulseekConfigured,
         )
     }
 
-    /** Refreshed from `/me`, so a Lidarr configured later shows up without signing in again. */
+    /** Refreshed from `/me`, so a Soulseek service configured later appears without signing in again. */
     suspend fun updateServerInfo(info: ApiServerInfo) {
-        context.sessionDataStore.edit { it[Keys.LidarrConfigured] = info.lidarrConfigured }
-        _current.value = _current.value?.copy(lidarrConfigured = info.lidarrConfigured)
+        context.sessionDataStore.edit { it[Keys.SoulseekConfigured] = info.soulseekConfigured }
+        _current.value = _current.value?.copy(soulseekConfigured = info.soulseekConfigured)
     }
 
     /**
@@ -125,7 +125,7 @@ class SessionStore(private val context: Context) {
             token = token,
             userId = this[Keys.UserId].orEmpty(),
             displayName = this[Keys.DisplayName].orEmpty(),
-            lidarrConfigured = this[Keys.LidarrConfigured] ?: false,
+            soulseekConfigured = this[Keys.SoulseekConfigured] ?: false,
         )
     }
 

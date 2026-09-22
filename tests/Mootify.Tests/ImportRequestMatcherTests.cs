@@ -150,9 +150,9 @@ public sealed class ImportRequestMatcherTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task A_request_Lidarr_gave_up_on_is_exactly_the_one_to_revive()
+    public async Task A_request_Soulseek_gave_up_on_is_exactly_the_one_to_revive()
     {
-        // NotFound is what most hand-fetched files are answering: Lidarr couldn't get it, so
+        // NotFound is what most hand-fetched files are answering: Soulseek couldn't get it, so
         // somebody went and got it. Skipping those would miss the main case.
         var path = await AddTrackAsync("Radiohead", "OK Computer", "Airbag");
         var request = await AddRequestAsync(
@@ -296,7 +296,7 @@ public sealed class ImportRequestMatcherTests : IAsyncLifetime
     [Fact]
     public async Task The_requester_is_told_it_arrived()
     {
-        // Same notification as a Lidarr completion — from where the requester is standing
+        // Same notification as a Soulseek completion — from where the requester is standing
         // nothing about this was different.
         var path = await AddTrackAsync("Radiohead", "OK Computer", "Airbag");
         await AddRequestAsync(RequestKind.Track, "Radiohead", track: "Airbag");

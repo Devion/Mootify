@@ -642,7 +642,7 @@ public sealed class LibraryOrganizer(
             foreach (var loser in losers)
             {
                 // The merged-away row may be the only one that ever carried a MusicBrainz id,
-                // which is the join key to Lidarr — losing it costs that artist their requests.
+                // which is the strongest metadata join key — preserve it while reorganising.
                 if (loser.MusicBrainzId is { } mbid
                     && survivors.TryGetValue(owner[loser.Id], out var survivor)
                     && survivor.MusicBrainzId is null)

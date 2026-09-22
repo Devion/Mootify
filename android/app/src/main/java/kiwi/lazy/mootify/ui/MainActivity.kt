@@ -256,13 +256,11 @@ private fun MootifyRoot(player: PlayerController) {
                         state = requestState,
                         requests = library.requests,
                         playlists = library.playlists,
-                        lidarrConfigured = session?.lidarrConfigured == true,
+                        soulseekConfigured = session?.soulseekConfigured == true,
                         onQueryChange = viewModel::onRequestQueryChanged,
                         onSearch = viewModel::searchRemote,
-                        onToggleAlbum = viewModel::toggleAlbum,
                         onTargetPlaylist = viewModel::onTargetPlaylistChanged,
-                        onRequestAlbum = viewModel::requestAlbum,
-                        onRequestTrack = viewModel::requestTrack,
+                        onRequestFile = viewModel::requestFile,
                         onCancelRequest = viewModel::cancelRequest,
                     )
                 }

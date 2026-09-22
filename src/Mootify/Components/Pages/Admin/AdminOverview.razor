@@ -8,11 +8,11 @@
 @inject LibraryFiler Filer
 @inject NetworkShareConnector Shares
 @inject AlbumArtService AlbumArt
-@inject LidarrClient Lidarr
+@inject SoulseekClient Soulseek
 @inject Transcoder Transcoder
 @inject CurrentUser CurrentUser
 @using Mootify.Services.Admin
-@using Mootify.Services.Lidarr
+@using Mootify.Services.Soulseek
 @using Mootify.Services.Settings
 @using Mootify.Services.Transcoding
 
@@ -103,8 +103,8 @@
             FFmpeg: @(_ffmpegOk ? _ffmpegVersion : "not found — non-MP3 imports will fail")
         </li>
         <li>
-            <span class="dot @(_lidarrOk == true ? "dot--ok" : "dot--bad")"></span>
-            Lidarr: @(_lidarrOk == true ? _lidarrVersion : _lidarrError ?? "not configured")
+            <span class="dot @(_soulseekOk == true ? "dot--ok" : "dot--bad")"></span>
+            slskd: @(_soulseekOk == true ? _soulseekVersion : _soulseekError ?? "not configured")
         </li>
         <li>
             Last scan:
@@ -183,7 +183,7 @@
     }
 </section>
 
-@* The scanner indexes MP3 and FLAC. Anything else Lidarr grabbed — OGG, M4A, WMA — is sitting
+@* The scanner indexes MP3 and FLAC. Anything else Soulseek grabbed — OGG, M4A, WMA — is sitting
    there invisible, and this is the sweep that rescues it. *@
 <section class="managebox">
     <h2>Unplayable files</h2>
@@ -268,9 +268,9 @@
     private bool _isNetworkShare;
     private bool _ffmpegOk;
     private string? _ffmpegVersion;
-    private bool? _lidarrOk;
-    private string? _lidarrVersion;
-    private string? _lidarrError;
+    private bool? _soulseekOk;
+    private string? _soulseekVersion;
+    private string? _soulseekError;
     private string? _message;
     private Guid _userId;
 
@@ -287,10 +287,10 @@
         _ffmpegOk = ffmpegOk;
         _ffmpegVersion = version;
 
-        var (lidarrOk, lidarrVersion, error) = await Lidarr.CheckAsync();
-        _lidarrOk = lidarrOk;
-        _lidarrVersion = lidarrVersion;
-        _lidarrError = error;
+        var (soulseekOk, soulseekVersion, error) = await Soulseek.CheckAsync();
+        _soulseekOk = soulseekOk;
+        _soulseekVersion = soulseekVersion;
+        _soulseekError = error;
     }
 
     private async Task LoadAsync()

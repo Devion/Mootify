@@ -11,8 +11,8 @@ namespace Mootify.Services.Requests;
 /// against, the row goes to <see cref="RequestStatus.Available"/>, and everybody who should
 /// hear about it does.
 ///
-/// It lives here rather than inside <see cref="RequestReconciler"/> because Lidarr is no
-/// longer the only way music arrives — a file dropped into the import folder satisfies a
+/// It lives here rather than inside <see cref="RequestReconciler"/> because Soulseek is not
+/// the only way music arrives — a file dropped into the import folder satisfies a
 /// request just as completely, and two code paths that each decide separately what "done"
 /// means is how one of them ends up not notifying anybody.
 /// </summary>

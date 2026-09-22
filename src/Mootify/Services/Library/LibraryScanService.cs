@@ -29,7 +29,7 @@ public sealed class LibraryScanService(
         {
             log.LogWarning(
                 "Library:MusicRoot ({Root}) is not reachable — the scanner is idle. " +
-                "Set it to the path where *this app* sees the music (Lidarr's root folder is a path inside its own container).",
+                "Set it to the path where this app sees the music and completed Soulseek downloads.",
                 string.IsNullOrWhiteSpace(opts.MusicRoot) ? "<not set>" : opts.MusicRoot);
             return;
         }

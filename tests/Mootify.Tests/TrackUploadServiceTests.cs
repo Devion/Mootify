@@ -320,8 +320,8 @@ public sealed class TrackUploadServiceTests : IAsyncLifetime
     [Fact]
     public async Task An_upload_completes_the_request_that_asked_for_it()
     {
-        // Somebody who gave up on Lidarr and fetched the file themselves has answered their own
-        // request, and it should close the same way a Lidarr import would.
+        // Somebody who gave up on Soulseek and fetched the file themselves has answered their own
+        // request, and it should close the same way a Soulseek download would.
         var user = await _db.AddUserAsync("devion");
         var playlistId = await new PlaylistService(_db, NullLogger<PlaylistService>.Instance)
             .CreateAsync(user.Id, "Wanted");

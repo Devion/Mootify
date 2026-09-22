@@ -196,43 +196,17 @@ class MootifyRepository(
 
     suspend fun cancelRequest(id: String): Result<Unit> = io { api()?.cancelRequest(id) }
 
-    suspend fun searchRemote(query: String): Result<List<ApiRemoteAlbum>> =
+    suspend fun searchRemote(query: String): Result<List<ApiSoulseekFile>> =
         io { api()?.searchRemote(query) }
 
-    suspend fun remoteTracks(albumMbid: String): Result<List<ApiRemoteTrack>> =
-        io { api()?.remoteTracks(albumMbid) }
-
-    suspend fun requestAlbum(
-        album: ApiRemoteAlbum,
+    suspend fun requestFile(
+        file: ApiSoulseekFile,
         searchTerm: String,
         targetPlaylistId: String?,
     ): Result<String> = io {
         api()?.createRequest(
             CreateRequestBody(
-                albumMusicBrainzId = album.musicBrainzId,
-                kind = "Album",
-                targetPlaylistId = targetPlaylistId,
-                searchTerm = searchTerm,
-            ),
-        )
-    }.map { it.id }
-
-    /**
-     * One song. Lidarr still fetches the whole album — it can't do otherwise — and the recording id
-     * is what picks this track out of it once it lands.
-     */
-    suspend fun requestTrack(
-        album: ApiRemoteAlbum,
-        track: ApiRemoteTrack,
-        searchTerm: String,
-        targetPlaylistId: String?,
-    ): Result<String> = io {
-        api()?.createRequest(
-            CreateRequestBody(
-                albumMusicBrainzId = album.musicBrainzId,
-                kind = "Track",
-                trackTitle = track.title,
-                recordingMusicBrainzId = track.recordingId,
+                resultId = file.resultId,
                 targetPlaylistId = targetPlaylistId,
                 searchTerm = searchTerm,
             ),

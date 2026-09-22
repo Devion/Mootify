@@ -50,13 +50,13 @@ internal sealed class MbRecording
 }
 
 /// <summary>
-/// Track listings for an album, which is the one thing Lidarr can't tell us: its album lookup
+/// Track listings for albums referenced by MusicBrainz metadata.
 /// returns a track <i>count</i> and nothing else, and <c>/track</c> only works for albums
 /// already in the library. So the listing for something you don't own yet comes from here.
 ///
 /// Deliberately not used for searching. MusicBrainz recording search has no popularity signal,
 /// so "bohemian rhapsody" returns tribute bands and karaoke albums ahead of Queen. Album search
-/// stays with Lidarr, which is accurate, and this fills in the tracks once an album is picked.
+/// This fills in tracks for metadata-backed imports and matching.
 /// </summary>
 public sealed class MusicBrainzClient(
     HttpClient http,

@@ -7,14 +7,14 @@
 @inject PlaylistImportService Importer
 @inject ImportRequestQueue Queue
 @inject RequestService Requests
-@inject LidarrClient Lidarr
+@inject SoulseekClient Soulseek
 @inject TeamService Teams
 @inject PlaylistService Playlists
 @inject PlaylistEvents PlaylistEvents
 @inject CurrentUser CurrentUser
 @inject NavigationManager Nav
 @using Mootify.Services.Import
-@using Mootify.Services.Lidarr
+@using Mootify.Services.Soulseek
 @using Mootify.Services.Requests
 @using Mootify.Services.Teams
 
@@ -142,9 +142,9 @@
                 {
                     <p class="muted">Pick a destination above first, then these can be requested into it.</p>
                 }
-                else if (!Lidarr.IsConfigured)
+                else if (!Soulseek.IsConfigured)
                 {
-                    <p class="muted">Lidarr isn't configured, so these can't be fetched.</p>
+                    <p class="muted">Soulseek isn't configured, so these can't be fetched.</p>
                 }
                 else if (queue.IsRunning)
                 {
@@ -167,17 +167,14 @@
                     </p>
                     @if (queue.NotFound > 0)
                     {
-                        <p class="muted">@queue.NotFound song@(queue.NotFound == 1 ? "" : "s") Lidarr couldn't find. @queue.LastError</p>
+                        <p class="muted">@queue.NotFound song@(queue.NotFound == 1 ? "" : "s") Soulseek couldn't find. @queue.LastError</p>
                     }
                 }
                 else
                 {
-                    @* Say the real number before starting. Lidarr fetches whole albums, so the
-                       album count is what this actually costs in disk and indexer traffic — and
-                       it's usually a third of the song count. *@
                     <p class="muted">
-                        These @preview.Missing.Count songs live on <strong>@_albumCount album@(_albumCount == 1 ? "" : "s")</strong>,
-                        and Lidarr fetches whole albums. Requests go out a few seconds apart and land in
+                        These @preview.Missing.Count songs will be searched and downloaded individually from Soulseek.
+                        Live recordings and bootlegs are excluded. Requests land in
                         <strong>@_targetPlaylistName</strong> as they arrive. You can stop it at any point.
                     </p>
                     <div class="managebox__actions">
@@ -359,7 +356,7 @@
     }
 
     /// <summary>
-    /// Hands the whole list to the background queue. Hundreds of Lidarr lookups take many
+    /// Hands the whole list to the background queue. Hundreds of Soulseek lookups take many
     /// minutes, which is far longer than a circuit should be held open — and the page stays
     /// usable while it runs.
     /// </summary>

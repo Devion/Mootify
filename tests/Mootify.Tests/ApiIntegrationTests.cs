@@ -28,7 +28,7 @@ namespace Mootify.Tests;
 ///
 /// The isolation is load-bearing and was learned the hard way: <c>mootify.json</c> is copied into
 /// the test output, so a test host that doesn't override it will happily pick up the real
-/// connection string, the real Lidarr key, and a music root pointing at somebody's NAS — then
+/// connection string, the real Soulseek key, and a music root pointing at somebody's NAS — then
 /// start a scan of it. <c>UseSetting</c> is <b>not</b> enough, because it lands in host
 /// configuration, which <c>Program.cs</c> layers <c>mootify.json</c> on top of. An in-memory
 /// source added through <see cref="IWebHostBuilder.ConfigureAppConfiguration"/> is applied last
@@ -70,10 +70,10 @@ public abstract class IsolatedMootifyFixture : WebApplicationFactory<Program>
             // nothing to find in a temp folder anyway.
             ["Library:ScanOnStartup"] = "false",
             ["Library:WatchFileSystem"] = "false",
-            // Blank disables every Lidarr-backed feature, which is also the state the request
+            // Blank disables every Soulseek-backed feature, which is also the state the request
             // endpoints are asserted against.
-            ["Lidarr:BaseUrl"] = "",
-            ["Lidarr:ApiKey"] = "",
+            ["Soulseek:BaseUrl"] = "",
+            ["Soulseek:ApiKey"] = "",
             ["Transcode:CacheDirectory"] = Path.Combine(Root, "transcode"),
             ["Transcode:DeleteSourceAfterTranscode"] = "false",
             ["Api:ArtCacheDirectory"] = Path.Combine(Root, "art"),
@@ -90,7 +90,7 @@ public abstract class IsolatedMootifyFixture : WebApplicationFactory<Program>
         var config = Services.GetRequiredService<IConfiguration>();
 
         Assert.Equal(MusicRoot, config["Library:MusicRoot"]);
-        Assert.True(string.IsNullOrEmpty(config["Lidarr:ApiKey"]), "The test host picked up a real Lidarr key.");
+        Assert.True(string.IsNullOrEmpty(config["Soulseek:ApiKey"]), "The test host picked up a real Soulseek key.");
 
         // The database the container actually holds, not the one configuration claims. Asking
         // IConfiguration is the check that already failed to notice a shared database once.
@@ -247,7 +247,7 @@ public sealed class MootifyApiFixture : IsolatedMootifyFixture, IAsyncLifetime
     }
 
     /// <summary>
-    /// Request rows straight into the table. Lidarr is deliberately unconfigured in this fixture,
+    /// Request rows straight into the table. Soulseek is deliberately unconfigured in this fixture,
     /// so the real create path can't run — and the wiring these tests are about (paging envelope,
     /// who may delete what) doesn't involve it.
     /// </summary>
@@ -375,9 +375,9 @@ public sealed class ApiIntegrationTests(MootifyApiFixture fixture) : IClassFixtu
         Assert.StartsWith("moo_", body.GetProperty("token").GetString());
         Assert.Equal("devion", body.GetProperty("user").GetProperty("displayName").GetString());
 
-        // Lidarr is unconfigured in this fixture, and the app uses this to hide the request UI
+        // Soulseek is unconfigured in this fixture, and the app uses this to hide the request UI
         // rather than discovering it through a 503.
-        Assert.False(body.GetProperty("server").GetProperty("lidarrConfigured").GetBoolean());
+        Assert.False(body.GetProperty("server").GetProperty("soulseekConfigured").GetBoolean());
         // 2 since playlist contents became a page. The app checks this before assuming a shape.
         Assert.Equal(ApiMap.Version, body.GetProperty("server").GetProperty("apiVersion").GetInt32());
     }
@@ -831,7 +831,7 @@ public sealed class ApiIntegrationTests(MootifyApiFixture fixture) : IClassFixtu
     }
 
     [Fact]
-    public async Task Requests_say_so_when_there_is_no_lidarr()
+    public async Task Requests_say_so_when_there_is_no_soulseek()
     {
         // Rather than a 500 or an empty list. The app hides the request UI on the server info flag;
         // this is the answer for a client that asks anyway.

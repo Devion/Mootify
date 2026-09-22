@@ -3,9 +3,7 @@ using Mootify.Services.Import;
 namespace Mootify.Tests;
 
 /// <summary>
-/// Grouping the missing songs before asking Lidarr for anything. This is what makes
-/// "request all" affordable: Lidarr fetches whole albums, so six songs from one album is
-/// one lookup and one download, not six.
+/// Grouping missing songs for progress reporting before asking Soulseek for anything.
 /// </summary>
 public sealed class ImportRequestQueueTests
 {

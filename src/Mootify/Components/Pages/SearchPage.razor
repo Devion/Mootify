@@ -1,93 +1,49 @@
 @page "/search"
 @attribute [Authorize]
 @implements IDisposable
-@inject IDbContextFactory<MootifyDbContext> DbFactory
 @inject LibrarySearchService Search
-@inject LidarrClient Lidarr
+@inject SoulseekClient Soulseek
 @inject RequestService Requests
 @inject PlaylistService Playlists
 @inject CurrentUser CurrentUser
-@inject NavigationManager Nav
-@inject MusicBrainzClient MusicBrainz
-@using Mootify.Services.Lidarr
-@using Mootify.Services.MusicBrainz
+@using Mootify.Services.Soulseek
 @using Mootify.Services.Requests
 
 <PageTitle>Search · Mootify</PageTitle>
-
 <h1>Search</h1>
-
-<input class="filterbox filterbox--large" type="search" autofocus
-       placeholder="Song, album or artist…"
+<input class="filterbox filterbox--large" type="search" autofocus placeholder="Song, album or artist…"
        @bind="_query" @bind:event="oninput" @bind:after="OnQueryChanged" aria-label="Search" />
 
-@* Step 1: the local library, debounced. Instant, no network. *@
 <section>
     <h2>In your library</h2>
-
-    @if (_searching)
-    {
-        <p class="muted">Searching&hellip;</p>
-    }
-    else if (_localTracks.Count == 0 && !string.IsNullOrWhiteSpace(_query))
-    {
-        <p class="muted">Nothing here matches.</p>
-    }
+    @if (_searching) { <p class="muted">Searching&hellip;</p> }
     else
     {
         <TrackList Rows="_localTracks" EmptyMessage="Type something above." />
-
         @if (_localTotal > _localTracks.Count)
         {
-            @* Never a silent cap. The number is the whole answer, and the link goes where the
-               rest of it can actually be paged through. *@
-            <p class="muted">
-                Showing @_localTracks.Count of @_localTotal matches &mdash;
-                <a href="@($"/library?q={Uri.EscapeDataString(_query)}")">see them all in the library</a>.
-            </p>
+            <p class="muted">Showing @_localTracks.Count of @_localTotal matches &mdash;
+                <a href="@($"/library?q={Uri.EscapeDataString(_query)}")">see them all</a>.</p>
         }
     }
 </section>
 
-@* Step 2: always offered, even when there are local hits — the local match may be the
-   wrong version, and that's exactly when people give up and go elsewhere. *@
 @if (!string.IsNullOrWhiteSpace(_query))
 {
     <section class="lookup">
         <div class="sectionhead">
-            <h2>Not what you wanted?</h2>
-            @if (!_lookupDone)
-            {
-                <button class="button" @onclick="RunLookup" disabled="@(_lookingUp || !Lidarr.IsConfigured)">
-                    @(_lookingUp ? "Looking…" : "Search for it →")
-                </button>
-            }
+            <h2>Soulseek</h2>
+            <button class="button" @onclick="RunLookup" disabled="@(_lookingUp || !Soulseek.IsConfigured)">
+                @(_lookingUp ? "Searching Soulseek…" : "Search Soulseek →")
+            </button>
         </div>
-
-        @if (!Lidarr.IsConfigured)
-        {
-            <p class="muted">Lidarr isn't configured, so nothing new can be fetched.</p>
-        }
-        else if (_lookupDone && _remote.Count == 0)
-        {
-            <p class="muted">Lidarr found nothing for that.</p>
-        }
+        @if (!Soulseek.IsConfigured) { <p class="muted">Soulseek isn't configured, so nothing new can be fetched.</p> }
+        else if (_lookupDone && _remote.Count == 0) { <p class="muted">No studio/non-bootleg audio files were found.</p> }
         else if (_remote.Count > 0)
         {
-            @* Lidarr fetches whole albums, but you rarely want one. Expand an album and pick
-               the song: Lidarr still grabs the album, and only that track joins your playlist. *@
-            <p class="muted">
-                Open an album to pick a single song &mdash; Lidarr fetches the album either way,
-                but only what you choose lands in your playlist.
-            </p>
-
-            @* Team playlists are listed here too: requesting into one is how a team gets music
-               without everybody asking separately. *@
+            <p class="muted">Live recordings and bootlegs are excluded. Pick the exact file you want.</p>
             <div class="lookup__target">
-                @* Changing the destination changes what counts as a duplicate — the same song
-                   for a different playlist is a different request — so this re-reads the keys. *@
-                <select @bind="_targetPlaylistId" @bind:after="ReloadRequestedAsync"
-                        aria-label="Add to playlist when it arrives">
+                <select @bind="_targetPlaylistId" @bind:after="ReloadRequestedAsync" aria-label="Add to playlist when it arrives">
                     <option value="">Don't add to a playlist</option>
                     @foreach (var p in _playlists)
                     {
@@ -95,281 +51,84 @@
                     }
                 </select>
             </div>
-
             <ul class="results">
-                @foreach (var album in _remote)
+                @foreach (var file in _remote)
                 {
-                    var isOpen = _expanded == album.MusicBrainzId;
-
-                    <li class="result @(isOpen ? "is-open" : "")">
-                        <div class="result__row" @onclick="() => Toggle(album)">
-                            <img class="result__art" src="@(album.CoverUrl ?? "img/pietjecow-sm.png")" alt="" loading="lazy" />
-
-                            <div class="result__meta">
-                                <strong>@album.Title</strong>
-                                <span>@(album.Artist?.ArtistName ?? "Unknown artist")</span>
-                                @* Disambiguation matters: three results called Greatest Hits with
-                                   no year is a coin flip, and picking wrong wastes a download. *@
-                                <span class="result__detail">
-                                    @(album.Year?.ToString() ?? "year unknown")
-                                    @if (!string.IsNullOrEmpty(album.AlbumType)) { <text> &middot; @album.AlbumType</text> }
-                                    @if (album.Statistics is { TrackCount: > 0 }) { <text> &middot; @album.Statistics.TrackCount tracks</text> }
-                                </span>
-                            </div>
-
-                            @{ var albumRequested = AlreadyRequested(album, RequestKind.Album, null, null); }
-
-                            <div class="result__actions" @onclick:stopPropagation="true">
-                                <button class="linkbutton" @onclick="() => Toggle(album)">
-                                    @(isOpen ? "Hide songs" : "Songs")
-                                </button>
-                                @* Saying so up front beats letting somebody click and be refused —
-                                   a refusal reads as a bug, a greyed-out button reads as an answer. *@
-                                <button class="button" @onclick="() => RequestAlbum(album)"
-                                        disabled="@(_submitting || albumRequested)">
-                                    @(albumRequested ? "Requested" : "Request")
-                                </button>
-                            </div>
+                    var requested = AlreadyRequested(file);
+                    <li class="result"><div class="result__row">
+                        <div class="result__meta">
+                            <strong>@file.DisplayName</strong><span>@file.Folder</span>
+                            <span class="result__detail">@file.Extension.ToUpperInvariant()
+                                @if (file.BitRate is { } rate) { <text> &middot; @rate kbps</text> }
+                                @if (file.BitDepth is { } depth) { <text> &middot; @depth-bit</text> }
+                                &middot; @FormatSize(file.Size) &middot; @(file.HasFreeUploadSlot ? "free slot" : $"queue {file.QueueLength}")
+                            </span>
                         </div>
-
-                        @if (isOpen)
-                        {
-                            <div class="tracklisting">
-                                @if (_loadingTracks)
-                                {
-                                    <p class="muted">Fetching the tracklist&hellip;</p>
-                                }
-                                else if (_tracks.Count == 0)
-                                {
-                                    @* MusicBrainz doesn't have every tracklist. Requesting the
-                                       whole album still works. *@
-                                    <p class="muted">No tracklist for this one. Request the album instead.</p>
-                                }
-                                else
-                                {
-                                    <table class="tracklist">
-                                        <tbody>
-                                            @foreach (var track in _tracks)
-                                            {
-                                                var requested = albumRequested
-                                                    || AlreadyRequested(album, RequestKind.Track, track.Title, track.RecordingId);
-
-                                                <tr class="@(requested ? "is-requested" : "")">
-                                                    <td class="tracklist__num">@track.Position</td>
-                                                    <td class="tracklist__title">@track.Title</td>
-                                                    <td class="tracklist__dur">@Format(track.Duration)</td>
-                                                    <td class="tracklist__actions">
-                                                        @if (requested)
-                                                        {
-                                                            <span class="muted">Already requested</span>
-                                                        }
-                                                        else
-                                                        {
-                                                            <button class="linkbutton" disabled="@_submitting"
-                                                                    @onclick="() => RequestTrack(album, track)">
-                                                                Request this song
-                                                            </button>
-                                                        }
-                                                    </td>
-                                                </tr>
-                                            }
-                                        </tbody>
-                                    </table>
-                                }
-                            </div>
-                        }
-                    </li>
+                        <div class="result__actions"><button class="button" @onclick="() => Submit(file)" disabled="@(_submitting || requested)">
+                            @(requested ? "Requested" : "Download")</button></div>
+                    </div></li>
                 }
             </ul>
         }
-
-        @if (_message is not null)
-        {
-            <p class="@(_messageIsError ? "error" : "success")">@_message</p>
-        }
+        @if (_message is not null) { <p class="@(_messageIsError ? "error" : "success")">@_message</p> }
     </section>
 }
 
 @code {
     [SupplyParameterFromQuery(Name = "q")] public string? InitialQuery { get; set; }
-
-    /// <summary>
-    /// What this page shows before handing off to the library page. It is a first look on the way
-    /// to asking Lidarr, not a browser — so it is deliberately short, and it says how many it
-    /// isn't showing rather than stopping at fifty and looking complete.
-    /// </summary>
     private const int LocalResults = 25;
-
     private string _query = "";
     private List<TrackList.Row> _localTracks = [];
     private int _localTotal;
-    private List<LidarrAlbum> _remote = [];
+    private List<SoulseekFile> _remote = [];
     private List<PlaylistSummary> _playlists = [];
-    private string? _targetPlaylistId;
-    private string? _message;
-    private bool _messageIsError;
-    private bool _searching, _lookingUp, _lookupDone, _submitting;
-
-    private string? _expanded;
-    private IReadOnlyList<AlbumTrack> _tracks = [];
-    private bool _loadingTracks;
-
-    /// <summary>
-    /// Duplicate keys for everything already asked for, built by <see cref="RequestService.DuplicateKey"/>
-    /// so this page and the service can't disagree about what a duplicate is.
-    /// </summary>
     private HashSet<string> _requested = [];
-
+    private string? _targetPlaylistId, _message;
+    private bool _messageIsError, _searching, _lookingUp, _lookupDone, _submitting;
+    private Guid _userId;
     private CancellationTokenSource? _debounceCts;
 
     protected override async Task OnInitializedAsync()
     {
         _userId = await CurrentUser.GetRequiredIdAsync();
         _playlists = await Playlists.GetForUserAsync(_userId);
-        _requested = await Requests.GetActiveKeysAsync(_userId);
-    }
-
-    private async Task ReloadRequestedAsync() =>
-        _requested = await Requests.GetActiveKeysAsync(_userId);
-
-    private bool AlreadyRequested(LidarrAlbum album, RequestKind kind, string? trackTitle, string? recordingMbid)
-    {
-        if (album.MusicBrainzId is not { } mbid) return false;
-
-        return _requested.Contains(RequestService.DuplicateKey(
-            kind, mbid, trackTitle, recordingMbid, TargetPlaylistId, _userId));
-    }
-
-    private Guid? TargetPlaylistId => Guid.TryParse(_targetPlaylistId, out var id) ? id : null;
-
-    private Guid _userId;
-
-    protected override async Task OnParametersSetAsync()
-    {
-        if (!string.IsNullOrWhiteSpace(InitialQuery) && InitialQuery != _query)
-        {
-            _query = InitialQuery;
-            await SearchLocalAsync();
-        }
-    }
-
-    /// <summary>~300ms debounce: searching on every keystroke hammers the database and the circuit.</summary>
-    private async Task OnQueryChanged()
-    {
-        _lookupDone = false;
-        _remote = [];
-        _message = null;
-
-        _debounceCts?.Cancel();
-        _debounceCts?.Dispose();
-        _debounceCts = new CancellationTokenSource();
-        var token = _debounceCts.Token;
-
-        try
-        {
-            await Task.Delay(300, token);
-            await SearchLocalAsync();
-            StateHasChanged();
-        }
-        catch (TaskCanceledException)
-        {
-            // superseded by the next keystroke
-        }
-    }
-
-    /// <summary>
-    /// The local half. Through <see cref="LibrarySearchService"/> rather than a query written here,
-    /// so this box, the library page and the phone all agree about what a term matches — this page
-    /// had its own copy of that rule and the library page had a different one.
-    /// </summary>
-    private async Task SearchLocalAsync()
-    {
-        if (string.IsNullOrWhiteSpace(_query))
-        {
-            _localTracks = [];
-            _localTotal = 0;
-            return;
-        }
-
-        _searching = true;
-
-        var page = await Search.TracksAsync(_query, 0, LocalResults);
-
-        _localTotal = page.Total;
-        _localTracks =
-        [
-            .. page.Rows.Select(t => new TrackList.Row(t.Id, t.Title, t.ArtistName, t.Duration))
-        ];
-
-        _searching = false;
-    }
-
-    private async Task RunLookup()
-    {
-        _lookingUp = true;
-        _message = null;
-
-        _remote = await Lidarr.LookupAlbumsAsync(_query.Trim());
-        _remote = [.. _remote.Take(15)];
-
-        _lookingUp = false;
-        _lookupDone = true;
-    }
-
-    /// <summary>
-    /// Expanding an album fetches its tracklist from MusicBrainz — Lidarr's album lookup
-    /// carries a track count and no titles, so this is the only source for music we don't
-    /// own yet. One album open at a time keeps that to one call per click.
-    /// </summary>
-    private async Task Toggle(LidarrAlbum album)
-    {
-        if (_expanded == album.MusicBrainzId)
-        {
-            _expanded = null;
-            _tracks = [];
-            return;
-        }
-
-        _expanded = album.MusicBrainzId;
-        _tracks = [];
-
-        if (string.IsNullOrEmpty(album.MusicBrainzId)) return;
-
-        _loadingTracks = true;
-        _tracks = await MusicBrainz.GetTracksAsync(album.MusicBrainzId);
-        _loadingTracks = false;
-    }
-
-    private async Task RequestAlbum(LidarrAlbum album) =>
-        await Submit(album, RequestKind.Album, trackTitle: null, recordingMbid: null,
-            success: $"Requested {album.Title}. You'll get a cowbell when it lands.");
-
-    private async Task RequestTrack(LidarrAlbum album, AlbumTrack track) =>
-        await Submit(album, RequestKind.Track, track.Title, track.RecordingId,
-            // Say what actually happens: the whole album is fetched, one track is kept.
-            success: $"Requested \"{track.Title}\". Lidarr will fetch {album.Title}; " +
-                     "only that song goes in your playlist.");
-
-    private async Task Submit(
-        LidarrAlbum album, RequestKind kind, string? trackTitle, string? recordingMbid, string success)
-    {
-        _submitting = true;
-        _message = null;
-
-        var result = await Requests.CreateAsync(
-            _userId, album, kind, trackTitle, recordingMbid, TargetPlaylistId);
-
-        _messageIsError = !result.Ok;
-        _message = result.Ok ? success : result.Error;
-        _submitting = false;
-
-        // Whether it worked or was refused as a duplicate, the answer is the same: that one is
-        // spoken for now, and the button that produced this should say so.
         await ReloadRequestedAsync();
     }
-
-    private static string Format(TimeSpan t) =>
-        t == TimeSpan.Zero ? "" : t.ToString(@"m\:ss");
-
+    protected override async Task OnParametersSetAsync()
+    {
+        if (!string.IsNullOrWhiteSpace(InitialQuery) && InitialQuery != _query) { _query = InitialQuery; await SearchLocalAsync(); }
+    }
+    private Guid? TargetPlaylistId => Guid.TryParse(_targetPlaylistId, out var id) ? id : null;
+    private async Task ReloadRequestedAsync() => _requested = await Requests.GetActiveKeysAsync(_userId);
+    private bool AlreadyRequested(SoulseekFile file) => _requested.Contains(
+        RequestService.DuplicateKey(file.Username, file.Filename, TargetPlaylistId, _userId));
+    private async Task OnQueryChanged()
+    {
+        _lookupDone = false; _remote = []; _message = null;
+        _debounceCts?.Cancel(); _debounceCts?.Dispose(); _debounceCts = new CancellationTokenSource();
+        try { await Task.Delay(300, _debounceCts.Token); await SearchLocalAsync(); StateHasChanged(); } catch (TaskCanceledException) { }
+    }
+    private async Task SearchLocalAsync()
+    {
+        if (string.IsNullOrWhiteSpace(_query)) { _localTracks = []; _localTotal = 0; return; }
+        _searching = true;
+        var page = await Search.TracksAsync(_query, 0, LocalResults);
+        _localTotal = page.Total;
+        _localTracks = [.. page.Rows.Select(t => new TrackList.Row(t.Id, t.Title, t.ArtistName, t.Duration))];
+        _searching = false;
+    }
+    private async Task RunLookup()
+    {
+        _lookingUp = true; _message = null; _remote = await Soulseek.SearchAsync(_query); _lookingUp = false; _lookupDone = true;
+    }
+    private async Task Submit(SoulseekFile file)
+    {
+        _submitting = true; _message = null;
+        var result = await Requests.CreateAsync(_userId, file, _query, TargetPlaylistId);
+        _messageIsError = !result.Ok;
+        _message = result.Ok ? $"Downloading {file.DisplayName}. You'll get a cowbell when it lands." : result.Error;
+        _submitting = false; await ReloadRequestedAsync();
+    }
+    private static string FormatSize(long bytes) => bytes < 1024 * 1024 ? $"{bytes / 1024d:0.#} KB" : $"{bytes / 1024d / 1024d:0.#} MB";
     public void Dispose() => _debounceCts?.Dispose();
 }

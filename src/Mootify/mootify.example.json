@@ -10,18 +10,19 @@
     "SessionLifetime": "30.00:00:00"
   },
 
-  "Lidarr": {
-    "//": "ApiKey also reads from the Lidarr__ApiKey environment variable or a Docker secret.",
-    "BaseUrl": "http://lidarr:8686",
+  "Soulseek": {
+    "//": "ApiKey also reads from the Soulseek__ApiKey environment variable or a Docker secret.",
+    "BaseUrl": "http://slskd:5030",
     "ApiKey": "",
-    "//QualityProfileId": "Pick one WITHOUT FLAC. Lidarr's stock 'Standard' profile is usually id 3.",
-    "QualityProfileId": 3,
-    "MetadataProfileId": 1,
-    "RootFolderPath": "/music",
-    "SearchOnAdd": true,
-    "PollInterval": "00:10:00",
-    "//MaxSearchesPerPass": "Albums one poll may re-ask Lidarr to search for. The brake is your indexers' rate limits, not Lidarr. Passes work the backlog oldest-first, so a lower number is slower rather than incomplete.",
-    "MaxSearchesPerPass": 50
+    "SearchTimeoutSeconds": 8,
+    "FileLimit": 1000,
+    "ResponseLimit": 100,
+    "MaximumPeerQueueLength": 100,
+    "MaxResults": 100,
+    "PollInterval": "00:00:15",
+    "DownloadDestination": "Mootify",
+    "//LocalDownloadRoot": "The slskd downloads directory as Mootify sees it. Blank uses Library:MusicRoot.",
+    "LocalDownloadRoot": ""
   },
 
   "MusicBrainz": {
@@ -33,7 +34,7 @@
   },
 
   "Library": {
-    "//MusicRoot": "The path THIS app can see. Lidarr's root folder is a path inside its own container, so it is usually a different string. A UNC share works: \\\\\\\\host\\\\Data\\\\MediaMusic",
+    "//MusicRoot": "The path THIS app can see. A UNC share works: \\\\\\\\host\\\\Data\\\\MediaMusic",
     "MusicRoot": "",
     "//Username": "Only needed for a UNC share that requires a login. Windows only — on Linux, mount the share in the OS.",
     "//Password": "Also reads from the Library__Password environment variable or a Docker secret.",

@@ -2,7 +2,7 @@
 
 A client for a self-hosted Mootify, built to replace Spotify or YouTube Music in the car: it
 appears in Android Auto, browses the same playlists and library the website does, and can ask
-Lidarr for something that isn't there yet.
+Soulseek through slskd for something that isn't there yet.
 
 Default server: **https://moo.lazy.kiwi**. It's only the value the login screen starts with — the
 app stores whatever it signs in against, so a LAN address works too (type the `http://` yourself if

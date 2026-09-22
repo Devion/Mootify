@@ -4,7 +4,7 @@ using Microsoft.Extensions.Options;
 using Mootify.Configuration;
 using Mootify.Data;
 using Mootify.Services.Auth;
-using Mootify.Services.Lidarr;
+using Mootify.Services.Soulseek;
 using Mootify.Services.Settings;
 
 namespace Mootify.Endpoints.Api;
@@ -149,17 +149,17 @@ public static class ApiAuthEndpoints
 
 /// <summary>
 /// What the client is allowed to assume about this server. Asked once at sign-in and again on
-/// <c>/me</c>, so a Lidarr that appears later shows up without reinstalling the app.
+/// <c>/me</c>, so a Soulseek service that appears later shows up without reinstalling the app.
 /// </summary>
 public sealed class ServerInfoProvider(
-    LidarrClient lidarr,
+    SoulseekClient soulseek,
     SettingsService settings,
     IOptionsMonitor<ApiOptions> options)
 {
     public async Task<ApiServerInfo> GetAsync(CancellationToken ct = default) => new(
         Name: "Mootify",
         ApiVersion: ApiMap.Version,
-        LidarrConfigured: lidarr.IsConfigured,
+        SoulseekConfigured: soulseek.IsConfigured,
         RegistrationOpen: await settings.GetRegistrationEnabledAsync(ct),
         MaxPageSize: options.CurrentValue.MaxPageSize);
 }

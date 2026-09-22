@@ -30,7 +30,7 @@ data class ApiUser(
 data class ApiServerInfo(
     val name: String = "Mootify",
     val apiVersion: Int = 1,
-    val lidarrConfigured: Boolean = false,
+    val soulseekConfigured: Boolean = false,
     val registrationOpen: Boolean = false,
     val maxPageSize: Int = 500,
 )
@@ -177,23 +177,17 @@ data class ApiLibraryStats(
 )
 
 @Serializable
-data class ApiRemoteAlbum(
-    val musicBrainzId: String? = null,
-    val title: String,
-    val artistName: String = "",
-    val artistMusicBrainzId: String? = null,
-    val year: Int? = null,
-    val albumType: String? = null,
-    val coverUrl: String? = null,
-    val alreadyInLibrary: Boolean = false,
-)
-
-@Serializable
-data class ApiRemoteTrack(
-    val position: Int = 0,
-    val title: String,
-    val recordingId: String? = null,
-    val durationMs: Long? = null,
+data class ApiSoulseekFile(
+    val resultId: String,
+    val name: String,
+    val folder: String = "",
+    val extension: String = "",
+    val size: Long = 0,
+    val bitRate: Int? = null,
+    val bitDepth: Int? = null,
+    val lengthSeconds: Int? = null,
+    val hasFreeUploadSlot: Boolean = false,
+    val queueLength: Int = 0,
 )
 
 @Serializable
@@ -217,12 +211,8 @@ data class ApiRequest(
 
 @Serializable
 data class CreateRequestBody(
-    val albumMusicBrainzId: String?,
-    val kind: String,
-    val trackTitle: String? = null,
-    val recordingMusicBrainzId: String? = null,
+    val resultId: String,
     val targetPlaylistId: String? = null,
-    /** The term that produced this album, so the server can re-find it if its cache expired. */
     val searchTerm: String? = null,
 )
 
