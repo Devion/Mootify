@@ -14,7 +14,7 @@
     "//": "ApiKey also reads from the Soulseek__ApiKey environment variable or a Docker secret.",
     "BaseUrl": "http://slskd:5030",
     "ApiKey": "",
-    "SearchTimeoutSeconds": 8,
+    "SearchTimeoutSeconds": 60,
     "FileLimit": 1000,
     "ResponseLimit": 100,
     "MaximumPeerQueueLength": 100,

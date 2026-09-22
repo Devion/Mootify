@@ -21,21 +21,31 @@ public sealed class SoulseekClientTests
                 SearchTimeoutSeconds = 5,
             }), NullLogger<SoulseekClient>.Instance);
 
-        var files = await client.SearchAsync("Artist Song");
+        var files = await client.SearchAsync("artist song");
 
         Assert.Single(files);
         Assert.Equal("Music\\Artist\\01 Song.mp3", files[0].Filename);
+        Assert.Equal("Artist Song", handler.PostedSearchText);
+        Assert.Equal(5000, handler.PostedSearchTimeout);
         Assert.True(handler.Deleted);
     }
 
     private sealed class SearchHandler : HttpMessageHandler
     {
         public bool Deleted { get; private set; }
+        public string? PostedSearchText { get; private set; }
+        public int? PostedSearchTimeout { get; private set; }
 
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             if (request.Method == HttpMethod.Post)
+            {
+                using var document = JsonDocument.Parse(
+                    request.Content!.ReadAsStringAsync(cancellationToken).GetAwaiter().GetResult());
+                PostedSearchText = document.RootElement.GetProperty("searchText").GetString();
+                PostedSearchTimeout = document.RootElement.GetProperty("searchTimeout").GetInt32();
                 return Json(HttpStatusCode.OK, "{\"id\":\"00000000-0000-0000-0000-000000000000\",\"isComplete\":false}");
+            }
 
             if (request.Method == HttpMethod.Delete)
             {

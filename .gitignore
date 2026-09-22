@@ -496,3 +496,5 @@ src/Mootify/Data/art-cache/
 
 # Publish output when published into the project folder
 src/Mootify/publish/
+# Runtime logs are written beside the deployed site and must not be committed.
+src/Mootify/logs/

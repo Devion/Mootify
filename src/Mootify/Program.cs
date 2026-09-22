@@ -41,9 +41,20 @@ builder.Configuration.AddJsonFile("mootify.json", optional: true, reloadOnChange
 // what secrets are for.
 builder.Configuration.AddEnvironmentVariables();
 
+// Keep a durable log beside the deployed site so headless/service installations are diagnosable
+// without access to their console. The file sink creates one file per day and keeps two weeks.
+var logDirectory = Path.Combine(builder.Environment.ContentRootPath, "logs");
+Directory.CreateDirectory(logDirectory);
 builder.Host.UseSerilog((context, config) => config
     .ReadFrom.Configuration(context.Configuration)
-    .WriteTo.Console());
+    .Enrich.FromLogContext()
+    .WriteTo.Console()
+    .WriteTo.File(
+        Path.Combine(logDirectory, "mootify-.log"),
+        rollingInterval: RollingInterval.Day,
+        retainedFileCountLimit: 14,
+        shared: true,
+        flushToDiskInterval: TimeSpan.FromSeconds(1)));
 
 // ---- options ------------------------------------------------------------
 // ValidateOnStart: a missing music root should stop the app at boot with a readable

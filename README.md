@@ -39,7 +39,10 @@ Two settings need real thought:
   `Soulseek:DownloadDestination`, in its own folder, so Mootify can scan and reconcile it exactly.
 
 FFmpeg must be on `PATH`. Startup logs whether it found it, along with the slskd version and
-the music root, so a misconfiguration is visible in the first ten lines of output.
+the music root, so a misconfiguration is visible in the first ten lines of output. Persistent
+daily logs are written to the site's `logs/` directory as `mootify-YYYYMMDD.log` and retained for
+14 days. Soulseek searches log their query, response and filtering counts, errors, and slskd search
+cleanup there.
 
 ## In the car
 

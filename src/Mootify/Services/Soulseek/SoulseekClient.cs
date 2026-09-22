@@ -117,16 +117,36 @@ public sealed class SoulseekClient(
 
     public async Task<List<SoulseekFile>> SearchAsync(string text, CancellationToken ct = default)
     {
-        if (!IsConfigured || string.IsNullOrWhiteSpace(text)) return [];
+        if (!IsConfigured)
+        {
+            log.LogWarning("Soulseek search was skipped because slskd is not configured");
+            return [];
+        }
+
+        if (string.IsNullOrWhiteSpace(text)) return [];
 
         var opts = options.CurrentValue;
         var id = Guid.NewGuid();
+        var enteredQuery = text.Trim();
+        var query = NormalizeSearchText(enteredQuery);
+        if (!string.Equals(enteredQuery, query, StringComparison.Ordinal))
+        {
+            log.LogInformation("Normalized case-sensitive Soulseek query from {EnteredQuery} to {Query}",
+                enteredQuery, query);
+        }
+
+        log.LogInformation(
+            "Starting Soulseek search {SearchId} for {Query} via {BaseUrl}; timeout {TimeoutSeconds}s, file limit {FileLimit}, response limit {ResponseLimit}",
+            id, query, opts.BaseUrl, opts.SearchTimeoutSeconds, opts.FileLimit, opts.ResponseLimit);
+
         var start = Request(HttpMethod.Post, "api/v0/searches");
         start.Content = JsonContent.Create(new
         {
             id,
-            searchText = text.Trim(),
-            searchTimeout = Math.Max(5, opts.SearchTimeoutSeconds),
+            searchText = query,
+            // SearchOptions ultimately expects milliseconds in the slskd 0.26 API even though
+            // its DTO documentation describes this value as seconds.
+            searchTimeout = Math.Max(5, opts.SearchTimeoutSeconds) * 1000,
             fileLimit = opts.FileLimit,
             responseLimit = opts.ResponseLimit,
             filterResponses = true,
@@ -138,10 +158,13 @@ public sealed class SoulseekClient(
             using var started = await http.SendAsync(start, ct);
             if (!started.IsSuccessStatusCode)
             {
-                log.LogWarning("slskd search returned {Status}: {Body}", started.StatusCode,
+                log.LogWarning("slskd rejected Soulseek search {SearchId} for {Query} with {Status}: {Body}",
+                    id, query, started.StatusCode,
                     await started.Content.ReadAsStringAsync(ct));
                 return [];
             }
+
+            log.LogInformation("slskd accepted Soulseek search {SearchId} for {Query}", id, query);
 
             SoulseekSearch? search = null;
             var deadline = DateTimeOffset.UtcNow.AddSeconds(Math.Max(5, opts.SearchTimeoutSeconds) + 3);
@@ -150,17 +173,72 @@ public sealed class SoulseekClient(
                 await Task.Delay(TimeSpan.FromMilliseconds(500), ct);
                 using var poll = await http.SendAsync(Request(HttpMethod.Get,
                     $"api/v0/searches/{id}?includeResponses=true"), ct);
-                if (!poll.IsSuccessStatusCode) break;
+                if (!poll.IsSuccessStatusCode)
+                {
+                    log.LogWarning(
+                        "Polling Soulseek search {SearchId} for {Query} failed with {Status}: {Body}",
+                        id, query, poll.StatusCode, await poll.Content.ReadAsStringAsync(ct));
+                    break;
+                }
                 search = await poll.Content.ReadFromJsonAsync<SoulseekSearch>(cancellationToken: ct);
             }
             while (search is not { IsComplete: true } && DateTimeOffset.UtcNow < deadline);
 
-            return Rank(id, search?.Responses ?? [], opts.MaxResults);
+            var responses = search?.Responses ?? [];
+            var rawFiles = responses.Sum(response => response.Files.Count);
+            var lockedFiles = responses.Sum(response => response.Files.Count(file => file.IsLocked));
+            var nonAudioFiles = responses.Sum(response => response.Files.Count(file =>
+                !file.IsLocked && !AudioExtensions.Contains(Extension(file))));
+            var unwantedVersions = responses.Sum(response => response.Files.Count(file =>
+                !file.IsLocked
+                && AudioExtensions.Contains(Extension(file))
+                && UnwantedVersion.IsMatch(file.Filename)));
+            var results = Rank(id, responses, opts.MaxResults);
+
+            if (search is not { IsComplete: true })
+            {
+                log.LogWarning(
+                    "Soulseek search {SearchId} for {Query} did not report completion before the deadline; using responses received so far",
+                    id, query);
+            }
+
+            log.LogInformation(
+                "Soulseek search {SearchId} for {Query} finished: {PeerResponses} peer responses, {RawFiles} files, {EligibleResults} returned; filtered {LockedFiles} locked, {NonAudioFiles} non-audio, {UnwantedVersions} live/bootleg",
+                id, query, responses.Count, rawFiles, results.Count, lockedFiles, nonAudioFiles, unwantedVersions);
+            return results;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            log.LogInformation("Soulseek search {SearchId} for {Query} was cancelled", id, query);
+            throw;
+        }
+        catch (Exception ex)
+        {
+            log.LogError(ex, "Soulseek search {SearchId} for {Query} failed", id, query);
+            throw;
         }
         finally
         {
-            try { using var _ = await http.SendAsync(Request(HttpMethod.Delete, $"api/v0/searches/{id}"), CancellationToken.None); }
-            catch (Exception ex) { log.LogDebug(ex, "Could not remove completed slskd search {SearchId}", id); }
+            try
+            {
+                using var deleted = await http.SendAsync(
+                    Request(HttpMethod.Delete, $"api/v0/searches/{id}"), CancellationToken.None);
+                if (deleted.IsSuccessStatusCode || deleted.StatusCode == HttpStatusCode.NotFound)
+                {
+                    log.LogInformation("Removed Soulseek search {SearchId} for {Query} from slskd", id, query);
+                }
+                else
+                {
+                    log.LogWarning(
+                        "Could not remove Soulseek search {SearchId} for {Query} from slskd; status {Status}: {Body}",
+                        id, query, deleted.StatusCode,
+                        await deleted.Content.ReadAsStringAsync(CancellationToken.None));
+                }
+            }
+            catch (Exception ex)
+            {
+                log.LogWarning(ex, "Could not remove Soulseek search {SearchId} for {Query} from slskd", id, query);
+            }
         }
     }
 
@@ -183,6 +261,13 @@ public sealed class SoulseekClient(
         string.IsNullOrWhiteSpace(file.Extension)
             ? Path.GetExtension(file.Filename).TrimStart('.')
             : file.Extension.TrimStart('.');
+
+    private static string NormalizeSearchText(string query) => Regex.Replace(
+        query,
+        @"\p{L}[\p{L}\p{M}]*",
+        match => match.Value.Any(char.IsUpper)
+            ? match.Value
+            : char.ToUpperInvariant(match.Value[0]) + match.Value[1..]);
 
     public async Task<(bool Ok, string? Error)> EnqueueAsync(
         Guid requestId, SoulseekFile file, CancellationToken ct = default)

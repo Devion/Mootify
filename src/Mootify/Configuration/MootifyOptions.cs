@@ -95,7 +95,7 @@ public sealed class SoulseekOptions
     /// <summary>Blank disables remote search and download without disabling the music library.</summary>
     public string BaseUrl { get; set; } = "";
     public string ApiKey { get; set; } = "";
-    [Range(5, 60)] public int SearchTimeoutSeconds { get; set; } = 8;
+    [Range(5, 60)] public int SearchTimeoutSeconds { get; set; } = 60;
     [Range(1, 10000)] public int FileLimit { get; set; } = 1000;
     [Range(1, 1000)] public int ResponseLimit { get; set; } = 100;
     [Range(0, 1000000)] public int MaximumPeerQueueLength { get; set; } = 100;
