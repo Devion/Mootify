@@ -41,7 +41,8 @@
         <a href="https://exportify.net/" target="_blank" rel="noopener">exportify.net</a> with your
         Spotify account and export the playlist you want.
         It becomes a new playlist named after the file, or goes into one you already have. Anything
-        already in the library goes straight in; the rest can be requested.
+        already in the library goes straight in; the rest is automatically searched and queued
+        for download from Soulseek.
     </p>
 
     @if (_error is not null) { <p class="error">@_error</p> }
@@ -113,11 +114,11 @@
                     <button class="button" @onclick="Go" disabled="@_working">
                         @if (_destination == NewPlaylist)
                         {
-                            <text>Create with @preview.Matched.Count song@(preview.Matched.Count == 1 ? "" : "s")</text>
+                            <text>Create and import @preview.Total song@(preview.Total == 1 ? "" : "s")</text>
                         }
                         else
                         {
-                            <text>Add @preview.Matched.Count song@(preview.Matched.Count == 1 ? "" : "s") to @(AppendTarget?.Name)</text>
+                            <text>Import @preview.Total song@(preview.Total == 1 ? "" : "s") into @(AppendTarget?.Name)</text>
                         }
                     </button>
                 </div>
@@ -140,11 +141,23 @@
 
                 @if (_targetPlaylistId is null)
                 {
-                    <p class="muted">Pick a destination above first, then these can be requested into it.</p>
+                    <p class="muted">Pick a destination above; importing will automatically search and queue these tracks.</p>
                 }
                 else if (!Soulseek.IsConfigured)
                 {
                     <p class="muted">Soulseek isn't configured, so these can't be fetched.</p>
+                }
+                else if (_queueStartFailed)
+                {
+                    <p class="muted">
+                        Another missing-track import is using the Soulseek queue. Retry when it finishes;
+                        none of these tracks have been discarded.
+                    </p>
+                    <div class="managebox__actions">
+                        <button class="button" @onclick="QueueMissingTracks" disabled="@queue.IsRunning">
+                            Retry queueing
+                        </button>
+                    </div>
                 }
                 else if (queue.IsRunning)
                 {
@@ -173,15 +186,8 @@
                 else
                 {
                     <p class="muted">
-                        These @preview.Missing.Count songs will be searched and downloaded individually from Soulseek.
-                        Live recordings and bootlegs are excluded. Requests land in
-                        <strong>@_targetPlaylistName</strong> as they arrive. You can stop it at any point.
+                        Waiting to start the automatic Soulseek queue for these @preview.Missing.Count songs.
                     </p>
-                    <div class="managebox__actions">
-                        <button class="button" @onclick="RequestMissing">
-                            Request all @preview.Missing.Count
-                        </button>
-                    </div>
                 }
 
                 <ul class="importlist">
@@ -236,8 +242,7 @@
     private string _destination = NewPlaylist;
     private string? _teamId;
     private string? _error;
-    private int _albumCount;
-    private bool _reading, _working, _showAllMissing;
+    private bool _reading, _working, _showAllMissing, _queueStartFailed;
 
     private PlaylistSummary? AppendTarget =>
         Guid.TryParse(_destination, out var id) ? _playlists.FirstOrDefault(p => p.Id == id) : null;
@@ -269,8 +274,8 @@
         _targetPlaylistId = null;
         _targetPlaylistName = null;
         _doneMessage = null;
-        _albumCount = 0;
         _showAllMissing = false;
+        _queueStartFailed = false;
         _reading = true;
 
         try
@@ -285,8 +290,6 @@
 
             _preview = await Importer.PreviewAsync(file.Name, csv);
 
-            // What the request step will actually cost — albums, not songs.
-            _albumCount = ImportRequestQueue.CountAlbums(_preview.Missing);
         }
         catch (Exception ex)
         {
@@ -309,6 +312,11 @@
         {
             if (_destination == NewPlaylist) await CreateAsync();
             else await AppendAsync();
+
+            if (_targetPlaylistId is not null && _preview.Missing.Count > 0)
+            {
+                QueueMissingTracks();
+            }
         }
         finally
         {
@@ -356,17 +364,28 @@
     }
 
     /// <summary>
-    /// Hands the whole list to the background queue. Hundreds of Soulseek lookups take many
-    /// minutes, which is far longer than a circuit should be held open — and the page stays
-    /// usable while it runs.
+    /// Hands every missing track to the background queue as part of the import itself. Hundreds
+    /// of Soulseek lookups can take many minutes, so the page remains usable while it runs.
     /// </summary>
-    private void RequestMissing()
+    private void QueueMissingTracks()
     {
         if (_preview is null || _targetPlaylistId is null) return;
 
-        if (!Queue.Start(_userId, _targetPlaylistId.Value, _preview.Missing))
+        if (!Soulseek.IsConfigured)
         {
-            _error = "Another import is still being requested. Let that finish first.";
+            _queueStartFailed = true;
+            _error = "The playlist was imported, but Soulseek is not configured, so its missing tracks could not be queued.";
+            return;
+        }
+
+        _queueStartFailed = !Queue.Start(_userId, _targetPlaylistId.Value, _preview.Missing);
+        if (_queueStartFailed)
+        {
+            _error = "The playlist was imported, but another missing-track import is still running. Retry queueing when it finishes.";
+        }
+        else if (_error?.StartsWith("The playlist was imported", StringComparison.Ordinal) == true)
+        {
+            _error = null;
         }
     }
 }
