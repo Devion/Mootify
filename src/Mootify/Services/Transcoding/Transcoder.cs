@@ -191,7 +191,7 @@ public sealed class Transcoder(
                 RedirectStandardError = true,
                 UseShellExecute = false,
                 CreateNoWindow = true,
-                WorkingDirectory = Path.GetFullPath(fileName)
+                WorkingDirectory = Path.GetDirectoryName(fileName)
             },
         };
 

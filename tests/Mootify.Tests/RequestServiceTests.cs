@@ -68,6 +68,58 @@ public sealed class RequestServiceTests : IAsyncLifetime
         await using var db = _db.CreateDbContext();
         Assert.Equal(RequestStatus.Failed, (await db.Requests.SingleAsync()).Status);
     }
+
+    [Fact]
+    public async Task Admin_can_see_and_remove_requests_from_every_user()
+    {
+        var admin = await _db.AddUserAsync("admin");
+        await using (var db = _db.CreateDbContext())
+        {
+            var row = await db.Users.SingleAsync(u => u.Id == admin.Id);
+            row.IsAdmin = true;
+            await db.SaveChangesAsync();
+        }
+
+        Assert.True((await _service.CreateAsync(_user.Id, File(), "Artist Song", null)).Ok);
+        await Assert.ThrowsAsync<UnauthorizedAccessException>(() => _service.GetAllAsync(_user.Id));
+        var page = await _service.GetAllAsync(admin.Id);
+        var request = Assert.Single(page.Rows);
+        Assert.Equal(_user.Id, request.RequesterId);
+        Assert.Equal(_user.DisplayName, request.Requester!.DisplayName);
+
+        var otherUser = await _db.AddUserAsync("other");
+        Assert.False((await _service.CancelAsync(otherUser.Id, request.Id, asAdmin: true)).Ok);
+        Assert.True((await _service.CancelAsync(admin.Id, request.Id, asAdmin: true)).Ok);
+        Assert.Empty((await _service.GetAllAsync(admin.Id)).Rows);
+    }
+
+    [Fact]
+    public async Task Admin_can_reschedule_failed_download_without_losing_its_target()
+    {
+        var admin = await _db.AddUserAsync("admin");
+        await using (var db = _db.CreateDbContext())
+        {
+            var row = await db.Users.SingleAsync(u => u.Id == admin.Id);
+            row.IsAdmin = true;
+            await db.SaveChangesAsync();
+        }
+
+        _handler.Fail = true;
+        var created = await _service.CreateAsync(_user.Id, File(), "Artist Song", null);
+        var id = created.RequestId!.Value;
+        Assert.False((await _service.RetryFailedAsync(_user.Id, id)).Ok);
+        Assert.True((await _service.RetryFailedAsync(admin.Id, id)).Ok);
+        Assert.False((await _service.RetryFailedAsync(admin.Id, id)).Ok);
+
+        await using var check = _db.CreateDbContext();
+        var request = await check.Requests.SingleAsync();
+        Assert.Equal(RequestStatus.Searching, request.Status);
+        Assert.Equal(_user.Id, request.RequesterId);
+        Assert.Equal("Artist Song", request.Query);
+        Assert.Null(request.FailureReason);
+        Assert.Null(request.CompletedAt);
+        Assert.NotNull(request.NextOfflineRecoveryAt);
+    }
 }
 
 internal sealed class FakeSoulseek : HttpMessageHandler

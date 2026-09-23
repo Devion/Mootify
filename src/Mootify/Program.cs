@@ -273,6 +273,7 @@ builder.Services.AddScoped<IdeaService>();
 builder.Services.AddScoped<PlaylistImportService>();
 // Singleton: one import runs at a time and its progress outlives any circuit.
 builder.Services.AddSingleton<ImportRequestQueue>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<ImportRequestQueue>());
 builder.Services.AddScoped<TeamService>();
 builder.Services.AddScoped<PlayerService>();
 builder.Services.AddScoped<RequestService>();

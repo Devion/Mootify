@@ -150,11 +150,10 @@
                 else if (_queueStartFailed)
                 {
                     <p class="muted">
-                        Another missing-track import is using the Soulseek queue. Retry when it finishes;
-                        none of these tracks have been discarded.
+                        The background worker is shutting down and could not accept these tracks.
                     </p>
                     <div class="managebox__actions">
-                        <button class="button" @onclick="QueueMissingTracks" disabled="@queue.IsRunning">
+                        <button class="button" @onclick="QueueMissingTracks">
                             Retry queueing
                         </button>
                     </div>
@@ -166,10 +165,17 @@
                         @queue.Queued song@(queue.Queued == 1 ? "" : "s") queued
                         @if (queue.NotFound > 0) { <text>, @queue.NotFound not found</text> }
                     </p>
+                    <p class="muted">This runs in the background. You can leave this page.</p>
+                    @if (Queue.WaitingJobs > 0)
+                    {
+                        <p class="muted">
+                            @Queue.WaitingJobs additional playlist import@(Queue.WaitingJobs == 1 ? " is" : "s are") waiting behind the current one.
+                        </p>
+                    }
                     @if (queue.Current is { } current) { <p class="muted">@current</p> }
                     <div class="progressbar"><span style="width:@(queue.Percent)%"></span></div>
                     <div class="managebox__actions">
-                        <button class="linkbutton linkbutton--danger" @onclick="() => Queue.Cancel()">Stop</button>
+                        <button class="linkbutton linkbutton--danger" @onclick="() => Queue.Cancel()">Stop current import</button>
                     </div>
                 }
                 else if (queue.FinishedAt is not null)
@@ -381,7 +387,7 @@
         _queueStartFailed = !Queue.Start(_userId, _targetPlaylistId.Value, _preview.Missing);
         if (_queueStartFailed)
         {
-            _error = "The playlist was imported, but another missing-track import is still running. Retry queueing when it finishes.";
+            _error = "The playlist was imported, but the background worker could not accept its missing tracks.";
         }
         else if (_error?.StartsWith("The playlist was imported", StringComparison.Ordinal) == true)
         {

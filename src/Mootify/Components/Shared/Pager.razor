@@ -1,4 +1,4 @@
-@* Previous / Next with a truthful "page 3 of 11 (528 songs)".
+@* Previous / Next with a truthful "201–300 of 528 songs".
 
    The total is the whole answer, never the page — a pager that can only count what it fetched
    can't say how much it isn't showing you, which is exactly the thing a cap used to hide. *@
@@ -10,8 +10,7 @@
             &larr; Previous
         </button>
         <span class="pager__where">
-            Page @Page of @Of
-            <span class="muted">(@Total @Noun@(Total == 1 ? "" : "s"))</span>
+            @First&ndash;@Last of @Total @Noun@(Total == 1 ? "" : "s")
         </span>
         <button class="linkbutton" disabled="@(!HasNext)" @onclick="() => OnGoTo.InvokeAsync(Skip + Take)">
             Next &rarr;
@@ -33,4 +32,7 @@
 
     /// <summary>Called with the new skip, so the caller keeps ownership of what a page means.</summary>
     [Parameter] public EventCallback<int> OnGoTo { get; set; }
+
+    private int First => Total == 0 ? 0 : Skip + 1;
+    private int Last => Math.Min(Skip + Take, Total);
 }

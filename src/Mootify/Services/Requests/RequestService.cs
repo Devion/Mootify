@@ -158,12 +158,17 @@ public sealed class RequestService(
         var (enqueued, error) = await soulseek.EnqueueAsync(request.Id, file, ct);
         if (!enqueued)
         {
-            request.Status = RequestStatus.Failed;
+            request.Status = SoulseekClient.IsPeerOffline(error) ? RequestStatus.Searching : RequestStatus.Failed;
             request.FailureReason = string.IsNullOrWhiteSpace(error) ? "slskd refused the download." : error;
-            request.CompletedAt = DateTimeOffset.UtcNow;
-            request.UpdatedAt = request.CompletedAt.Value;
+            request.UpdatedAt = DateTimeOffset.UtcNow;
+            if (request.Status == RequestStatus.Searching)
+                request.NextOfflineRecoveryAt = request.UpdatedAt;
+            else
+                request.CompletedAt = request.UpdatedAt;
             await db.SaveChangesAsync(ct);
-            return new CreateRequestResult(false, request.Id, request.FailureReason);
+            return request.Status == RequestStatus.Searching
+                ? new CreateRequestResult(true, request.Id, null)
+                : new CreateRequestResult(false, request.Id, request.FailureReason);
         }
 
         request.Status = RequestStatus.Downloading;
@@ -188,11 +193,20 @@ public sealed class RequestService(
         await PageAsync(r => r.RequesterId == userId, filter, skip, take, includeRequester: false, ct);
 
     public async Task<RequestPage> GetAllAsync(
+        Guid actingAdminId,
         RequestFilter filter = RequestFilter.All,
         int skip = 0,
         int take = DefaultPageSize,
-        CancellationToken ct = default) =>
-        await PageAsync(_ => true, filter, skip, take, includeRequester: true, ct);
+        CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
+        if (!await IsAdminAsync(db, actingAdminId, ct))
+            throw new UnauthorizedAccessException("Admins only.");
+        return await PageAsync(_ => true, filter, skip, take, includeRequester: true, ct);
+    }
+
+    private static Task<bool> IsAdminAsync(MootifyDbContext db, Guid userId, CancellationToken ct) =>
+        db.Users.AnyAsync(u => u.Id == userId && u.IsAdmin && !u.IsBanned, ct);
 
     private async Task<RequestPage> PageAsync(
         System.Linq.Expressions.Expression<Func<Request, bool>> scope,
@@ -308,7 +322,7 @@ public sealed class RequestService(
             return (false, "That request is already gone.");
         }
 
-        if (request.RequesterId != userId && !asAdmin)
+        if (request.RequesterId != userId && (!asAdmin || !await IsAdminAsync(db, userId, ct)))
         {
             // Same sentence as a missing row: whose requests exist is not this endpoint's to leak.
             return (false, "That request is already gone.");
@@ -325,6 +339,32 @@ public sealed class RequestService(
 
         log.LogInformation("Request {RequestId} cancelled by {User}", requestId, userId);
 
+        return (true, null);
+    }
+
+    /// <summary>Schedules a failed Soulseek download for a fresh peer search.</summary>
+    public async Task<(bool Ok, string? Error)> RetryFailedAsync(
+        Guid actingAdminId, Guid requestId, CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
+        if (!await IsAdminAsync(db, actingAdminId, ct)) return (false, "Admins only.");
+
+        var request = await db.Requests.FirstOrDefaultAsync(r => r.Id == requestId, ct);
+        if (request is null) return (false, "That request is already gone.");
+        if (request.Status != RequestStatus.Failed)
+            return (false, "Only failed downloads can be re-searched.");
+        if (string.IsNullOrWhiteSpace(request.SoulseekFilename) || string.IsNullOrWhiteSpace(request.Query))
+            return (false, "This request has no Soulseek file to search for.");
+        if (!soulseek.IsConfigured) return (false, "Soulseek is not configured.");
+
+        request.Status = RequestStatus.Searching;
+        request.CompletedAt = null;
+        request.OfflineRecoveryAttempts = 0;
+        request.NextOfflineRecoveryAt = DateTimeOffset.UtcNow;
+        request.UpdatedAt = request.NextOfflineRecoveryAt.Value;
+        request.FailureReason = null;
+        await db.SaveChangesAsync(ct);
+        log.LogInformation("Admin {AdminId} re-searched request {RequestId}", actingAdminId, requestId);
         return (true, null);
     }
 

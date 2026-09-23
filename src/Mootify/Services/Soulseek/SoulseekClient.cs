@@ -269,11 +269,14 @@ public sealed class SoulseekClient(
             ? match.Value
             : char.ToUpperInvariant(match.Value[0]) + match.Value[1..]);
 
+    public static bool IsPeerOffline(string? reason) =>
+        reason?.Contains("user not online", StringComparison.OrdinalIgnoreCase) == true
+        || reason?.Contains("user is offline", StringComparison.OrdinalIgnoreCase) == true;
+
     public async Task<(bool Ok, string? Error)> EnqueueAsync(
-        Guid requestId, SoulseekFile file, CancellationToken ct = default)
+        Guid requestId, SoulseekFile file, CancellationToken ct = default, Guid? destinationId = null)
     {
-        var opts = options.CurrentValue;
-        var destination = DestinationFor(requestId);
+        var destination = DestinationFor(destinationId ?? requestId);
         var request = Request(HttpMethod.Post, "api/v0/transfers/downloads/batches");
         request.Content = JsonContent.Create(new
         {

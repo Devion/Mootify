@@ -108,6 +108,10 @@ public static class SchemaPatch
             """ALTER TABLE "Requests" ADD COLUMN "SoulseekUsername" TEXT NULL"""),
         ("Requests", "SoulseekFilename",
             """ALTER TABLE "Requests" ADD COLUMN "SoulseekFilename" TEXT NULL"""),
+        ("Requests", "OfflineRecoveryAttempts",
+            """ALTER TABLE "Requests" ADD COLUMN "OfflineRecoveryAttempts" INTEGER NOT NULL DEFAULT 0"""),
+        ("Requests", "NextOfflineRecoveryAt",
+            """ALTER TABLE "Requests" ADD COLUMN "NextOfflineRecoveryAt" INTEGER NULL"""),
 
         // 0 is the default the entity carries too: nobody's listening is shared until they say so,
         // and an upgrade that started broadcasting everyone's playback would be a privacy bug.

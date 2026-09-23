@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using Mootify.Data;
+using Mootify.Services.Library;
 using Mootify.Services.Teams;
 
 namespace Mootify.Services.Playlists;
@@ -45,9 +46,10 @@ public sealed record PlaylistTrackRow(
 /// <summary>
 /// One page of a playlist, with the totals for the whole thing.
 ///
-/// <see cref="Total"/> and <see cref="TotalDuration"/> describe the playlist, not the page — a
-/// pager that can only count what it fetched can't say "page 2 of 9", and "200 tracks" is the
-/// number somebody wants at the top of the screen however many are on it.
+/// <see cref="PlaylistTotal"/> and <see cref="TotalDuration"/> describe the playlist, not the page.
+/// <see cref="Total"/> is the number of rows matching the current search (and is therefore the
+/// same as <see cref="PlaylistTotal"/> when there is no search). A pager that can only count what
+/// it fetched can't say where the current range ends.
 /// </summary>
 public sealed record PlaylistTrackPage(
     Guid Id,
@@ -56,6 +58,7 @@ public sealed record PlaylistTrackPage(
     Guid? TeamId,
     string? TeamName,
     bool CanDelete,
+    int PlaylistTotal,
     int Total,
     TimeSpan TotalDuration,
     int Skip,
@@ -204,6 +207,7 @@ public sealed class PlaylistService(
         Guid userId,
         int skip = 0,
         int take = DefaultPageSize,
+        string? query = null,
         CancellationToken ct = default)
     {
         skip = Math.Max(0, skip);
@@ -228,17 +232,33 @@ public sealed class PlaylistService(
             .AsNoTracking()
             .Where(i => i.PlaylistId == playlistId && i.Track!.IsPresent);
 
-        var total = await present.CountAsync(ct);
+        var playlistTotal = await present.CountAsync(ct);
 
         // Ticks, not Duration: the mapped column is the one SQLite can add up. SUM over nothing
         // is 0 in SQL, so the empty playlist needs no special case.
-        var ticks = total == 0 ? 0 : await present.SumAsync(i => i.Track!.DurationTicks, ct);
+        var ticks = playlistTotal == 0 ? 0 : await present.SumAsync(i => i.Track!.DurationTicks, ct);
+
+        // Search the playlist query, not the materialised page. Otherwise page two can contain a
+        // match that the search box can never see. Use the same title/artist/album rule as the
+        // library search so the same words mean the same thing throughout the app.
+        var cleanedQuery = LibraryMatch.Clean(query);
+        var matching = present;
+        if (cleanedQuery is not null)
+        {
+            var pattern = LibraryMatch.LikePattern(cleanedQuery);
+            matching = matching.Where(i =>
+                EF.Functions.Like(i.Track!.Title, pattern)
+                || EF.Functions.Like(i.Track!.Artist!.Name, pattern)
+                || EF.Functions.Like(i.Track!.Album!.Title, pattern));
+        }
+
+        var total = cleanedQuery is null ? playlistTotal : await matching.CountAsync(ct);
 
         // A skip past the end is what removing the last page's rows leaves behind. Show the last
         // page rather than an empty one.
         if (skip >= total) skip = Math.Max(0, ((Math.Max(1, total) - 1) / take) * take);
 
-        var rows = await present
+        var rows = await matching
             .OrderBy(i => i.SortKey)
             .Skip(skip)
             .Take(take)
@@ -265,6 +285,7 @@ public sealed class PlaylistService(
             playlist.TeamId,
             playlist.Team?.Name,
             canDelete,
+            playlistTotal,
             total,
             TimeSpan.FromTicks(ticks),
             skip,

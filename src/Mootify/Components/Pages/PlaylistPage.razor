@@ -28,7 +28,8 @@ else
         <div>
             @if (_renaming)
             {
-                <input class="pagehead__rename" @bind="_draftName" @onkeydown="OnRenameKey" @onblur="CommitRename" />
+                <input class="pagehead__rename" @bind="_draftName" @bind:event="oninput"
+                       @onkeydown="OnRenameKey" @onblur="CommitRename" />
             }
             else
             {
@@ -40,12 +41,12 @@ else
                     <a href="@($"/team/{tid}")" class="badge">@_page.TeamName</a>
                     <text> &middot; </text>
                 }
-                @* The playlist's numbers, not the page's — see PlaylistTrackPage.Total. *@
-                @_page.Total track@(_page.Total == 1 ? "" : "s") &middot; @FormatTotal(_page.TotalDuration)
+                @* The playlist's numbers, not the filtered page's — see PlaylistTrackPage.PlaylistTotal. *@
+                @_page.PlaylistTotal track@(_page.PlaylistTotal == 1 ? "" : "s") &middot; @FormatTotal(_page.TotalDuration)
             </p>
         </div>
         <div class="pagehead__actions">
-            <button class="button" @onclick="PlayAll" disabled="@(_page.Total == 0)">Play</button>
+            <button class="button" @onclick="PlayAll" disabled="@(_page.PlaylistTotal == 0)">Play</button>
             @* Only for personal playlists — a team one is already shared. *@
             @if (_page.TeamId is null && _myTeams.Count > 0)
             {
@@ -117,8 +118,17 @@ else
         <p class="error">@_deleteError</p>
     }
 
+    <input class="filterbox" type="search" placeholder="Search this playlist…"
+           @bind="_query" @bind:event="oninput" @bind:after="OnQueryChanged"
+           aria-label="Search this playlist" />
+
+    @if (_searching)
+    {
+        <p class="muted">Searching&hellip;</p>
+    }
+
     <TrackList Rows="_tracks" OnRemove="Remove" SourcePlaylistId="PlaylistId"
-               EmptyMessage="Empty. Add tracks with the + on any song." />
+               EmptyMessage="@EmptyMessage" />
 
     <Pager Page="_page.PageNumber" Of="_page.PageCount" Total="_page.Total" Noun="track"
            HasPrevious="_page.HasPrevious" HasNext="_page.HasNext"
@@ -131,6 +141,10 @@ else
     private PlaylistTrackPage? _page;
     private int _skip;
     private Guid _userId;
+    private string _query = "";
+    private bool _searching;
+    private CancellationTokenSource? _searchCts;
+    private static readonly TimeSpan SearchDebounce = TimeSpan.FromMilliseconds(250);
 
     private string _draftName = "";
     private bool _renaming;
@@ -168,17 +182,18 @@ else
             // A different playlist is a different list; page 4 of the last one means nothing here.
             _loadedPlaylistId = PlaylistId;
             _skip = 0;
+            _query = "";
             StartPolling();
         }
 
         await LoadAsync();
     }
 
-    private async Task LoadAsync()
+    private async Task LoadAsync(CancellationToken ct = default)
     {
         _userId = await CurrentUser.GetRequiredIdAsync();
 
-        var page = await Playlists.GetPageAsync(PlaylistId, _userId, _skip);
+        var page = await Playlists.GetPageAsync(PlaylistId, _userId, _skip, query: _query, ct: ct);
 
         if (page is null)
         {
@@ -218,6 +233,44 @@ else
         _skip = Math.Max(0, skip);
         await LoadAsync();
     }
+
+    private void OnQueryChanged()
+    {
+        _searchCts?.Cancel();
+        _searchCts?.Dispose();
+        _searchCts = new CancellationTokenSource();
+        var token = _searchCts.Token;
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await Task.Delay(SearchDebounce, token);
+                _searching = true;
+                await InvokeAsync(StateHasChanged);
+
+                _skip = 0;
+                await LoadAsync(token);
+                await InvokeAsync(StateHasChanged);
+            }
+            catch (OperationCanceledException)
+            {
+                // Superseded by the next keystroke, or the page was closed.
+            }
+            finally
+            {
+                if (!token.IsCancellationRequested)
+                {
+                    _searching = false;
+                    await InvokeAsync(StateHasChanged);
+                }
+            }
+        }, CancellationToken.None);
+    }
+
+    private string EmptyMessage => LibraryMatch.Clean(_query) is null
+        ? "Empty. Add tracks with the + on any song."
+        : "No tracks in this playlist match that search.";
 
     // ---- listening along -------------------------------------------------
 
@@ -274,6 +327,8 @@ else
     public ValueTask DisposeAsync()
     {
         StopPolling();
+        _searchCts?.Cancel();
+        _searchCts?.Dispose();
         return ValueTask.CompletedTask;
     }
 

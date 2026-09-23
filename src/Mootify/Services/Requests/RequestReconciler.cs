@@ -3,6 +3,7 @@ using Microsoft.Extensions.Options;
 using Mootify.Configuration;
 using Mootify.Data;
 using Mootify.Services.Library;
+using Mootify.Services.Import;
 using Mootify.Services.Soulseek;
 using Mootify.Services.Transcoding;
 
@@ -25,25 +26,51 @@ public sealed class RequestReconciler(
     IOptionsMonitor<LibraryOptions> libraryOptions,
     ILogger<RequestReconciler> log)
 {
+    private const int MaxOfflineRecoveryAttempts = 5;
+    private const int MaxRecoverySearchesPerPass = 3;
+
     public async Task<ReconcileSummary> ReconcileAllAsync(CancellationToken ct = default)
     {
         if (!soulseek.IsConfigured) return ReconcileSummary.Idle;
 
         await using var db = await dbFactory.CreateDbContextAsync(ct);
         var open = await db.Requests
-            .Where(r => r.Status != RequestStatus.Available
-                     && r.Status != RequestStatus.NotFound
-                     && r.Status != RequestStatus.Failed)
+            .Where(r => (r.Status != RequestStatus.Available
+                      && r.Status != RequestStatus.NotFound
+                      && r.Status != RequestStatus.Failed)
+                     || (r.Status == RequestStatus.Failed
+                      && r.OfflineRecoveryAttempts == 0
+                      && r.FailureReason != null
+                      && (EF.Functions.Like(r.FailureReason, "%user not online%")
+                          || EF.Functions.Like(r.FailureReason, "%user is offline%"))))
             .ToListAsync(ct);
         if (open.Count == 0) return ReconcileSummary.Idle;
 
         var downloading = 0;
         var completed = 0;
         var failed = 0;
+        var recoverySearches = 0;
 
         foreach (var request in open)
         {
             ct.ThrowIfCancellationRequested();
+            if (request.Status == RequestStatus.Failed && SoulseekClient.IsPeerOffline(request.FailureReason))
+            {
+                request.Status = RequestStatus.Searching;
+                request.CompletedAt = null;
+                request.NextOfflineRecoveryAt = DateTimeOffset.UtcNow;
+            }
+            if (request.NextOfflineRecoveryAt is { } due)
+            {
+                if (due <= DateTimeOffset.UtcNow && recoverySearches < MaxRecoverySearchesPerPass)
+                {
+                    recoverySearches++;
+                    await RecoverOfflinePeerAsync(request, ct);
+                }
+                if (request.Status == RequestStatus.Failed) failed++;
+                else downloading++;
+                continue;
+            }
             if (request.SoulseekBatchId is not { } batchId)
             {
                 Fail(request, "This request predates the Soulseek integration. Please request it again.");
@@ -68,8 +95,25 @@ public sealed class RequestReconciler(
                 var unsuccessful = batch.Transfers.FirstOrDefault(t => !Has(t.State, "Succeeded"));
                 if (unsuccessful is not null)
                 {
-                    Fail(request, unsuccessful.Exception ?? $"Soulseek download ended as {unsuccessful.State}.");
-                    failed++;
+                    var reason = unsuccessful.Exception ?? $"Soulseek download ended as {unsuccessful.State}.";
+                    if (SoulseekClient.IsPeerOffline(reason))
+                    {
+                        request.FailureReason = reason;
+                        request.Status = RequestStatus.Searching;
+                        request.NextOfflineRecoveryAt = DateTimeOffset.UtcNow;
+                        if (recoverySearches < MaxRecoverySearchesPerPass)
+                        {
+                            recoverySearches++;
+                            await RecoverOfflinePeerAsync(request, ct);
+                        }
+                        if (request.Status == RequestStatus.Failed) failed++;
+                        else downloading++;
+                    }
+                    else
+                    {
+                        Fail(request, reason);
+                        failed++;
+                    }
                     continue;
                 }
 
@@ -84,6 +128,89 @@ public sealed class RequestReconciler(
 
         await db.SaveChangesAsync(ct);
         return new ReconcileSummary(open.Count, open.Count, downloading, completed, 0, 0, failed);
+    }
+
+    private async Task RecoverOfflinePeerAsync(Request request, CancellationToken ct)
+    {
+        if (request.OfflineRecoveryAttempts >= MaxOfflineRecoveryAttempts)
+        {
+            Fail(request, "The Soulseek user went offline, and no matching download was available after several searches.");
+            request.NextOfflineRecoveryAt = null;
+            return;
+        }
+
+        request.OfflineRecoveryAttempts++;
+        request.Status = RequestStatus.Searching;
+        request.UpdatedAt = DateTimeOffset.UtcNow;
+        request.NextOfflineRecoveryAt = request.UpdatedAt.Add(RecoveryDelay(request.OfflineRecoveryAttempts));
+
+        try
+        {
+            var results = await soulseek.SearchAsync(request.Query, ct);
+            var originalTitle = NormalizedFileTitle(request.SoulseekFilename ?? "");
+            var query = PlaylistImportService.Normalize(request.Query);
+            var artist = query.EndsWith(" " + originalTitle, StringComparison.Ordinal)
+                ? query[..^(originalTitle.Length + 1)]
+                : "";
+            var matches = results.Where(file =>
+                    originalTitle.Length > 0
+                    && NormalizedFileTitle(file.Filename) == originalTitle
+                    && (artist.Length == 0 || PlaylistImportService.Normalize(file.Folder).Contains(artist,
+                        StringComparison.Ordinal)))
+                .OrderBy(file => string.Equals(file.Username, request.SoulseekUsername,
+                    StringComparison.OrdinalIgnoreCase))
+                .ToList();
+
+            foreach (var file in matches)
+            {
+                // A fresh batch id avoids colliding with slskd's terminal batch. Keep the
+                // destination tied to the request so completion still finds the downloaded file.
+                var newBatchId = Guid.NewGuid();
+                var (ok, error) = await soulseek.EnqueueAsync(newBatchId, file, ct, request.Id);
+                if (!ok)
+                {
+                    log.LogInformation("Could not retry request {RequestId} from {Peer}: {Error}",
+                        request.Id, file.Username, error);
+                    continue;
+                }
+
+                var oldBatchId = request.SoulseekBatchId;
+                request.SoulseekBatchId = newBatchId;
+                request.SoulseekUsername = file.Username;
+                request.SoulseekFilename = file.Filename;
+                request.Status = RequestStatus.Downloading;
+                request.FailureReason = null;
+                request.NextOfflineRecoveryAt = null;
+                request.UpdatedAt = DateTimeOffset.UtcNow;
+                if (oldBatchId is { } old && old != newBatchId)
+                    await soulseek.CancelBatchAsync(old, ct);
+                log.LogInformation("Retried request {RequestId} from Soulseek user {Peer}", request.Id, file.Username);
+                return;
+            }
+
+            log.LogInformation("No matching online Soulseek peer found for request {RequestId}; retry {Attempt}/{MaxAttempts} is due at {Due}",
+                request.Id, request.OfflineRecoveryAttempts, MaxOfflineRecoveryAttempts, request.NextOfflineRecoveryAt);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+        catch (Exception ex)
+        {
+            log.LogWarning(ex, "Searching for another Soulseek peer for request {RequestId} failed", request.Id);
+        }
+    }
+
+    private static TimeSpan RecoveryDelay(int attempts) => attempts switch
+    {
+        1 => TimeSpan.FromMinutes(5),
+        2 => TimeSpan.FromMinutes(30),
+        3 => TimeSpan.FromHours(2),
+        _ => TimeSpan.FromHours(6),
+    };
+
+    private static string NormalizedFileTitle(string filename)
+    {
+        var title = Path.GetFileNameWithoutExtension(filename.Replace('\\', '/'));
+        title = System.Text.RegularExpressions.Regex.Replace(title, @"^\s*\d{1,3}\s*[-._ ]+\s*", "");
+        return PlaylistImportService.Normalize(title);
     }
 
     private async Task<bool> CompleteAsync(MootifyDbContext db, Request request, CancellationToken ct)

@@ -1,0 +1,198 @@
+@page "/admin/requests"
+@attribute [Authorize(Policy = MootifyAuth.AdminPolicy)]
+@inject RequestService Requests
+@inject RequestReconciler Reconciler
+@inject CurrentUser CurrentUser
+@using Mootify.Services.Requests
+
+<PageTitle>Requests · Admin · Mootify</PageTitle>
+
+<h1>Requests</h1>
+<AdminNav />
+<p class="pagehead__meta">Requests from everyone. Re-search a failed download or remove a request that should no longer be here.</p>
+
+<div class="filterchips" role="group" aria-label="Filter requests">
+    @foreach (var (filter, label) in Chips)
+    {
+        var count = _page.Counts.For(filter);
+        <button type="button" class="chip @(_filter == filter ? "is-active" : "")"
+                disabled="@(count == 0 && _filter != filter)" @onclick="() => SetFilter(filter)">
+            @label <span class="chip__count">@count</span>
+        </button>
+    }
+</div>
+
+@if (_notice is not null)
+{
+    <p class="@(_noticeIsError ? "error" : "success")">@_notice</p>
+}
+
+@if (_page.Total == 0)
+{
+    <div class="emptystate">
+        <img src="/img/pietjecow-sm.png" alt="" />
+        <p>@(_page.Counts.All == 0 ? "No requests yet." : "Nothing here under that filter.")</p>
+    </div>
+}
+else
+{
+    <table class="requests">
+        <thead>
+            <tr><th>What</th><th>Requested by</th><th>Status</th><th>Playlist</th><th>Asked</th><th class="requests__rowaction"></th></tr>
+        </thead>
+        <tbody>
+            @foreach (var r in _page.Rows)
+            {
+                <tr>
+                    <td>
+                        <strong>@(r.Kind == Data.RequestKind.Track ? r.TrackTitle : r.AlbumTitle)</strong>
+                        <span class="muted"> &mdash; @r.ArtistName</span>
+                        @if (!string.IsNullOrWhiteSpace(r.SoulseekFilename))
+                        {
+                            <div class="muted" title="Soulseek file">@r.SoulseekFilename</div>
+                        }
+                    </td>
+                    <td>@(r.Requester?.DisplayName ?? "Deleted user")</td>
+                    <td>
+                        <span class="status status--@r.Status.ToString().ToLowerInvariant()">@Describe(r.Status)</span>
+                        @if (!string.IsNullOrWhiteSpace(r.FailureReason))
+                        {
+                            <div class="muted">@r.FailureReason</div>
+                        }
+                    </td>
+                    <td>
+                        @if (r.TargetPlaylist is not null)
+                        {
+                            <a href="@($"/playlist/{r.TargetPlaylistId}")">@r.TargetPlaylist.Name</a>
+                        }
+                        else
+                        {
+                            <span class="muted">&mdash;</span>
+                        }
+                    </td>
+                    <td class="muted">@r.CreatedAt.ToLocalTime().ToString("d MMM HH:mm")</td>
+                    <td class="requests__rowaction">
+                        @if (r.Status == Data.RequestStatus.Failed && !string.IsNullOrWhiteSpace(r.SoulseekFilename))
+                        {
+                            <button class="linkbutton" disabled="@(_working == r.Id)" @onclick="() => Retry(r.Id)">Re-search</button>
+                        }
+                        <button class="linkbutton linkbutton--danger" disabled="@(_working == r.Id)" @onclick="() => Remove(r)">
+                            @(r.IsOpen ? "Cancel" : "Remove")
+                        </button>
+                    </td>
+                </tr>
+            }
+        </tbody>
+    </table>
+
+    @if (_page.PageCount > 1)
+    {
+        <nav class="pager" aria-label="Requests pages">
+            <button class="linkbutton" disabled="@(!_page.HasPrevious)" @onclick="() => GoTo(_page.Skip - _page.Take)">&larr; Newer</button>
+            <span class="pager__where">Page @_page.PageNumber of @_page.PageCount <span class="muted">(@_page.Total requests)</span></span>
+            <button class="linkbutton" disabled="@(!_page.HasNext)" @onclick="() => GoTo(_page.Skip + _page.Take)">Older &rarr;</button>
+        </nav>
+    }
+}
+
+@code {
+    private static readonly (RequestFilter Filter, string Label)[] Chips =
+    [
+        (RequestFilter.All, "All"),
+        (RequestFilter.Open, "In flight"),
+        (RequestFilter.Ready, "Ready"),
+        (RequestFilter.Problem, "Problems"),
+    ];
+
+    private RequestPage _page = RequestPage.Empty;
+    private RequestFilter _filter;
+    private int _skip;
+    private Guid _adminId;
+    private Guid? _working;
+    private string? _notice;
+    private bool _noticeIsError;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _adminId = await CurrentUser.GetRequiredIdAsync();
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        _page = await Requests.GetAllAsync(_adminId, _filter, _skip);
+        _skip = _page.Skip;
+    }
+
+    private async Task SetFilter(RequestFilter filter)
+    {
+        _filter = filter;
+        _skip = 0;
+        await LoadAsync();
+    }
+
+    private async Task GoTo(int skip)
+    {
+        _skip = Math.Max(0, skip);
+        await LoadAsync();
+    }
+
+    private async Task Retry(Guid requestId)
+    {
+        _working = requestId;
+        try
+        {
+            var (ok, error) = await Requests.RetryFailedAsync(_adminId, requestId);
+            _noticeIsError = !ok;
+            _notice = error;
+            if (ok)
+            {
+                await Reconciler.ReconcileAllAsync();
+                _notice = "Re-search started. The request will keep looking if no matching peer is online yet.";
+            }
+        }
+        catch (Exception ex)
+        {
+            _noticeIsError = true;
+            _notice = $"Re-search could not finish: {ex.Message}";
+        }
+        finally
+        {
+            _working = null;
+            await LoadAsync();
+        }
+    }
+
+    private async Task Remove(Data.Request request)
+    {
+        _working = request.Id;
+        try
+        {
+            var (ok, error) = await Requests.CancelAsync(_adminId, request.Id, asAdmin: true);
+            _noticeIsError = !ok;
+            _notice = ok ? "Request removed." : error;
+        }
+        catch (Exception ex)
+        {
+            _noticeIsError = true;
+            _notice = $"Could not remove request: {ex.Message}";
+        }
+        finally
+        {
+            _working = null;
+            await LoadAsync();
+        }
+    }
+
+    private static string Describe(Data.RequestStatus status) => status switch
+    {
+        Data.RequestStatus.Pending => "Queued",
+        Data.RequestStatus.Searching => "Searching",
+        Data.RequestStatus.Downloading => "Downloading",
+        Data.RequestStatus.Imported => "Importing",
+        Data.RequestStatus.Transcoding => "Converting to MP3",
+        Data.RequestStatus.Available => "Ready",
+        Data.RequestStatus.NotFound => "Not found",
+        _ => "Failed",
+    };
+}

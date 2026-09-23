@@ -131,6 +131,31 @@ public sealed class PlaylistPagingTests : IAsyncLifetime
         Assert.Equal(PlaylistService.DefaultPageSize, zero!.Take);
     }
 
+    [Fact]
+    public async Task Search_filters_the_whole_playlist_before_paging()
+    {
+        var user = await _db.AddUserAsync("devion");
+        await _db.AddAlbumAsync("The Cowbells", "Pasture Sounds", ["Ordinary"]);
+        await _db.AddAlbumAsync("Other Artist", "Hidden Album", ["Needle One", "Needle Two"]);
+        var playlistId = await _service.CreateAsync(user.Id, "Barn Bangers");
+
+        List<Guid> ids;
+        await using (var db = _db.CreateDbContext())
+        {
+            ids = await db.Tracks.OrderBy(t => t.Title).Select(t => t.Id).ToListAsync();
+        }
+        await _service.AddTracksAsync(playlistId!.Value, user.Id, ids);
+
+        var firstMatch = await _service.GetPageAsync(playlistId!.Value, user.Id, 0, 1, "needle");
+        var secondMatch = await _service.GetPageAsync(playlistId.Value, user.Id, 1, 1, "needle");
+
+        Assert.Equal(3, firstMatch!.PlaylistTotal);
+        Assert.Equal(2, firstMatch.Total);
+        Assert.Single(firstMatch.Rows);
+        Assert.Single(secondMatch!.Rows);
+        Assert.All(firstMatch.Rows.Concat(secondMatch.Rows), row => Assert.Contains("Needle", row.Title));
+    }
+
     // ---- what a row carries ----------------------------------------------
 
     [Fact]

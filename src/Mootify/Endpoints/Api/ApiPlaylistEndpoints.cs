@@ -48,7 +48,7 @@ public static class ApiPlaylistEndpoints
 
             // Null both for "no such playlist" and "not yours" — the client's move is the same
             // either way, and telling them apart would leak the existence of other people's lists.
-            var page = await service.GetPageAsync(playlistId, userId, s, t, ct);
+            var page = await service.GetPageAsync(playlistId, userId, s, t, ct: ct);
             if (page is null) return Results.NotFound();
 
             return Results.Ok(new ApiPlaylistDetail(
@@ -60,7 +60,7 @@ public static class ApiPlaylistEndpoints
                 // GetPageAsync already refused anything this user can't read, and read == edit.
                 CanEdit: true,
                 CanDelete: page.CanDelete,
-                TrackCount: page.Total,
+                TrackCount: page.PlaylistTotal,
                 DurationMs: ApiMap.Ms(page.TotalDuration),
                 Items: Items(page)));
         });
@@ -79,7 +79,7 @@ public static class ApiPlaylistEndpoints
             var userId = ApiPrincipal.GetRequiredUserId(http.User);
             var (s, t) = ApiSetup.Page(skip, take, options.CurrentValue.MaxPageSize, PlaylistService.DefaultPageSize);
 
-            var page = await service.GetPageAsync(playlistId, userId, s, t, ct);
+            var page = await service.GetPageAsync(playlistId, userId, s, t, ct: ct);
             return page is null ? Results.NotFound() : Results.Ok(Items(page));
         });
 

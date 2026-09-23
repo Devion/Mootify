@@ -449,6 +449,10 @@ public sealed class Request
     [MaxLength(2048)]
     public string? SoulseekFilename { get; set; }
 
+    /// <summary>Attempts to find another peer after the selected peer went offline.</summary>
+    public int OfflineRecoveryAttempts { get; set; }
+    public DateTimeOffset? NextOfflineRecoveryAt { get; set; }
+
     /// <summary>Captured at request time so completion is silent and automatic. Null = don't add anywhere.</summary>
     public Guid? TargetPlaylistId { get; set; }
     public Playlist? TargetPlaylist { get; set; }

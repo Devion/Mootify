@@ -111,6 +111,8 @@ public sealed class SchemaPatchTests : IAsyncDisposable
         await ExecAsync("""ALTER TABLE "Requests" DROP COLUMN "SoulseekBatchId" """);
         await ExecAsync("""ALTER TABLE "Requests" DROP COLUMN "SoulseekUsername" """);
         await ExecAsync("""ALTER TABLE "Requests" DROP COLUMN "SoulseekFilename" """);
+        await ExecAsync("""ALTER TABLE "Requests" DROP COLUMN "OfflineRecoveryAttempts" """);
+        await ExecAsync("""ALTER TABLE "Requests" DROP COLUMN "NextOfflineRecoveryAt" """);
 
         await using var db = Db();
         await ApplyAsync(db);
@@ -139,6 +141,8 @@ public sealed class SchemaPatchTests : IAsyncDisposable
         Assert.Equal(batchId, saved.SoulseekBatchId);
         Assert.Equal("peer", saved.SoulseekUsername);
         Assert.Equal("music\\Numb.mp3", saved.SoulseekFilename);
+        Assert.Equal(0, saved.OfflineRecoveryAttempts);
+        Assert.Null(saved.NextOfflineRecoveryAt);
     }
 
     [Fact]
@@ -148,6 +152,8 @@ public sealed class SchemaPatchTests : IAsyncDisposable
         await ExecAsync("""ALTER TABLE "Requests" DROP COLUMN "SoulseekBatchId" """);
         await ExecAsync("""ALTER TABLE "Requests" DROP COLUMN "SoulseekUsername" """);
         await ExecAsync("""ALTER TABLE "Requests" DROP COLUMN "SoulseekFilename" """);
+        await ExecAsync("""ALTER TABLE "Requests" DROP COLUMN "OfflineRecoveryAttempts" """);
+        await ExecAsync("""ALTER TABLE "Requests" DROP COLUMN "NextOfflineRecoveryAt" """);
         await ExecAsync("""
             INSERT INTO "Users" ("Id", "DisplayName", "NormalizedName", "PasswordHash", "IsAdmin",
                                  "IsBanned", "MustChangePassword", "CreatedAt", "LastSeenAt")
@@ -168,6 +174,8 @@ public sealed class SchemaPatchTests : IAsyncDisposable
         Assert.Null(request.SoulseekBatchId);
         Assert.Null(request.SoulseekUsername);
         Assert.Null(request.SoulseekFilename);
+        Assert.Equal(0, request.OfflineRecoveryAttempts);
+        Assert.Null(request.NextOfflineRecoveryAt);
     }
 
     [Fact]
