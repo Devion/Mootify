@@ -26,6 +26,17 @@ public static class MediaEndpoints
             return Serve(track.Path, ContentTypeFor(track.Path), track.FileModifiedAt, track.FileSize);
         });
 
+        media.MapGet("/{trackId:guid}/normalized", async (
+            Guid trackId, MootifyDbContext db, TranscodeCache cache, CancellationToken ct) =>
+        {
+            var track = await LoadAsync(db, trackId, ct);
+            if (track is null) return Results.NotFound();
+            var path = await cache.GetOrCreateAsync(trackId, track.Path, ct, normalize: true);
+            if (path is null || !File.Exists(path)) return Results.NotFound();
+            var info = new FileInfo(path);
+            return Serve(path, "audio/mpeg", info.LastWriteTimeUtc, info.Length);
+        });
+
         // The fallback. Browsers that can't decode the original ask for this instead, and
         // player.js decides which to use — see its canPlayType check. Converted files are
         // cached, so the wait is once per track rather than once per play.

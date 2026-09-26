@@ -35,6 +35,8 @@
                 <p class="login__error" role="alert">@Error</p>
             }
 
+            @if (Pending) { <p class="success" role="status">Account created. An admin must approve it before you can sign in.</p> }
+
             <label for="username">Username</label>
             <input id="username" name="username" autocomplete="username" required maxlength="64"
                    placeholder="Your username" autofocus />
@@ -61,6 +63,7 @@
 
 @code {
     [SupplyParameterFromQuery] public string? ReturnUrl { get; set; }
+    [SupplyParameterFromQuery] public bool Pending { get; set; }
     [SupplyParameterFromQuery] public string? Error { get; set; }
 
     private string? _token;

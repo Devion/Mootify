@@ -83,10 +83,8 @@ public sealed class PlaylistServiceTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Adding_by_hand_twice_is_allowed()
+    public async Task Adding_by_hand_twice_skips_duplicates()
     {
-        // Deliberate asymmetry with the test above: people do want the same song twice in
-        // a playlist. Only the automatic path deduplicates.
         var user = await _db.AddUserAsync("devion");
         var tracks = await _db.AddTracksAsync(1);
         var playlist = await NewPlaylistAsync(user.Id, "On Repeat");
@@ -95,7 +93,7 @@ public sealed class PlaylistServiceTests : IAsyncLifetime
         await _service.AddTracksAsync(playlist, user.Id, tracks);
 
         await using var db = _db.CreateDbContext();
-        Assert.Equal(2, await db.PlaylistItems.CountAsync(i => i.PlaylistId == playlist));
+        Assert.Equal(1, await db.PlaylistItems.CountAsync(i => i.PlaylistId == playlist));
     }
 
     [Fact]
@@ -271,5 +269,24 @@ public sealed class PlaylistServiceTests : IAsyncLifetime
 
         await using var db = _db.CreateDbContext();
         Assert.Equal(0, await db.Playlists.CountAsync());
+    }
+
+    [Fact]
+    public async Task Duplicate_removal_keeps_first_items_in_order_and_checks_access()
+    {
+        var owner = await _db.AddUserAsync("owner");
+        var other = await _db.AddUserAsync("other");
+        var tracks = await _db.AddTracksAsync(2);
+        var playlist = await NewPlaylistAsync(owner.Id, "Legacy");
+        Assert.Equal(2, await _service.AddTracksAsync(playlist, owner.Id, [tracks[0], tracks[0], tracks[1]]));
+        await using var db = _db.CreateDbContext();
+        var original = await db.PlaylistItems.Where(i => i.PlaylistId == playlist).OrderBy(i => i.SortKey).Select(i => i.Id).ToListAsync();
+        db.PlaylistItems.Add(new PlaylistItem { Id = Guid.NewGuid(), PlaylistId = playlist, TrackId = tracks[0], SortKey = 99999, AddedByUserId = owner.Id, AddedAt = DateTimeOffset.UtcNow });
+        await db.SaveChangesAsync();
+        Assert.Null(await _service.RemoveDuplicatesAsync(playlist, other.Id));
+        Assert.Equal(1, await _service.RemoveDuplicatesAsync(playlist, owner.Id));
+        Assert.Equal(0, await _service.RemoveDuplicatesAsync(playlist, owner.Id));
+        var remaining = await db.PlaylistItems.Where(i => i.PlaylistId == playlist).OrderBy(i => i.SortKey).Select(i => i.Id).ToListAsync();
+        Assert.Equal(original, remaining);
     }
 }

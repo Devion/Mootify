@@ -206,7 +206,7 @@ public sealed class RequestService(
     }
 
     private static Task<bool> IsAdminAsync(MootifyDbContext db, Guid userId, CancellationToken ct) =>
-        db.Users.AnyAsync(u => u.Id == userId && u.IsAdmin && !u.IsBanned, ct);
+        db.Users.AnyAsync(u => u.Id == userId && u.IsAdmin && !u.IsBanned && !u.ApprovalPending, ct);
 
     private async Task<RequestPage> PageAsync(
         System.Linq.Expressions.Expression<Func<Request, bool>> scope,

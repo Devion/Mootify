@@ -99,6 +99,12 @@ public static class SchemaPatch
     /// </summary>
     private static readonly (string Table, string Column, string Ddl)[] AddedColumns =
     [
+        ("Ideas", "AdminReply",
+            """ALTER TABLE "Ideas" ADD COLUMN "AdminReply" TEXT NULL"""),
+        ("Users", "ApprovalPending",
+            """ALTER TABLE "Users" ADD COLUMN "ApprovalPending" INTEGER NOT NULL DEFAULT 0"""),
+        ("Preferences", "NormalizeVolume",
+            """ALTER TABLE "Preferences" ADD COLUMN "NormalizeVolume" INTEGER NOT NULL DEFAULT 0"""),
         ("Users", "MustChangePassword",
             """ALTER TABLE "Users" ADD COLUMN "MustChangePassword" INTEGER NOT NULL DEFAULT 0"""),
 

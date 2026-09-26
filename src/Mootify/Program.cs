@@ -1,4 +1,4 @@
-﻿using System.Security.Claims;
+using System.Security.Claims;
 using System.Text.Json.Serialization;
 using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Authentication;
@@ -169,15 +169,20 @@ builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationSc
             var user = await db.Users
                 .AsNoTracking()
                 .Where(u => u.Id == userId)
-                .Select(u => new { u.IsBanned, u.IsAdmin, u.MustChangePassword })
+                .Select(u => new { u.IsBanned, u.ApprovalPending, u.IsAdmin, u.MustChangePassword, u.LastSeenAt })
                 .FirstOrDefaultAsync(context.HttpContext.RequestAborted);
 
-            if (user is null || user.IsBanned)
+            if (user is null || user.IsBanned || user.ApprovalPending)
             {
                 context.RejectPrincipal();
                 await context.HttpContext.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme);
                 return;
             }
+
+            var seenAt = DateTimeOffset.UtcNow;
+            if (seenAt - user.LastSeenAt >= TimeSpan.FromMinutes(5))
+                await db.Users.Where(u => u.Id == userId && u.LastSeenAt < seenAt.AddMinutes(-5))
+                    .ExecuteUpdateAsync(s => s.SetProperty(u => u.LastSeenAt, seenAt), context.HttpContext.RequestAborted);
 
             // Admin granted or revoked since sign-in — fix the claim rather than making
             // them sign out and back in.

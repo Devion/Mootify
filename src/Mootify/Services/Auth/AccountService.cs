@@ -62,6 +62,8 @@ public sealed class AccountService(
                     : $"That account is banned: {user.BanReason}");
         }
 
+        if (user.ApprovalPending) return AuthResult.Fail("Your account is waiting for admin approval.");
+
         // The hasher tells us when its parameters have moved on. Take the free upgrade.
         if (verification == PasswordVerificationResult.SuccessRehashNeeded)
         {
@@ -159,6 +161,7 @@ public sealed class AccountService(
             DisplayName = name,
             NormalizedName = normalized,
             IsAdmin = isAdmin,
+            ApprovalPending = !isAdmin,
             CreatedAt = DateTimeOffset.UtcNow,
             LastSeenAt = DateTimeOffset.UtcNow,
         };
@@ -170,7 +173,7 @@ public sealed class AccountService(
         await db.SaveChangesAsync(ct);
 
         log.LogInformation("Created {Kind} account {Username}", isAdmin ? "admin" : "user", name);
-        return AuthResult.Ok(BuildPrincipal(user));
+        return isAdmin ? AuthResult.Ok(BuildPrincipal(user)) : new AuthResult(true, null, null);
     }
 
     // ---- passwords -------------------------------------------------------
@@ -263,6 +266,15 @@ public sealed class AccountService(
         return (true, null);
     }
 
+    public async Task TouchLastSeenAsync(Guid userId)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync();
+        var now = DateTimeOffset.UtcNow;
+        var cutoff = now.AddMinutes(-5);
+        await db.Users.Where(u => u.Id == userId && !u.IsBanned && !u.ApprovalPending && u.LastSeenAt < cutoff)
+            .ExecuteUpdateAsync(s => s.SetProperty(u => u.LastSeenAt, now));
+    }
+
     // ---- helpers ---------------------------------------------------------
 
     public static string Normalize(string? name) => (name ?? "").Trim().ToLowerInvariant();
@@ -293,7 +305,7 @@ public sealed class AccountService(
     }
 
     private static Task<bool> IsAdminAsync(MootifyDbContext db, Guid userId, CancellationToken ct) =>
-        db.Users.AnyAsync(u => u.Id == userId && u.IsAdmin && !u.IsBanned, ct);
+        db.Users.AnyAsync(u => u.Id == userId && u.IsAdmin && !u.IsBanned && !u.ApprovalPending, ct);
 }
 
 public static class MootifyAuth

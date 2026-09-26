@@ -323,4 +323,23 @@ public sealed class IdeaServiceTests : IAsyncLifetime
 
         Assert.Empty(await _service.GetAllAsync());
     }
+
+    [Fact]
+    public async Task Filing_with_a_reply_saves_and_notifies_only_the_author_once()
+    {
+        var author = await _db.AddUserAsync("author");
+        var admin = await AdminAsync("admin");
+        var id = await PostAsync(author.Id, "More cowbell");
+        Assert.False(await _service.SetArchivedAsync(id, true, author.Id, reply: "No permission"));
+        Assert.False(await _service.SetArchivedAsync(id, true, admin.Id, reply: new string('x', 281)));
+        Assert.True(await _service.SetArchivedAsync(id, true, admin.Id, reply: "Done, enjoy!"));
+        Assert.True(await _service.SetArchivedAsync(id, true, admin.Id, reply: "Done, enjoy!"));
+        var idea = Assert.Single(await _service.GetMineAsync(author.Id));
+        Assert.Equal("Done, enjoy!", idea.AdminReply);
+        Assert.True(idea.IsArchived);
+        await using var db = _db.CreateDbContext();
+        var notification = Assert.Single(await db.Notifications.Where(n => n.UserId == author.Id).ToListAsync());
+        Assert.Equal("Done, enjoy!", notification.Body);
+        Assert.Equal("/ideas", notification.Url);
+    }
 }

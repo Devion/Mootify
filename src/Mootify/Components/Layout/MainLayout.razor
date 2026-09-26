@@ -1,6 +1,9 @@
 @inherits LayoutComponentBase
 @implements IDisposable
 @inject PlayerService Player
+@inject AccountService Accounts
+@inject CurrentUser CurrentUser
+@inject NavigationManager Navigation
 @inject IOptionsMonitor<NotificationOptions> NotificationOptions
 @using Microsoft.Extensions.Options
 
@@ -29,17 +32,31 @@
     protected override void OnInitialized()
     {
         Player.StateChanged += OnPlayerStateChanged;
+        Navigation.LocationChanged += OnLocationChanged;
     }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
         if (firstRender)
         {
+            await TouchLastSeen();
             await Player.EnsureInitializedAsync();
         }
     }
 
     private async Task OnPlayerStateChanged() => await InvokeAsync(StateHasChanged);
 
-    public void Dispose() => Player.StateChanged -= OnPlayerStateChanged;
+    private void OnLocationChanged(object? sender, Microsoft.AspNetCore.Components.Routing.LocationChangedEventArgs e)
+        => _ = InvokeAsync(TouchLastSeen);
+
+    private async Task TouchLastSeen()
+    {
+        if (await CurrentUser.GetIdAsync() is { } userId) await Accounts.TouchLastSeenAsync(userId);
+    }
+
+    public void Dispose()
+    {
+        Player.StateChanged -= OnPlayerStateChanged;
+        Navigation.LocationChanged -= OnLocationChanged;
+    }
 }

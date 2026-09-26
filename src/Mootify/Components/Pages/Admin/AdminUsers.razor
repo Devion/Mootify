@@ -25,6 +25,7 @@
             <tr class="@(u.IsBanned ? "is-banned" : "")">
                 <td>
                     <strong>@u.DisplayName</strong>
+                    @if (u.ApprovalPending) { <span class="badge">Awaiting approval</span> }
                     @if (u.IsAdmin) { <span class="badge">admin</span> }
                     @if (u.Id == _userId) { <span class="badge badge--quiet">you</span> }
                     @if (u.MustChangePassword) { <span class="badge badge--quiet">one-time password</span> }
@@ -40,12 +41,13 @@
                 <td>@u.PlaylistCount</td>
                 <td>@u.TeamCount</td>
                 <td>@u.RequestCount</td>
-                <td class="muted">@u.LastSeenAt.ToLocalTime().ToString("d MMM HH:mm")</td>
+                <td class="muted">@(u.ApprovalPending ? "Awaiting approval" : u.LastSeenAt.ToLocalTime().ToString("d MMM HH:mm"))</td>
                 <td class="admintable__actions">
                     @* You can't act on yourself here — a self-ban or self-demote is only ever
                        an accident, and it could lock the panel for everybody. *@
                     @if (u.Id != _userId)
                     {
+                        @if (u.ApprovalPending) { <button class="button" @onclick="() => Approve(u)">Approve</button> }
                         @if (u.IsBanned)
                         {
                             <button class="linkbutton" @onclick="() => SetBanned(u, false)">Unban</button>
@@ -156,6 +158,14 @@
     }
 
     private void Clear() => (_error, _status) = (null, null);
+
+    private async Task Approve(AdminUserRow u)
+    {
+        var (ok, error) = await Admin.ApproveAsync(_userId, u.Id);
+        _error = error;
+        _status = ok ? $"{u.DisplayName} can now sign in." : null;
+        await LoadAsync();
+    }
 
     private async Task SetBanned(AdminUserRow u, bool banned)
     {

@@ -11,7 +11,8 @@ public sealed record IdeaRow(
     string AuthorName,
     string Message,
     DateTimeOffset CreatedAt,
-    DateTimeOffset? ArchivedAt)
+    DateTimeOffset? ArchivedAt,
+    string? AdminReply = null)
 {
     public bool IsArchived => ArchivedAt is not null;
 }
@@ -115,7 +116,7 @@ public sealed class IdeaService(
 
         var admins = await db.Users
             .AsNoTracking()
-            .Where(u => u.IsAdmin && !u.IsBanned && u.Id != authorId)
+            .Where(u => u.IsAdmin && !u.IsBanned && !u.ApprovalPending && u.Id != authorId)
             .Select(u => u.Id)
             .ToListAsync(ct);
 
@@ -152,7 +153,7 @@ public sealed class IdeaService(
             .OrderByDescending(i => i.CreatedAt)
             .Take(PageSize)
             .Select(i => new IdeaRow(
-                i.Id, i.UserId, i.User!.DisplayName, i.Message, i.CreatedAt, i.ArchivedAt))
+                i.Id, i.UserId, i.User!.DisplayName, i.Message, i.CreatedAt, i.ArchivedAt, i.AdminReply))
             .ToListAsync(ct);
     }
 
@@ -171,7 +172,7 @@ public sealed class IdeaService(
             .OrderByDescending(i => i.CreatedAt)
             .Take(PageSize)
             .Select(i => new IdeaRow(
-                i.Id, i.UserId, i.User!.DisplayName, i.Message, i.CreatedAt, i.ArchivedAt))
+                i.Id, i.UserId, i.User!.DisplayName, i.Message, i.CreatedAt, i.ArchivedAt, i.AdminReply))
             .ToListAsync(ct);
     }
 
@@ -191,7 +192,7 @@ public sealed class IdeaService(
     /// this decides what happens, which is the same split every other admin operation here makes.
     /// </summary>
     public async Task<bool> SetArchivedAsync(
-        Guid ideaId, bool archived, Guid adminUserId, CancellationToken ct = default)
+        Guid ideaId, bool archived, Guid adminUserId, CancellationToken ct = default, string? reply = null)
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct);
 
@@ -201,11 +202,29 @@ public sealed class IdeaService(
             return false;
         }
 
+        await using var transaction = await db.Database.BeginTransactionAsync(ct);
         var idea = await db.Ideas.FirstOrDefaultAsync(i => i.Id == ideaId, ct);
         if (idea is null) return false;
 
+        reply = reply?.Trim();
+        if (!string.IsNullOrEmpty(reply) && (reply.Length > 280 || reply.Any(char.IsControl))) return false;
+        if (archived && idea.ArchivedAt is not null) return true;
         idea.ArchivedAt = archived ? DateTimeOffset.UtcNow : null;
+        Notification? notification = null;
+        if (archived && !string.IsNullOrEmpty(reply))
+        {
+            idea.AdminReply = reply;
+            notification = new Notification
+            {
+                Id = Guid.NewGuid(), UserId = idea.UserId, Type = NotificationType.Info,
+                Title = "An admin replied to your idea", Body = reply, Url = "/ideas",
+                CreatedAt = DateTimeOffset.UtcNow,
+            };
+            db.Notifications.Add(notification);
+        }
         await db.SaveChangesAsync(ct);
+        await transaction.CommitAsync(ct);
+        if (notification is not null) notifications.Deliver(notification);
         return true;
     }
 
@@ -217,6 +236,7 @@ public sealed class IdeaService(
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct);
 
+        await using var transaction = await db.Database.BeginTransactionAsync(ct);
         var idea = await db.Ideas.FirstOrDefaultAsync(i => i.Id == ideaId, ct);
         if (idea is null) return false;
 
@@ -228,6 +248,7 @@ public sealed class IdeaService(
 
         db.Ideas.Remove(idea);
         await db.SaveChangesAsync(ct);
+        await transaction.CommitAsync(ct);
         return true;
     }
 
@@ -237,5 +258,5 @@ public sealed class IdeaService(
     /// what to draw and the service decides what to do — so the service asks.
     /// </summary>
     private static Task<bool> IsAdminAsync(MootifyDbContext db, Guid userId, CancellationToken ct) =>
-        db.Users.AnyAsync(u => u.Id == userId && u.IsAdmin && !u.IsBanned, ct);
+        db.Users.AnyAsync(u => u.Id == userId && u.IsAdmin && !u.IsBanned && !u.ApprovalPending, ct);
 }

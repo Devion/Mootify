@@ -370,4 +370,20 @@ public sealed class SchemaPatchTests : IAsyncDisposable
 
         Assert.Empty(await db.Users.ToListAsync());
     }
+
+    [Fact]
+    public async Task Approval_normalization_and_idea_replies_upgrade_existing_database()
+    {
+        await using var db = Db();
+        var id = await AddUserAsync(db, "existing");
+        await ExecAsync("ALTER TABLE Users DROP COLUMN ApprovalPending");
+        await ExecAsync("ALTER TABLE Preferences DROP COLUMN NormalizeVolume");
+        await ExecAsync("ALTER TABLE Ideas DROP COLUMN AdminReply");
+        await ApplyAsync(db);
+        await ApplyAsync(db);
+        Assert.False(await db.Users.Where(u => u.Id == id).Select(u => u.ApprovalPending).SingleAsync());
+        db.Preferences.Add(new UserPreference { UserId = id, NormalizeVolume = true });
+        db.Ideas.Add(new Idea { Id = Guid.NewGuid(), UserId = id, Message = "Idea", AdminReply = "Done" });
+        await db.SaveChangesAsync();
+    }
 }

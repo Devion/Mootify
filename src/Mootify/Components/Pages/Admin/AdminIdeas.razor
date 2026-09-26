@@ -11,7 +11,7 @@
 
 <p class="pagehead__meta">
     What people have asked for. Filing one doesn't delete it &mdash; the person who sent it can
-    still see that it was read, which is the only feedback this box gives them.
+    still see that it was read. You can include a short reply to notify the author.
 </p>
 
 <div class="adminnav adminnav--sub">
@@ -40,6 +40,16 @@ else
                    database (IdeaText) and Razor escapes it on the way out; neither of those is
                    allowed to be the only one that holds. Line breaks come from CSS. *@
                 <p class="idea__message">@idea.Message</p>
+                @if (idea.AdminReply is not null) { <p><strong>Admin reply:</strong> @idea.AdminReply</p> }
+                @if (_filing == idea.Id)
+                {
+                    <div class="inviterow">
+                        <input aria-label="Optional reply to author" placeholder="Optional reply to the author (280 characters)" maxlength="280" @bind="_reply" />
+                        <button class="button" disabled="@_working" @onclick="() => File(idea.Id)">File@(string.IsNullOrWhiteSpace(_reply) ? "" : " and send reply")</button>
+                        <button class="linkbutton" @onclick="() => _filing = null">Cancel</button>
+                    </div>
+                    @if (_error is not null) { <p class="error">@_error</p> }
+                }
                 <p class="idea__meta">
                     <strong>@idea.AuthorName</strong>
                     <time datetime="@idea.CreatedAt.ToString("o")">
@@ -54,7 +64,7 @@ else
                         }
                         else
                         {
-                            <button class="linkbutton" @onclick="() => SetArchived(idea.Id, true)">
+                            <button class="linkbutton" @onclick="() => { _filing = idea.Id; _reply = string.Empty; _error = null; }">
                                 File it
                             </button>
                         }
@@ -69,6 +79,22 @@ else
 }
 
 @code {
+    private Guid? _filing;
+    private string _reply = "";
+    private string? _error;
+    private bool _working;
+    private async Task File(Guid id)
+    {
+        if (_working) return;
+        _working = true;
+        try
+        {
+            if (await Ideas.SetArchivedAsync(id, true, _userId, reply: _reply))
+            { _filing = null; await ReloadAsync(); }
+            else _error = "Could not file this idea. Use a single line of up to 280 characters and check your admin access.";
+        }
+        finally { _working = false; }
+    }
     private List<IdeaRow> _rows = [];
     private bool _archived;
     private int _open;

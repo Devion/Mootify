@@ -44,18 +44,18 @@ public sealed class TranscodeCache(
     /// Path to a playable MP3 of this track, converting first if needed. Null when the source
     /// is gone or FFmpeg can't manage it.
     /// </summary>
-    public async Task<string?> GetOrCreateAsync(Guid trackId, string sourcePath, CancellationToken ct = default)
+    public async Task<string?> GetOrCreateAsync(Guid trackId, string sourcePath, CancellationToken ct = default, bool normalize = false)
     {
         if (!File.Exists(sourcePath)) return null;
 
         // Already an MP3 — nothing to do, serve the original.
-        if (Path.GetExtension(sourcePath).Equals(".mp3", StringComparison.OrdinalIgnoreCase))
+        if (!normalize && Path.GetExtension(sourcePath).Equals(".mp3", StringComparison.OrdinalIgnoreCase))
         {
             return sourcePath;
         }
 
         Directory.CreateDirectory(CacheDirectory);
-        var cached = Path.Combine(CacheDirectory, $"{trackId:n}.mp3");
+        var cached = Path.Combine(CacheDirectory, $"{trackId:n}{(normalize ? "-normalized-v1" : "")}.mp3");
 
         // Re-convert if the source has changed since we cached it.
         if (File.Exists(cached) && File.GetLastWriteTimeUtc(cached) >= File.GetLastWriteTimeUtc(sourcePath))
@@ -74,7 +74,7 @@ public sealed class TranscodeCache(
 
             log.LogInformation("Transcoding {Source} for a client that can't play it", Path.GetFileName(sourcePath));
 
-            return await transcoder.TranscodeToAsync(sourcePath, cached, ct) ? cached : null;
+            return await transcoder.TranscodeToAsync(sourcePath, cached, ct, normalize) ? cached : null;
         }
         finally
         {

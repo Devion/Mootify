@@ -101,4 +101,13 @@ public sealed class TranscoderTests
         Assert.Null(version);
         Assert.False(transcoder.IsAvailable);
     }
+
+    [Fact]
+    public void Normalized_playback_uses_loudness_filter_and_explicit_sample_rate()
+    {
+        var normal = Transcoder.BuildArguments("in.mp3", "out.partial", "320k");
+        var normalized = Transcoder.BuildArguments("in.mp3", "out.partial", "320k", normalize: true);
+        Assert.DoesNotContain("loudnorm", normal);
+        Assert.Contains("loudnorm=I=-16:TP=-1.5:LRA=11 -ar 48000", normalized);
+    }
 }

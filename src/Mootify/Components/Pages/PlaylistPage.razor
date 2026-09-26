@@ -52,6 +52,7 @@ else
             {
                 <button class="linkbutton" @onclick="() => _sharing = !_sharing">Share with a team</button>
             }
+            <button class="linkbutton" disabled="@_deduplicating" @onclick="RemoveDuplicates">Remove duplicates</button>
             <button class="linkbutton linkbutton--danger" @onclick="Delete">Delete</button>
         </div>
     </div>
@@ -117,6 +118,8 @@ else
     {
         <p class="error">@_deleteError</p>
     }
+
+    @if (_deduplicateStatus is not null) { <p role="status">@_deduplicateStatus</p> }
 
     <input class="filterbox" type="search" placeholder="Search this playlist…"
            @bind="_query" @bind:event="oninput" @bind:after="OnQueryChanged"
@@ -344,6 +347,23 @@ else
         if (ids is not { Count: > 0 }) return;
 
         await Player.PlayQueueAsync(ids, 0, PlaylistId);
+    }
+
+    private bool _deduplicating;
+    private string? _deduplicateStatus;
+    private async Task RemoveDuplicates()
+    {
+        if (_deduplicating) return;
+        _deduplicating = true;
+        try
+        {
+            var count = await Playlists.RemoveDuplicatesAsync(PlaylistId, _userId);
+            _deduplicateStatus = count is null ? "You cannot edit this playlist." : count == 0 ? "No duplicates found." : $"Removed {count} duplicate(s).";
+            _skip = 0;
+            await LoadAsync();
+            PlaylistEvents.NotifyChanged();
+        }
+        finally { _deduplicating = false; }
     }
 
     private async Task Remove(Guid itemId)

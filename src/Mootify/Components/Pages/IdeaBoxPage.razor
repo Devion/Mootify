@@ -60,6 +60,7 @@
                        of a user's message is exactly the step this feature does not take —
                        see IdeaText for the other half of that argument. *@
                     <p class="idea__message">@idea.Message</p>
+                    @if (idea.AdminReply is not null) { <p><strong>Admin reply:</strong> @idea.AdminReply</p> }
                     <p class="idea__meta">
                         <time datetime="@idea.CreatedAt.ToString("o")">
                             @idea.CreatedAt.ToLocalTime().ToString("d MMM HH:mm")

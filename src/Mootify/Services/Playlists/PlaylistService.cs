@@ -453,8 +453,8 @@ public sealed class PlaylistService(
     }
 
     /// <summary>
-    /// Appends tracks. Idempotent when <paramref name="requestId"/> is set: the download poller
-    /// and the reconciliation poller will both fire for the same request eventually.
+    /// Appends only tracks not already present, preserving the supplied order.
+    /// A transaction keeps simultaneous additions from inserting the same track twice.
     /// </summary>
     public async Task<int> AddTracksAsync(
         Guid playlistId,
@@ -466,6 +466,8 @@ public sealed class PlaylistService(
         if (trackIds.Count == 0) return 0;
 
         await using var db = await dbFactory.CreateDbContextAsync(ct);
+
+        await using var transaction = await db.Database.BeginTransactionAsync(ct);
 
         var playlist = await db.Playlists
             .Include(p => p.Items)
@@ -482,15 +484,11 @@ public sealed class PlaylistService(
 
         var nextKey = playlist.Items.Count == 0 ? SortKeyStep : playlist.Items.Max(i => i.SortKey) + SortKeyStep;
         var added = 0;
+        var existing = playlist.Items.Select(i => i.TrackId).ToHashSet();
 
         foreach (var trackId in trackIds)
         {
-            // Re-adding by hand is allowed (people do want a track twice); re-adding from the
-            // same request is not.
-            if (requestId is not null && playlist.Items.Any(i => i.TrackId == trackId && i.RequestId == requestId))
-            {
-                continue;
-            }
+            if (!existing.Add(trackId)) continue;
 
             db.PlaylistItems.Add(new PlaylistItem
             {
@@ -507,9 +505,32 @@ public sealed class PlaylistService(
             added++;
         }
 
+        if (added == 0) return 0;
         playlist.UpdatedAt = DateTimeOffset.UtcNow;
         await db.SaveChangesAsync(ct);
+        await transaction.CommitAsync(ct);
         return added;
+    }
+
+    public async Task<int?> RemoveDuplicatesAsync(Guid playlistId, Guid userId, CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
+        await using var transaction = await db.Database.BeginTransactionAsync(ct);
+        var playlist = await db.Playlists.Include(p => p.Items).FirstOrDefaultAsync(p => p.Id == playlistId, ct);
+        if (playlist is null) return null;
+        var teams = await TeamService.GetTeamIdsAsync(db, userId, ct);
+        if (!PlaylistAccess.CanEdit(playlist, userId, teams)) return null;
+        var seen = new HashSet<Guid>();
+        var duplicates = playlist.Items.OrderBy(i => i.SortKey).ThenBy(i => i.Id)
+            .Where(i => !seen.Add(i.TrackId)).ToList();
+        if (duplicates.Count > 0)
+        {
+            db.PlaylistItems.RemoveRange(duplicates);
+            playlist.UpdatedAt = DateTimeOffset.UtcNow;
+            await db.SaveChangesAsync(ct);
+        }
+        await transaction.CommitAsync(ct);
+        return duplicates.Count;
     }
 
     public async Task<bool> RemoveItemAsync(Guid itemId, Guid userId, CancellationToken ct = default)

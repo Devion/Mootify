@@ -16,11 +16,31 @@ dotnet run --project src/Mootify
 
 On an empty database everything redirects to `/setup`, where you create the admin account
 (`mooadmin`) and pick its password. After that anyone can sign themselves up at `/register`,
-until an admin closes registration from `/admin`.
+until an admin closes registration from `/admin`. New accounts wait for approval in **Admin → Users**
+before signing in on the website or Android. Existing accounts and the first setup admin keep access.
 
 Admins get `/admin`: ban and unban, promote, reset passwords, delete accounts, rename or delete
 any team or playlist, add somebody to a team without an invite, and prune playlist entries whose
 files have vanished.
+
+### Playback and playlists
+
+- Open **Queue** in the play bar for the full right-hand panel, including the current track.
+  Drag songs or use the up/down buttons to change playback order, including while shuffled.
+- Right-click a song in the library or a playlist, or open its **⋯** menu, to **Play next** or
+  **Add to queue**. These actions keep the current song playing.
+- **Normalize volume** in the queue panel is saved per account for website playback and takes
+  effect from the next song. It uses FFmpeg loudness normalization (-16 LUFS, -1.5 dB true-peak
+  target) in separate cached MP3 copies; the originals stay intact. Preparing a song's first
+  normalized copy can delay playback. Normalized copies share the existing transcode cache controls.
+- Adding to playlists skips library tracks already present, including repeated tracks in a batch.
+  **Remove duplicates** on a playlist removes repeated occurrences of the same library track,
+  retaining the first occurrence and the remaining order. Existing duplicates stay until removed.
+- Soulseek search results show duration when the peer supplies it, or **Length unknown**.
+
+When filing an Ideabox item, admins can optionally send a reply of up to 280 characters. The author
+sees it on the idea and receives a notification in the bell. **Last seen** updates on authenticated
+visits, navigation, and API activity, with a five-minute write throttle for persistent sessions.
 
 ### Configuration
 

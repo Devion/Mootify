@@ -122,7 +122,7 @@ public sealed class Transcoder(
     /// Converts to an explicit destination and leaves the source alone. Used by the on-demand
     /// cache, where deleting the original would be precisely the wrong move.
     /// </summary>
-    public async Task<bool> TranscodeToAsync(string sourcePath, string target, CancellationToken ct = default)
+    public async Task<bool> TranscodeToAsync(string sourcePath, string target, CancellationToken ct = default, bool normalize = false)
     {
         var opts = options.CurrentValue;
 
@@ -133,7 +133,7 @@ public sealed class Transcoder(
             // would be scanned as a real track.
             var temp = target + ".partial";
 
-            var args = BuildArguments(sourcePath, temp, opts.Bitrate);
+            var args = BuildArguments(sourcePath, temp, opts.Bitrate, normalize);
 
             var (exit, _, stderr) = await RunAsync(opts.FfmpegPath, args, ct);
 
@@ -173,9 +173,10 @@ public sealed class Transcoder(
     /// refuses. <c>-map_metadata 0</c> keeps artist and title, without which the scanner
     /// falls back to filenames.
     /// </summary>
-    internal static string BuildArguments(string sourcePath, string tempTarget, string bitrate) =>
+    internal static string BuildArguments(string sourcePath, string tempTarget, string bitrate, bool normalize = false) =>
         $"-hide_banner -loglevel error -y -i \"{sourcePath}\" " +
         $"-map 0:a -map_metadata 0 -id3v2_version 3 " +
+        (normalize ? "-af loudnorm=I=-16:TP=-1.5:LRA=11 -ar 48000 " : "") +
         $"-codec:a libmp3lame -b:a {bitrate} -f mp3 \"{tempTarget}\"";
 
     private static async Task<(int ExitCode, string StdOut, string StdErr)> RunAsync(
@@ -199,7 +200,18 @@ public sealed class Transcoder(
 
         var stdout = process.StandardOutput.ReadToEndAsync(ct);
         var stderr = process.StandardError.ReadToEndAsync(ct);
-        await process.WaitForExitAsync(ct);
+        try
+        {
+            await process.WaitForExitAsync(ct);
+        }
+        catch (OperationCanceledException)
+        {
+            // A skipped song must not leave FFmpeg writing a partial cache file after the lock is released.
+            if (!process.HasExited) process.Kill(entireProcessTree: true);
+            await process.WaitForExitAsync(CancellationToken.None);
+            try { await Task.WhenAll(stdout, stderr); } catch (OperationCanceledException) { }
+            throw;
+        }
 
         return (process.ExitCode, await stdout, await stderr);
     }

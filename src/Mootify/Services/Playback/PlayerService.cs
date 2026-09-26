@@ -86,6 +86,8 @@ public sealed class PlayerService(
     public bool IsPlaying { get; private set; }
     public double Position { get; private set; }
     public double Duration { get; private set; }
+    public bool NormalizeVolume { get; private set; }
+    public bool CurrentIsNormalized { get; private set; }
     public double Volume { get; private set; } = 0.8;
     public bool ShuffleEnabled { get; private set; }
     public RepeatMode Repeat { get; private set; } = RepeatMode.Off;
@@ -99,7 +101,7 @@ public sealed class PlayerService(
     public bool UsingFallback { get; private set; }
 
     /// <summary>What's actually playing right now, for the play bar badge.</summary>
-    public string? PlayingFormat => Current is null ? null : UsingFallback ? "MP3" : Current.Format;
+    public string? PlayingFormat => Current is null ? null : CurrentIsNormalized || UsingFallback ? "MP3" : Current.Format;
 
     public bool HasNext => _cursor >= 0 && (_cursor + 1 < _order.Count || Repeat == RepeatMode.All);
     public bool HasPrevious => _cursor > 0 || Position > 3;
@@ -131,6 +133,8 @@ public sealed class PlayerService(
 
         _module = await js.InvokeAsync<IJSObjectReference>("import", "./js/player.js");
         _selfRef = DotNetObjectReference.Create(this);
+        if (await currentUser.GetIdAsync() is { } userId)
+            NormalizeVolume = await preferences.GetNormalizeVolumeAsync(userId);
         await _module.InvokeVoidAsync("init", _selfRef);
         await _module.InvokeVoidAsync("setVolume", Volume);
     }
@@ -292,6 +296,32 @@ public sealed class PlayerService(
         return [.. ids.Select(id => byId.GetValueOrDefault(id)).OfType<TrackInfo>()];
     }
 
+    public async Task EnqueueAsync(Guid trackId, bool next = false)
+    {
+        var tracks = await LoadTracksAsync([trackId]);
+        if (tracks.Count == 0) return;
+        var index = _queue.Count;
+        _queue.Add(tracks[0]);
+        if (next) _order.Insert(Math.Max(0, _cursor + 1), index);
+        else _order.Add(index);
+        await NotifyAsync();
+    }
+
+    public async Task MoveQueueItemAsync(int from, int to)
+    {
+        if (from < 0 || to < 0 || from >= _order.Count || to >= _order.Count || from == to) return;
+        var current = _cursor >= 0 ? _order[_cursor] : -1;
+        var item = _order[from];
+        _order.RemoveAt(from);
+        _order.Insert(to, item);
+        _cursor = current < 0 ? -1 : _order.IndexOf(current);
+        await NotifyAsync();
+    }
+
+    public IReadOnlyList<QueueEntry> QueueEntries =>
+        _order.Select((index, position) => new QueueEntry(position, _queue[index])).ToList();
+    public int CurrentOrderIndex => _cursor;
+
     // ---- transport -------------------------------------------------------
 
     private async Task PlayAtCursorAsync()
@@ -317,12 +347,14 @@ public sealed class PlayerService(
 
         await EnsureInitializedAsync();
 
+        CurrentIsNormalized = NormalizeVolume;
+
         // The second URL is only offered for non-MP3 sources; player.js uses it when the
         // browser says it can't decode the original, or when a native decode fails anyway.
         await _module!.InvokeVoidAsync(
             "play",
-            $"/media/{Current.Id}",
-            Current.NeedsFallback ? $"/media/{Current.Id}/mp3" : null);
+            CurrentIsNormalized ? $"/media/{Current.Id}/normalized" : $"/media/{Current.Id}",
+            !CurrentIsNormalized && Current.NeedsFallback ? $"/media/{Current.Id}/mp3" : null);
 
         // A new track is the moment the broadcast is most wrong, so it goes out immediately
         // rather than waiting for the next heartbeat.
@@ -335,6 +367,7 @@ public sealed class PlayerService(
     {
         if (Current is null)
         {
+            if (_order.Count > 0) await JumpToAsync(0);
             return;
         }
 
@@ -406,6 +439,15 @@ public sealed class PlayerService(
         await EnsureInitializedAsync();
         Position = seconds;
         await _module!.InvokeVoidAsync("seek", seconds);
+        await NotifyAsync();
+    }
+
+    public async Task SetNormalizeVolumeAsync(bool enabled)
+    {
+        await EnsureInitializedAsync();
+        if (await currentUser.GetIdAsync() is { } userId)
+            await preferences.SetNormalizeVolumeAsync(userId, enabled);
+        NormalizeVolume = enabled;
         await NotifyAsync();
     }
 

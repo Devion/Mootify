@@ -81,8 +81,12 @@ public sealed class AccountServiceTests : IAsyncLifetime
         var result = await _accounts.RegisterAsync("housemate", "password1", "password1");
 
         Assert.True(result.Succeeded, result.Error);
-        Assert.False(result.Principal!.IsInRole(MootifyAuth.AdminRole));
-        Assert.True(result.Principal.IsInRole(MootifyAuth.UserRole));
+        Assert.Null(result.Principal);
+        await using var db = _db.CreateDbContext();
+        var user = await db.Users.SingleAsync(u => u.NormalizedName == "housemate");
+        Assert.False(user.IsAdmin);
+        Assert.True(user.ApprovalPending);
+        Assert.False((await _accounts.SignInAsync("housemate", "password1")).Succeeded);
     }
 
     [Fact]
@@ -197,7 +201,7 @@ public sealed class AccountServiceTests : IAsyncLifetime
         var adminId = Guid.Parse(setup.Principal!.FindFirstValue(ClaimTypes.NameIdentifier)!);
 
         var registration = await _accounts.RegisterAsync("housemate", "password1", "password1");
-        var userId = Guid.Parse(registration.Principal!.FindFirstValue(ClaimTypes.NameIdentifier)!);
+        var userId = await ApproveHousemateAsync();
 
         Assert.False((await _accounts.AdminSetPasswordAsync(userId, adminId, "hacked11", "hacked11")).Ok);
         Assert.True((await _accounts.AdminSetPasswordAsync(adminId, userId, "rescued1", "rescued1")).Ok);
@@ -290,12 +294,39 @@ public sealed class AccountServiceTests : IAsyncLifetime
         var registration = await _accounts.RegisterAsync("housemate", "password1", "password1");
 
         return (Guid.Parse(setup.Principal!.FindFirstValue(ClaimTypes.NameIdentifier)!),
-                Guid.Parse(registration.Principal!.FindFirstValue(ClaimTypes.NameIdentifier)!));
+                await ApproveHousemateAsync());
     }
 
     private async Task<bool> MustChangeAsync(Guid userId)
     {
         await using var db = _db.CreateDbContext();
         return await db.Users.Where(u => u.Id == userId).Select(u => u.MustChangePassword).SingleAsync();
+    }
+    private async Task<Guid> ApproveHousemateAsync()
+    {
+        await using var db = _db.CreateDbContext();
+        var user = await db.Users.SingleAsync(u => u.NormalizedName == "housemate");
+        var admin = await db.Users.SingleAsync(u => u.IsAdmin);
+        var service = new Mootify.Services.Admin.AdminService(_db, NullLogger<Mootify.Services.Admin.AdminService>.Instance);
+        Assert.False((await service.ApproveAsync(user.Id, user.Id)).Ok);
+        Assert.True((await service.ApproveAsync(admin.Id, user.Id)).Ok);
+        return user.Id;
+    }
+
+    [Fact]
+    public async Task Site_activity_updates_last_seen_and_is_throttled()
+    {
+        await SetupAdminAsync();
+        await using var db = _db.CreateDbContext();
+        var user = await db.Users.SingleAsync();
+        user.LastSeenAt = DateTimeOffset.UtcNow.AddDays(-10);
+        await db.SaveChangesAsync();
+        await _accounts.TouchLastSeenAsync(user.Id);
+        await db.Entry(user).ReloadAsync();
+        var seen = user.LastSeenAt;
+        Assert.True(seen > DateTimeOffset.UtcNow.AddMinutes(-1));
+        await _accounts.TouchLastSeenAsync(user.Id);
+        await db.Entry(user).ReloadAsync();
+        Assert.Equal(seen, user.LastSeenAt);
     }
 }

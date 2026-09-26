@@ -115,8 +115,7 @@ public static class AuthEndpoints
                 return Redirect(MootifyAuth.RegisterPath, result.Error!, null);
             }
 
-            await SignInAsync(http, result);
-            return Results.Redirect("/");
+            return Results.Redirect("/login?pending=true");
         }).RequireRateLimiting("login");
 
         app.MapPost("/auth/setup", async (

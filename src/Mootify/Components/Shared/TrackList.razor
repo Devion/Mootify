@@ -25,7 +25,7 @@
             @* Double-click starts the list from this row whatever it is showing; the button
                below decides for itself, so it stops the double-click from also reaching here
                and undoing what the press just did. *@
-            <tr class="@(isCurrent ? "is-current" : "")" @ondblclick="() => StartFrom(index)">
+            <tr class="@(isCurrent ? "is-current" : "")" @ondblclick="() => StartFrom(index)" @oncontextmenu="() => _menuTrack = row.TrackId" @oncontextmenu:preventDefault="true">
                 <td class="tracklist__num">
                     @* The label follows the icon, because the icon follows the player. *@
                     <button class="tracklist__play" @onclick="() => Press(index)"
@@ -50,6 +50,15 @@
                 }
                 <td class="tracklist__dur">@Format(row.Duration)</td>
                 <td class="tracklist__actions">
+                    <button class="iconbutton iconbutton--small" aria-label="Queue options" title="Queue options" @onclick="() => _menuTrack = row.TrackId" @ondblclick:stopPropagation="true">⋯</button>
+                    @if (_menuTrack == row.TrackId)
+                    {
+                        <div class="track-queue-menu" role="group" aria-label="Queue options" @ondblclick:stopPropagation="true">
+                            <button @onclick="() => Enqueue(row.TrackId, true)">Play next</button>
+                            <button @onclick="() => Enqueue(row.TrackId, false)">Add to queue</button>
+                            <button @onclick="() => _menuTrack = null">Close</button>
+                        </div>
+                    }
                     <AddToPlaylistButton TrackIds="@(new[] { row.TrackId })" />
                     @if (OnRemove.HasDelegate)
                     {
@@ -73,6 +82,13 @@
 }
 
 @code {
+    private Guid? _menuTrack;
+    private async Task Enqueue(Guid id, bool next)
+    {
+        _menuTrack = null;
+        await Player.EnqueueAsync(id, next);
+    }
+
     public sealed record Row(
         Guid TrackId,
         string Title,

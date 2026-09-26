@@ -423,4 +423,61 @@ public sealed class PlayerServiceTests : IAsyncLifetime
 
         Assert.True(player.Queue.Count > 1, "a surprise queue should keep going");
     }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Queue_edits_preserve_current_playback_and_play_next(bool shuffle)
+    {
+        var tracks = await AddTracksAsync(5);
+        await using var player = CreatePlayer();
+        if (shuffle) await player.ToggleShuffleAsync();
+        await player.PlayQueueAsync(tracks.Take(3).ToList(), 0);
+        var current = player.Current!.Id;
+        await player.OnTimeUpdate(42, 240);
+        var plays = _js.Names.Count(n => n == "play");
+        await player.EnqueueAsync(tracks[3]);
+        await player.EnqueueAsync(tracks[4], next: true);
+        Assert.Equal(tracks[4], player.UpNext()[0].Track.Id);
+        Assert.Equal(current, player.Current.Id);
+        Assert.Equal(42, player.Position);
+        await player.MoveQueueItemAsync(4, 1);
+        Assert.Equal(tracks[3], player.UpNext()[0].Track.Id);
+        Assert.Equal(plays, _js.Names.Count(n => n == "play"));
+        await player.NextAsync();
+        Assert.Equal(tracks[3], player.Current.Id);
+        await player.NextAsync();
+        Assert.Equal(tracks[4], player.Current.Id);
+    }
+
+    [Fact]
+    public async Task Enqueue_on_empty_queue_can_start_without_replacing_queue()
+    {
+        var tracks = await AddTracksAsync(2);
+        await using var player = CreatePlayer();
+        await player.EnqueueAsync(tracks[0]);
+        await player.EnqueueAsync(tracks[1], next: true);
+        Assert.Null(player.Current);
+        await player.TogglePlayPauseAsync();
+        Assert.Equal(tracks[1], player.Current!.Id);
+        Assert.Equal(2, player.Queue.Count);
+    }
+
+    [Fact]
+    public async Task Normalization_is_persisted_and_selects_the_normalized_stream()
+    {
+        var tracks = await AddTracksAsync(2);
+        await using (var player = CreatePlayer())
+        {
+            await player.PlayTrackAsync(tracks[0]);
+            await player.SetNormalizeVolumeAsync(true);
+            Assert.False(player.CurrentIsNormalized);
+            await player.PlayTrackAsync(tracks[1]);
+            Assert.True(player.CurrentIsNormalized);
+            Assert.Equal($"/media/{tracks[1]}/normalized", _js.Calls.Last(c => c.Identifier == "play").Args[0]);
+        }
+        await using var restored = CreatePlayer();
+        await restored.EnsureInitializedAsync();
+        Assert.True(restored.NormalizeVolume);
+    }
 }

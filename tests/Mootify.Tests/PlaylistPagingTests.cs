@@ -184,10 +184,13 @@ public sealed class PlaylistPagingTests : IAsyncLifetime
     [Fact]
     public async Task The_item_id_is_the_row_s_own()
     {
-        // The same song can legitimately be in a playlist twice, so removing one is addressed by
-        // the item rather than by the track.
+        // Legacy playlists can contain duplicates; each item still has its own identity.
         var (user, playlistId, tracks) = await ListAsync(1);
-        await _service.AddTracksAsync(playlistId, user.Id, [tracks[0]]);
+        await using (var db = _db.CreateDbContext())
+        {
+            db.PlaylistItems.Add(new Mootify.Data.PlaylistItem { Id = Guid.NewGuid(), PlaylistId = playlistId, TrackId = tracks[0], SortKey = 9999, AddedByUserId = user.Id, AddedAt = DateTimeOffset.UtcNow });
+            await db.SaveChangesAsync();
+        }
 
         var rows = (await _service.GetPageAsync(playlistId, user.Id))!.Rows;
 

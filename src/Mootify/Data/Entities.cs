@@ -27,6 +27,8 @@ public sealed class AppUser
     /// </summary>
     public bool IsBanned { get; set; }
 
+    public bool ApprovalPending { get; set; }
+
     [MaxLength(512)]
     public string? BanReason { get; set; }
 
@@ -81,6 +83,7 @@ public sealed class UserPreference
     /// nobody knew to look for.
     /// </summary>
     public bool AutoContinue { get; set; } = true;
+    public bool NormalizeVolume { get; set; }
 
     /// <summary>
     /// Whether playing from a playlist tells everybody else who can see that playlist what you're
@@ -606,6 +609,9 @@ public sealed class Idea
     /// it can still see that it was read — and deleting is a separate, deliberate button.
     /// </summary>
     public DateTimeOffset? ArchivedAt { get; set; }
+
+    [MaxLength(280)]
+    public string? AdminReply { get; set; }
 
     public bool IsArchived => ArchivedAt is not null;
 }

@@ -49,4 +49,18 @@ public sealed class PreferenceService(IDbContextFactory<MootifyDbContext> dbFact
 
         return enabled;
     }
+    public async Task<bool> GetNormalizeVolumeAsync(Guid userId)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync();
+        return await db.Preferences.Where(p => p.UserId == userId).Select(p => p.NormalizeVolume).FirstOrDefaultAsync();
+    }
+
+    public async Task SetNormalizeVolumeAsync(Guid userId, bool enabled)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync();
+        var preference = await db.Preferences.FirstOrDefaultAsync(p => p.UserId == userId);
+        if (preference is null) { preference = new UserPreference { UserId = userId }; db.Preferences.Add(preference); }
+        preference.NormalizeVolume = enabled;
+        await db.SaveChangesAsync();
+    }
 }

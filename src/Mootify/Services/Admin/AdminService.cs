@@ -8,6 +8,7 @@ public sealed record AdminUserRow(
     string DisplayName,
     bool IsAdmin,
     bool IsBanned,
+    bool ApprovalPending,
     string? BanReason,
     bool MustChangePassword,
     DateTimeOffset CreatedAt,
@@ -54,7 +55,7 @@ public sealed class AdminService(
     }
 
     private static Task<bool> IsAdminAsync(MootifyDbContext db, Guid userId, CancellationToken ct) =>
-        db.Users.AnyAsync(u => u.Id == userId && u.IsAdmin && !u.IsBanned, ct);
+        db.Users.AnyAsync(u => u.Id == userId && u.IsAdmin && !u.IsBanned && !u.ApprovalPending, ct);
 
     // ---- overview --------------------------------------------------------
 
@@ -90,6 +91,7 @@ public sealed class AdminService(
                 u.DisplayName,
                 u.IsAdmin,
                 u.IsBanned,
+                u.ApprovalPending,
                 u.BanReason,
                 u.MustChangePassword,
                 u.CreatedAt,
@@ -98,6 +100,17 @@ public sealed class AdminService(
                 db.TeamMembers.Count(m => m.UserId == u.Id),
                 db.Requests.Count(r => r.RequesterId == u.Id)))
             .ToListAsync(ct);
+    }
+
+    public async Task<(bool Ok, string? Error)> ApproveAsync(Guid actingUserId, Guid targetUserId, CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
+        if (!await IsAdminAsync(db, actingUserId, ct)) return (false, "Admins only.");
+        var user = await db.Users.FirstOrDefaultAsync(u => u.Id == targetUserId, ct);
+        if (user is null) return (false, "No such account.");
+        user.ApprovalPending = false;
+        await db.SaveChangesAsync(ct);
+        return (true, null);
     }
 
     public async Task<(bool Ok, string? Error)> SetBannedAsync(
@@ -198,7 +211,7 @@ public sealed class AdminService(
     }
 
     private static Task<bool> AnotherActiveAdminExistsAsync(MootifyDbContext db, Guid excludingUserId, CancellationToken ct) =>
-        db.Users.AnyAsync(u => u.IsAdmin && !u.IsBanned && u.Id != excludingUserId, ct);
+        db.Users.AnyAsync(u => u.IsAdmin && !u.IsBanned && !u.ApprovalPending && u.Id != excludingUserId, ct);
 
     // ---- teams -----------------------------------------------------------
 

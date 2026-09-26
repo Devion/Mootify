@@ -46,7 +46,13 @@ public sealed class NotificationDispatcher(
         }
 
         log.LogInformation("Notified {UserId}: {Title}", userId, title);
+        Deliver(notification);
 
+    }
+
+    /// <summary>Push a notification already committed by the caller.</summary>
+    public void Deliver(Notification notification)
+    {
         try
         {
             Received?.Invoke(notification);

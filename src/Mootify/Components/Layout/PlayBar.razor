@@ -45,7 +45,7 @@
             </button>
 
             <button class="iconbutton iconbutton--primary" @onclick="Player.TogglePlayPauseAsync"
-                    disabled="@(Player.Current is null)"
+                    disabled="@(Player.Queue.Count == 0)"
                     title="@(Player.IsPlaying ? "Pause" : "Play")"
                     aria-label="@(Player.IsPlaying ? "Pause" : "Play")">
                 @if (Player.IsPlaying)
@@ -187,6 +187,7 @@
         double.TryParse(e.Value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out value);
 
     private string FormatHint(TrackInfo track) =>
+        Player.CurrentIsNormalized ? "Playing a volume-normalized MP3 copy" :
         Player.UsingFallback
             ? $"Converted to MP3 — your browser can't play the {track.Format} original"
             : $"Playing the {track.Format} file as it is on disk";

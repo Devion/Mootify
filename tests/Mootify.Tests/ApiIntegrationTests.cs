@@ -61,6 +61,7 @@ public abstract class IsolatedMootifyFixture : WebApplicationFactory<Program>
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
+        builder.ConfigureServices(services => services.AddSingleton<Microsoft.AspNetCore.DataProtection.IDataProtectionProvider>(new Microsoft.AspNetCore.DataProtection.EphemeralDataProtectionProvider()));
         builder.ConfigureAppConfiguration((_, config) => config.AddInMemoryCollection(new Dictionary<string, string?>
         {
             ["Library:MusicRoot"] = MusicRoot,
@@ -447,6 +448,41 @@ public sealed class ApiIntegrationTests(MootifyApiFixture fixture) : IClassFixtu
         return await client.PostAsync(action, new FormUrlEncodedContent(fields));
     }
 
+    [Fact]
+    public async Task Registration_requires_approval_before_cookie_or_token_login()
+    {
+        using var client = fixture.CreateClient(new WebApplicationFactoryClientOptions { AllowAutoRedirect = false });
+        var registered = await PostFormAsync(client, "/register", "/auth/register", new()
+        {
+            ["username"] = "pendinguser", ["password"] = "pending-password", ["confirmPassword"] = "pending-password",
+        });
+        Assert.Equal("/login?pending=true", registered.Headers.Location?.OriginalString);
+        Assert.DoesNotContain(registered.Headers.TryGetValues("Set-Cookie", out var cookies) ? cookies : [], c => c.Contains(".AspNetCore.Cookies"));
+        Assert.Equal(HttpStatusCode.Found, (await client.GetAsync("/library")).StatusCode);
+        var denied = await client.PostAsJsonAsync("/api/v1/auth/token", new { username = "pendinguser", password = "pending-password", deviceName = "Test" });
+        Assert.Equal(HttpStatusCode.Unauthorized, denied.StatusCode);
+        var factory = fixture.Services.GetRequiredService<IDbContextFactory<MootifyDbContext>>();
+        await using var db = await factory.CreateDbContextAsync();
+        var user = await db.Users.SingleAsync(u => u.NormalizedName == "pendinguser");
+        Assert.True(user.ApprovalPending);
+        await SeedUserAsync(fixture, "approvaladmin", "admin-password", mustChange: false);
+        await db.Users.Where(u => u.NormalizedName == "approvaladmin").ExecuteUpdateAsync(set => set.SetProperty(u => u.IsAdmin, true));
+        var admin = await db.Users.SingleAsync(u => u.NormalizedName == "approvaladmin");
+        using var scope = fixture.Services.CreateScope();
+        var service = scope.ServiceProvider.GetRequiredService<Mootify.Services.Admin.AdminService>();
+        Assert.True((await service.ApproveAsync(admin.Id, user.Id)).Ok);
+        var signedIn = await PostFormAsync(client, "/login", "/auth/login", new() { ["username"] = "pendinguser", ["password"] = "pending-password" });
+        Assert.Equal("/", signedIn.Headers.Location?.OriginalString);
+        Assert.Equal(HttpStatusCode.OK, (await client.GetAsync("/library")).StatusCode);
+        // A long-lived cookie records a new visit, and pending status is rechecked on it too.
+        await db.Users.Where(u => u.Id == user.Id).ExecuteUpdateAsync(set => set.SetProperty(u => u.LastSeenAt, DateTimeOffset.UtcNow.AddDays(-10)));
+        Assert.Equal(HttpStatusCode.OK, (await client.GetAsync("/library")).StatusCode);
+        await db.Entry(user).ReloadAsync();
+        Assert.True(user.LastSeenAt > DateTimeOffset.UtcNow.AddMinutes(-1));
+        await db.Users.Where(u => u.Id == user.Id).ExecuteUpdateAsync(set => set.SetProperty(u => u.ApprovalPending, true));
+        Assert.Equal(HttpStatusCode.Found, (await client.GetAsync("/library")).StatusCode);
+    }
+
     private static async Task SeedUserAsync(
         MootifyApiFixture fixture, string name, string password, bool mustChange)
     {
@@ -652,12 +688,14 @@ public sealed class ApiIntegrationTests(MootifyApiFixture fixture) : IClassFixtu
         var playlistId = (await created.Content.ReadFromJsonAsync<JsonDocument>())!
             .RootElement.GetProperty("id").GetGuid();
 
-        // The fixture has one track; adding it repeatedly is a legitimate playlist and is enough
-        // to prove the paging arithmetic without seeding a library.
-        for (var i = 0; i < 3; i++)
+        // Seed a legacy playlist with duplicate entries to keep paging independent of add deduplication.
+        var factory = fixture.Services.GetRequiredService<IDbContextFactory<MootifyDbContext>>();
+        await using (var db = await factory.CreateDbContextAsync())
         {
-            await client.PostAsJsonAsync(
-                $"/api/v1/playlists/{playlistId}/tracks", new { trackIds = new[] { fixture.TrackId } });
+            var owner = (await db.Playlists.SingleAsync(p => p.Id == playlistId)).OwnerUserId!.Value;
+            for (var i = 0; i < 3; i++)
+                db.PlaylistItems.Add(new PlaylistItem { Id = Guid.NewGuid(), PlaylistId = playlistId, TrackId = fixture.TrackId, SortKey = i * 1000, AddedByUserId = owner, AddedAt = DateTimeOffset.UtcNow });
+            await db.SaveChangesAsync();
         }
 
         var first = (await client.GetFromJsonAsync<JsonDocument>(

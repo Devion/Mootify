@@ -107,13 +107,19 @@ public sealed class ApiTokenService(
                 DisplayName = t.User!.DisplayName,
                 t.User!.IsAdmin,
                 t.User!.IsBanned,
+                t.User.ApprovalPending,
+                t.User.LastSeenAt,
             })
             .FirstOrDefaultAsync(ct);
 
         if (row is null) return null;
         if (row.RevokedAt is not null) return null;
         if (row.ExpiresAt is { } expiry && expiry <= now) return null;
-        if (row.IsBanned) return null;
+        if (row.IsBanned || row.ApprovalPending) return null;
+
+        if (now - row.LastSeenAt >= TimeSpan.FromMinutes(5))
+            await db.Users.Where(u => u.Id == row.UserId && u.LastSeenAt < now.AddMinutes(-5))
+                .ExecuteUpdateAsync(s => s.SetProperty(u => u.LastSeenAt, now), ct);
 
         // Cheap enough to skip most of the time — see LastUsedResolution.
         if (now - row.LastUsedAt > LastUsedResolution)

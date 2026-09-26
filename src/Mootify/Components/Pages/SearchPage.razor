@@ -59,6 +59,7 @@
                         <div class="result__meta">
                             <strong>@file.DisplayName</strong><span>@file.Folder</span>
                             <span class="result__detail">@file.Extension.ToUpperInvariant()
+                                <text> &middot; @(file.Length is > 0 ? TimeSpan.FromSeconds(file.Length.Value).ToString(file.Length >= 3600 ? @"h\:mm\:ss" : @"m\:ss") : "Length unknown")</text>
                                 @if (file.BitRate is { } rate) { <text> &middot; @rate kbps</text> }
                                 @if (file.BitDepth is { } depth) { <text> &middot; @depth-bit</text> }
                                 &middot; @FormatSize(file.Size) &middot; @(file.HasFreeUploadSlot ? "free slot" : $"queue {file.QueueLength}")
