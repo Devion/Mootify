@@ -139,6 +139,11 @@ public sealed class LibraryScanService(
             return;
         }
 
+        // Cache writes must not trigger a full scan or keep postponing real library changes.
+        if (filer.CacheFolder is { } cache && (LibraryFiler.Contains(cache, path)
+            || string.Equals(cache, path.TrimEnd(Path.DirectorySeparatorChar), StringComparison.OrdinalIgnoreCase)))
+            return;
+
         lock (_debounceLock)
         {
             _debounceCts?.Cancel();

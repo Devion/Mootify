@@ -38,7 +38,7 @@ public sealed class ImportRequestMatcher(
         // are exactly the rows somebody gives up on Soulseek for and fetches by hand, so they are
         // the likeliest thing a dropped file is answering.
         var open = await db.Requests
-            .Where(r => r.Status != RequestStatus.Available)
+            .Where(r => r.Status != RequestStatus.Available && r.ReplacementItemId == null)
             .ToListAsync(ct);
 
         if (open.Count == 0) return ImportMatchSummary.Nothing;

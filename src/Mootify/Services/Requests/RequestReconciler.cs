@@ -134,7 +134,7 @@ public sealed class RequestReconciler(
     {
         if (request.OfflineRecoveryAttempts >= MaxOfflineRecoveryAttempts)
         {
-            Fail(request, "The Soulseek user went offline, and no matching download was available after several searches.");
+            Fail(request, "No matching Soulseek download was available after several searches.");
             request.NextOfflineRecoveryAt = null;
             return;
         }
@@ -147,26 +147,13 @@ public sealed class RequestReconciler(
         try
         {
             var results = await soulseek.SearchAsync(request.Query, ct);
-            var originalTitle = NormalizedFileTitle(request.SoulseekFilename ?? "");
-            var query = PlaylistImportService.Normalize(request.Query);
-            var artist = query.EndsWith(" " + originalTitle, StringComparison.Ordinal)
-                ? query[..^(originalTitle.Length + 1)]
-                : "";
-            var matches = results.Where(file =>
-                    originalTitle.Length > 0
-                    && NormalizedFileTitle(file.Filename) == originalTitle
-                    && (artist.Length == 0 || PlaylistImportService.Normalize(file.Folder).Contains(artist,
-                        StringComparison.Ordinal)))
-                .OrderBy(file => string.Equals(file.Username, request.SoulseekUsername,
-                    StringComparison.OrdinalIgnoreCase))
-                .ToList();
-
-            foreach (var file in matches)
+            var batches = RetryCandidates(request, results);
+            foreach (var files in batches)
             {
-                // A fresh batch id avoids colliding with slskd's terminal batch. Keep the
-                // destination tied to the request so completion still finds the downloaded file.
+                var file = files[0];
+                // Fresh batch, same request destination and playlist target.
                 var newBatchId = Guid.NewGuid();
-                var (ok, error) = await soulseek.EnqueueAsync(newBatchId, file, ct, request.Id);
+                var (ok, error) = await soulseek.EnqueueFilesAsync(newBatchId, files, ct, request.Id);
                 if (!ok)
                 {
                     log.LogInformation("Could not retry request {RequestId} from {Peer}: {Error}",
@@ -198,6 +185,43 @@ public sealed class RequestReconciler(
         }
     }
 
+    internal static List<List<SoulseekFile>> RetryCandidates(Request request, List<SoulseekFile> results)
+    {
+        var legacy = string.IsNullOrWhiteSpace(request.SoulseekFilename);
+        if (request.ReplacementItemId is not null && !legacy)
+        {
+            // Do not normalize away edition/remaster information on a deliberately chosen alternative.
+            return results.Where(f => DownloadTitle(f.Filename) == DownloadTitle(request.SoulseekFilename!))
+                .OrderBy(f => string.Equals(f.Username, request.SoulseekUsername, StringComparison.OrdinalIgnoreCase))
+                .Select(f => new List<SoulseekFile> { f }).ToList();
+        }
+        var artist = PlaylistImportService.Normalize(request.ArtistName);
+        if (request.Kind == RequestKind.Album)
+        {
+            var album = PlaylistImportService.Normalize(request.AlbumTitle ?? "");
+            if (artist.Length == 0 || album.Length == 0) return [];
+            return results.Where(f => PlaylistImportService.Normalize(f.Folder).Contains(artist, StringComparison.Ordinal)
+                    && PlaylistImportService.Normalize(f.Folder).Contains(album, StringComparison.Ordinal))
+                .GroupBy(f => (f.Username, f.Folder))
+                .Select(g => g.DistinctBy(f => NormalizedFileTitle(f.Filename)).ToList()).ToList();
+        }
+        var title = legacy ? PlaylistImportService.Normalize(request.TrackTitle ?? "")
+            : NormalizedFileTitle(request.SoulseekFilename!);
+        if (!legacy)
+        {
+            var query = PlaylistImportService.Normalize(request.Query);
+            artist = query.EndsWith(" " + title, StringComparison.Ordinal) ? query[..^(title.Length + 1)] : "";
+        }
+        if (title.Length == 0) return [];
+        return results.Where(f =>
+                (NormalizedFileTitle(f.Filename) == title
+                    || (legacy && NormalizedFileTitle(f.Filename) == artist + " " + title))
+                && (artist.Length == 0 || PlaylistImportService.Normalize(f.Folder).Contains(artist, StringComparison.Ordinal)
+                    || (legacy && NormalizedFileTitle(f.Filename) == artist + " " + title)))
+            .OrderBy(f => string.Equals(f.Username, request.SoulseekUsername, StringComparison.OrdinalIgnoreCase))
+            .Select(f => new List<SoulseekFile> { f }).ToList();
+    }
+
     private static TimeSpan RecoveryDelay(int attempts) => attempts switch
     {
         1 => TimeSpan.FromMinutes(5),
@@ -205,6 +229,15 @@ public sealed class RequestReconciler(
         3 => TimeSpan.FromHours(2),
         _ => TimeSpan.FromHours(6),
     };
+
+    private static string DownloadTitle(string filename) =>
+        Path.GetFileNameWithoutExtension(filename.Replace('\\', '/')).Trim().ToLowerInvariant();
+
+    internal static Guid? SelectReplacementDownload(string filename, IEnumerable<(Guid Id, string Path)> tracks)
+    {
+        var matching = tracks.Where(t => DownloadTitle(t.Path) == DownloadTitle(filename)).Take(2).ToList();
+        return matching.Count == 1 ? matching[0].Id : null;
+    }
 
     private static string NormalizedFileTitle(string filename)
     {
@@ -242,11 +275,23 @@ public sealed class RequestReconciler(
         await scanner.ScanPathAsync(folder, ct);
 
         await using var lookup = await dbFactory.CreateDbContextAsync(ct);
-        var trackIds = await lookup.Tracks.AsNoTracking()
+        var indexed = await lookup.Tracks.AsNoTracking()
             .Where(t => t.IsPresent && t.Path.StartsWith(folder))
             .OrderBy(t => t.DiscNumber).ThenBy(t => t.TrackNumber)
-            .Select(t => t.Id)
+            .Select(t => new { t.Id, t.Path })
             .ToListAsync(ct);
+        var trackIds = indexed.Select(t => t.Id).ToList();
+        if (request.ReplacementItemId is not null)
+        {
+            var selected = SelectReplacementDownload(request.SoulseekFilename ?? "",
+                indexed.Select(t => (t.Id, t.Path)));
+            if (selected is null)
+            {
+                Fail(request, "The selected alternative could not be identified in the download. The original playlist song was kept.");
+                return false;
+            }
+            trackIds = [selected.Value];
+        }
 
         if (trackIds.Count == 0)
         {

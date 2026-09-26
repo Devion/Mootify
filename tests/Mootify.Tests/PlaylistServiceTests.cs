@@ -289,4 +289,47 @@ public sealed class PlaylistServiceTests : IAsyncLifetime
         var remaining = await db.PlaylistItems.Where(i => i.PlaylistId == playlist).OrderBy(i => i.SortKey).Select(i => i.Id).ToListAsync();
         Assert.Equal(original, remaining);
     }
+
+    [Fact]
+    public async Task Reordering_by_item_id_persists_across_batches_and_checks_access()
+    {
+        var user = await _db.AddUserAsync("owner");
+        var stranger = await _db.AddUserAsync("stranger");
+        var tracks = await _db.AddTracksAsync(105);
+        var playlist = await NewPlaylistAsync(user.Id, "Long playlist");
+        await _service.AddTracksAsync(playlist, user.Id, tracks);
+        var first = (await _service.GetPageAsync(playlist, user.Id, take: 100))!;
+        var last = first.Rows[99];
+        Assert.False(await _service.MoveItemAsync(last.ItemId, stranger.Id, 1));
+        Assert.True(await _service.MoveItemAsync(last.ItemId, user.Id, 1));
+        var second = (await _service.GetPageAsync(playlist, user.Id, skip: 100, take: 100))!;
+        Assert.Equal(last.ItemId, second.Rows[0].ItemId);
+        Assert.True(await _service.MoveItemAsync(last.ItemId, user.Id, -1));
+        var restored = (await _service.GetTrackIdsAsync(playlist, user.Id))!;
+        Assert.Equal(tracks, restored);
+        Assert.True(await _service.MoveItemAsync(last.ItemId, user.Id, 0, first.Rows[0].ItemId));
+        var moved = (await _service.GetTrackIdsAsync(playlist, user.Id))!;
+        Assert.Equal(tracks[99], moved[0]);
+        Assert.Equal(tracks.Where(id => id != tracks[99]), moved.Skip(1));
+    }
+
+    [Fact]
+    public async Task Reordering_refuses_other_playlist_targets_and_skips_absent_tracks()
+    {
+        var user = await _db.AddUserAsync("owner");
+        var tracks = await _db.AddTracksAsync(4);
+        var firstId = await NewPlaylistAsync(user.Id, "First");
+        var secondId = await NewPlaylistAsync(user.Id, "Second");
+        await _service.AddTracksAsync(firstId, user.Id, tracks.Take(3).ToList());
+        await _service.AddTracksAsync(secondId, user.Id, [tracks[3]]);
+        var first = (await _service.GetPageAsync(firstId, user.Id))!;
+        var second = (await _service.GetPageAsync(secondId, user.Id))!;
+        Assert.False(await _service.MoveItemAsync(first.Rows[0].ItemId, user.Id, 0, second.Rows[0].ItemId));
+        Assert.False(await _service.MoveItemAsync(first.Rows[0].ItemId, user.Id, -1));
+        await using var db = _db.CreateDbContext();
+        await db.Tracks.Where(t => t.Id == tracks[1]).ExecuteUpdateAsync(s => s.SetProperty(t => t.IsPresent, false));
+        Assert.True(await _service.MoveItemAsync(first.Rows[0].ItemId, user.Id, 1));
+        Assert.Equal(new[] { tracks[2], tracks[0] }, await _service.GetTrackIdsAsync(firstId, user.Id));
+        Assert.Equal(3, await db.PlaylistItems.CountAsync(i => i.PlaylistId == firstId));
+    }
 }

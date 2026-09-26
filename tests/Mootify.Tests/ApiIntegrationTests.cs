@@ -77,7 +77,7 @@ public abstract class IsolatedMootifyFixture : WebApplicationFactory<Program>
             ["Soulseek:ApiKey"] = "",
             ["Transcode:CacheDirectory"] = Path.Combine(Root, "transcode"),
             ["Transcode:DeleteSourceAfterTranscode"] = "false",
-            ["Api:ArtCacheDirectory"] = Path.Combine(Root, "art"),
+            ["Library:CacheFolder"] = "Cache",
         }));
     }
 

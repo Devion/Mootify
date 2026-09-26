@@ -41,7 +41,7 @@ public sealed record AlbumArt(string Path, string ContentType);
 /// </summary>
 public sealed class AlbumArtService(
     IDbContextFactory<MootifyDbContext> dbFactory,
-    IOptionsMonitor<ApiOptions> options,
+    IOptionsMonitor<LibraryOptions> options,
     ILogger<AlbumArtService> log)
 {
     /// <summary>One extraction at a time — the same reasoning as <c>TranscodeCache.Gate</c>.</summary>
@@ -73,20 +73,7 @@ public sealed class AlbumArtService(
     /// <summary>Marker for "we looked, there's nothing". Zero bytes, so the check is a stat call.</summary>
     private const string MissExtension = ".none";
 
-    public string CacheDirectory
-    {
-        get
-        {
-            var configured = options.CurrentValue.ArtCacheDirectory;
-            var path = string.IsNullOrWhiteSpace(configured)
-                ? Path.Combine("data", "art-cache")
-                : configured;
-
-            // Absolute, for the same reason the transcode cache is: Results.File resolves a
-            // relative path against wwwroot rather than the working directory.
-            return Path.GetFullPath(path);
-        }
-    }
+    public string CacheDirectory => LibraryCachePaths.Art(options.CurrentValue);
 
     public async Task<AlbumArt?> GetAsync(Guid albumId, CancellationToken ct = default)
     {
@@ -176,6 +163,7 @@ public sealed class AlbumArtService(
 
     private async Task<AlbumArt?> ExtractEmbeddedAsync(Guid albumId, string trackPath, CancellationToken ct)
     {
+        LibraryCachePaths.EnsureStorageAvailable(options.CurrentValue);
         Directory.CreateDirectory(CacheDirectory);
 
         if (FindCached(albumId) is { } hit) return hit;

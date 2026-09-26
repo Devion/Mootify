@@ -4,24 +4,19 @@ using Mootify.Services.Library;
 
 namespace Mootify.Tests;
 
-/// <summary>
-/// An <see cref="AlbumArtService"/> whose cache is its own temp folder.
-///
-/// The default is <c>data/art-cache</c> relative to the working directory, which every test in
-/// the run would share — and this service both writes marker files and deletes them wholesale,
-/// so one test's <c>Clear()</c> would be another's missing cover. It is deliberately not put
-/// under the music root either: the scanner walks that, and an extracted cover sitting in it
-/// would be indexed as though somebody had filed it there.
-/// </summary>
+/// <summary>An art cache on isolated temporary library storage.</summary>
 internal static class TestArt
 {
     public static AlbumArtService Service(TestDatabase db, out string cacheDirectory)
     {
-        cacheDirectory = Path.Combine(Path.GetTempPath(), "mootify-tests", Guid.NewGuid().ToString("n"));
+        var root = Path.Combine(Path.GetTempPath(), "mootify-tests", Guid.NewGuid().ToString("n"));
+        Directory.CreateDirectory(root);
+        var options = new LibraryOptions { MusicRoot = root };
+        cacheDirectory = LibraryCachePaths.Art(options);
 
         return new AlbumArtService(
             db,
-            new StaticOptionsMonitor<ApiOptions>(new ApiOptions { ArtCacheDirectory = cacheDirectory }),
+            new StaticOptionsMonitor<LibraryOptions>(options),
             NullLogger<AlbumArtService>.Instance);
     }
 

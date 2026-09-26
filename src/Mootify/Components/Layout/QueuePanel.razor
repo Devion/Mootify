@@ -1,3 +1,4 @@
+@implements IDisposable
 @inject PlayerService Player
 @if (Open)
 {
@@ -9,9 +10,6 @@
                 else if (Player.Repeat == RepeatMode.All) { <span class="queuepanel__note">Repeating queue</span> }</div>
             <button class="iconbutton" @onclick="OnClose" aria-label="Close queue">×</button>
         </header>
-        <label class="queuepanel__normalize"><input type="checkbox" checked="@Player.NormalizeVolume" @onchange="e => Player.SetNormalizeVolumeAsync(e.Value is true)" /> Normalize volume
-            <span class="queuepanel__note">Applies from the next song. First playback may take longer.</span>
-        </label>
         <div class="queuepanel__body">
             @if (Player.Current is { } current)
             {
@@ -43,6 +41,13 @@
     [Parameter] public bool Open { get; set; }
     [Parameter] public EventCallback OnClose { get; set; }
     private int? _dragged;
+
+    // Primitive parameters (Open/OnClose) can stay unchanged while the injected player advances.
+    // Subscribe here so the renderer does not skip this child when its parent updates.
+    protected override void OnInitialized() => Player.StateChanged += OnPlayerChanged;
+    private Task OnPlayerChanged() => Open ? InvokeAsync(StateHasChanged) : Task.CompletedTask;
+    public void Dispose() => Player.StateChanged -= OnPlayerChanged;
+
     private async Task Drop(int to)
     {
         if (_dragged is { } from) await Player.MoveQueueItemAsync(from, to);

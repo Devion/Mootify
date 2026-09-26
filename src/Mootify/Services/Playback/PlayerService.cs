@@ -121,10 +121,10 @@ public sealed class PlayerService(
 
     private async Task NotifyAsync()
     {
-        if (StateChanged is not null)
-        {
-            await StateChanged.Invoke();
-        }
+        // A multicast Func<Task> only returns the final subscriber's task. Await every
+        // component so a completed state update means all subscribed views have refreshed.
+        foreach (var handler in StateChanged?.GetInvocationList() ?? [])
+            await ((Func<Task>)handler)();
     }
 
     public async Task EnsureInitializedAsync()

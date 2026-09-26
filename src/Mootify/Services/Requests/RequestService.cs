@@ -2,8 +2,12 @@ using Microsoft.EntityFrameworkCore;
 using Mootify.Data;
 using Mootify.Services.Soulseek;
 using Mootify.Services.Settings;
+using Mootify.Services.Playlists;
+using Mootify.Services.Teams;
 
 namespace Mootify.Services.Requests;
+
+public sealed record ReplacementTarget(Guid ItemId, Guid TrackId, Guid PlaylistId, string PlaylistName, string Title, string ArtistName);
 
 public sealed record CreateRequestResult(bool Ok, Guid? RequestId, string? Error);
 
@@ -72,18 +76,19 @@ public sealed class RequestService(
         string username,
         string filename,
         Guid? targetPlaylistId,
-        Guid requesterId)
+        Guid requesterId, Guid? replacementItemId = null)
     {
         // A playlist is a shared destination, so two people asking for the same song for the
         // same playlist is one request. With no playlist there is nothing shared to collide
         // with, and it is only a duplicate of that person's own ask.
         var where = targetPlaylistId is { } id ? $"pl:{id}" : $"user:{requesterId}";
 
+        if (replacementItemId is { } itemId) where += $"|replace:{itemId}";
         return $"{username.Trim().ToLowerInvariant()}|{filename.Trim().ToLowerInvariant()}|{where}";
     }
 
     private static string DuplicateKey(Request r) =>
-        DuplicateKey(r.SoulseekUsername ?? "", r.SoulseekFilename ?? "", r.TargetPlaylistId, r.RequesterId);
+        DuplicateKey(r.SoulseekUsername ?? "", r.SoulseekFilename ?? "", r.TargetPlaylistId, r.RequesterId, r.ReplacementItemId);
 
     /// <summary>
     /// Dispatches the exact selected Soulseek file straight to slskd. The quota is the only
@@ -100,9 +105,22 @@ public sealed class RequestService(
         /// discography; an import is somebody deliberately queueing a discography, having
         /// been shown the number first.
         /// </summary>
-        bool enforceQuota = true)
+        bool enforceQuota = true, Guid? replacementItemId = null, Guid? expectedTrackId = null)
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct);
+
+        PlaylistItem? replacement = null;
+        if (replacementItemId is { } itemId)
+        {
+            replacement = await FindReplacementItemAsync(db, itemId, userId, ct);
+            if (replacement is null || replacement.TrackId != expectedTrackId)
+                return new(false, null, "That playlist entry changed or is no longer editable. Open it again from the playlist.");
+            targetPlaylistId = replacement.PlaylistId;
+            if (await db.Requests.AnyAsync(r => r.ReplacementItemId == itemId
+                && r.Status != RequestStatus.Available && r.Status != RequestStatus.Failed
+                && r.Status != RequestStatus.NotFound, ct))
+                return new(false, null, "A replacement for this entry is already in progress.");
+        }
 
         if (enforceQuota)
         {
@@ -121,7 +139,7 @@ public sealed class RequestService(
             }
         }
 
-        var wanted = DuplicateKey(file.Username, file.Filename, targetPlaylistId, userId);
+        var wanted = DuplicateKey(file.Username, file.Filename, targetPlaylistId, userId, replacementItemId);
         var active = await db.Requests.AsNoTracking()
             .Where(r => (r.RequesterId == userId || r.TargetPlaylistId != null)
                      && r.SoulseekUsername != null && r.SoulseekFilename != null
@@ -144,6 +162,8 @@ public sealed class RequestService(
             SoulseekUsername = file.Username,
             SoulseekFilename = file.Filename,
             TargetPlaylistId = targetPlaylistId,
+            ReplacementItemId = replacementItemId,
+            ReplacementTrackId = replacement?.TrackId,
             CreatedAt = now,
             UpdatedAt = now,
         };
@@ -177,6 +197,26 @@ public sealed class RequestService(
         log.LogInformation("{User} requested {File} from Soulseek user {Peer}", userId, file.Filename, file.Username);
 
         return new CreateRequestResult(true, request.Id, null);
+    }
+
+    internal static async Task<PlaylistItem?> FindReplacementItemAsync(
+        MootifyDbContext db, Guid itemId, Guid userId, CancellationToken ct)
+    {
+        if (!await db.Users.AnyAsync(u => u.Id == userId && !u.IsBanned && !u.ApprovalPending, ct)) return null;
+        var item = await db.PlaylistItems.Include(i => i.Playlist).Include(i => i.Track)!
+            .ThenInclude(t => t!.Artist).FirstOrDefaultAsync(i => i.Id == itemId, ct);
+        if (item?.Playlist is null) return null;
+        var teams = await TeamService.GetTeamIdsAsync(db, userId, ct);
+        return PlaylistAccess.CanEdit(item.Playlist, userId, teams) ? item : null;
+    }
+
+    public async Task<ReplacementTarget?> GetReplacementTargetAsync(Guid itemId, Guid userId, CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
+        var item = await FindReplacementItemAsync(db, itemId, userId, ct);
+        return item?.Track is { } track
+            ? new(item.Id, track.Id, item.PlaylistId, item.Playlist!.Name, track.Title, track.Artist!.Name)
+            : null;
     }
 
     /// <summary>
@@ -295,11 +335,12 @@ public sealed class RequestService(
                 r.SoulseekFilename,
                 r.TargetPlaylistId,
                 r.RequesterId,
+                r.ReplacementItemId,
             })
             .ToListAsync(ct);
 
         return [.. rows.Select(r => DuplicateKey(
-            r.SoulseekUsername!, r.SoulseekFilename!, r.TargetPlaylistId, r.RequesterId))];
+            r.SoulseekUsername!, r.SoulseekFilename!, r.TargetPlaylistId, r.RequesterId, r.ReplacementItemId))];
     }
 
     /// <summary>
@@ -342,7 +383,7 @@ public sealed class RequestService(
         return (true, null);
     }
 
-    /// <summary>Schedules a failed Soulseek download for a fresh peer search.</summary>
+    /// <summary>Retries failed and not-found requests, including requests from before Soulseek.</summary>
     public async Task<(bool Ok, string? Error)> RetryFailedAsync(
         Guid actingAdminId, Guid requestId, CancellationToken ct = default)
     {
@@ -351,10 +392,15 @@ public sealed class RequestService(
 
         var request = await db.Requests.FirstOrDefaultAsync(r => r.Id == requestId, ct);
         if (request is null) return (false, "That request is already gone.");
-        if (request.Status != RequestStatus.Failed)
-            return (false, "Only failed downloads can be re-searched.");
-        if (string.IsNullOrWhiteSpace(request.SoulseekFilename) || string.IsNullOrWhiteSpace(request.Query))
-            return (false, "This request has no Soulseek file to search for.");
+        if (request.Status is not (RequestStatus.Failed or RequestStatus.NotFound))
+            return (false, "Only failed or not-found requests can be retried.");
+        if (string.IsNullOrWhiteSpace(request.Query))
+            request.Query = $"{request.ArtistName} {(request.Kind == RequestKind.Track ? request.TrackTitle : request.AlbumTitle)}".Trim();
+        if (string.IsNullOrWhiteSpace(request.Query)
+            || (string.IsNullOrWhiteSpace(request.SoulseekFilename)
+                && (string.IsNullOrWhiteSpace(request.ArtistName)
+                    || string.IsNullOrWhiteSpace(request.Kind == RequestKind.Track ? request.TrackTitle : request.AlbumTitle))))
+            return (false, "This request has too little information to search Soulseek.");
         if (!soulseek.IsConfigured) return (false, "Soulseek is not configured.");
 
         request.Status = RequestStatus.Searching;

@@ -1,7 +1,6 @@
 @page "/admin/requests"
 @attribute [Authorize(Policy = MootifyAuth.AdminPolicy)]
 @inject RequestService Requests
-@inject RequestReconciler Reconciler
 @inject CurrentUser CurrentUser
 @using Mootify.Services.Requests
 
@@ -9,7 +8,7 @@
 
 <h1>Requests</h1>
 <AdminNav />
-<p class="pagehead__meta">Requests from everyone. Re-search a failed download or remove a request that should no longer be here.</p>
+<p class="pagehead__meta">Requests from everyone. Retry a failed or not-found request through Soulseek or remove a request that should no longer be here.</p>
 
 <div class="filterchips" role="group" aria-label="Filter requests">
     @foreach (var (filter, label) in Chips)
@@ -72,11 +71,11 @@ else
                     </td>
                     <td class="muted">@r.CreatedAt.ToLocalTime().ToString("d MMM HH:mm")</td>
                     <td class="requests__rowaction">
-                        @if (r.Status == Data.RequestStatus.Failed && !string.IsNullOrWhiteSpace(r.SoulseekFilename))
+                        @if (r.Status is Data.RequestStatus.Failed or Data.RequestStatus.NotFound)
                         {
-                            <button class="linkbutton" disabled="@(_working == r.Id)" @onclick="() => Retry(r.Id)">Re-search</button>
+                            <button class="linkbutton" disabled="@(_working is not null)" @onclick="() => Retry(r.Id)">Retry</button>
                         }
-                        <button class="linkbutton linkbutton--danger" disabled="@(_working == r.Id)" @onclick="() => Remove(r)">
+                        <button class="linkbutton linkbutton--danger" disabled="@(_working is not null)" @onclick="() => Remove(r)">
                             @(r.IsOpen ? "Cancel" : "Remove")
                         </button>
                     </td>
@@ -147,14 +146,13 @@ else
             _notice = error;
             if (ok)
             {
-                await Reconciler.ReconcileAllAsync();
-                _notice = "Re-search started. The request will keep looking if no matching peer is online yet.";
+                _notice = "Soulseek retry started. The request will keep looking if no matching peer is online yet.";
             }
         }
         catch (Exception ex)
         {
             _noticeIsError = true;
-            _notice = $"Re-search could not finish: {ex.Message}";
+            _notice = $"Retry could not finish: {ex.Message}";
         }
         finally
         {

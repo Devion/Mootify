@@ -31,6 +31,11 @@ public sealed class RequestFulfiller(
     public async Task CompleteAsync(
         MootifyDbContext db, Request request, IReadOnlyList<Guid> trackIds, CancellationToken ct = default)
     {
+        if (request.ReplacementItemId is not null)
+        {
+            await CompleteReplacementAsync(db, request, trackIds, ct);
+            return;
+        }
         var appended = await AppendToPlaylistAsync(request, trackIds, ct);
 
         var now = DateTimeOffset.UtcNow;
@@ -45,6 +50,43 @@ public sealed class RequestFulfiller(
         await db.SaveChangesAsync(ct);
 
         await NotifyAsync(request, trackIds.Count, appended, ct);
+    }
+
+    private async Task CompleteReplacementAsync(
+        MootifyDbContext db, Request request, IReadOnlyList<Guid> trackIds, CancellationToken ct)
+    {
+        AppendOutcome? outcome = null;
+        await using (var transaction = await db.Database.BeginTransactionAsync(ct))
+        {
+            // The status and playlist edit commit together, including when two reconcilers overlap.
+            if (await db.Requests.AsNoTracking().AnyAsync(r => r.Id == request.Id
+                && r.Status == RequestStatus.Available, ct)) return;
+            var item = await RequestService.FindReplacementItemAsync(db,
+                request.ReplacementItemId!.Value, request.RequesterId, ct);
+            var replacementId = trackIds.FirstOrDefault();
+            string? error = null;
+            if (item is null || item.PlaylistId != request.TargetPlaylistId || item.TrackId != request.ReplacementTrackId)
+                error = "Downloaded, but the playlist entry changed, was removed, or is no longer editable. No replacement was made.";
+            else if (replacementId == item.TrackId || !await db.Tracks.AnyAsync(t => t.Id == replacementId && t.IsPresent, ct))
+                error = "The download did not provide a different available track. No replacement was made.";
+            else
+            {
+                // Keep the selected slot and avoid duplicating a version already in this playlist.
+                var duplicates = await db.PlaylistItems.Where(i => i.PlaylistId == item.PlaylistId
+                    && i.Id != item.Id && i.TrackId == replacementId).ToListAsync(ct);
+                db.PlaylistItems.RemoveRange(duplicates);
+                item.TrackId = replacementId;
+                item.RequestId = request.Id;
+                item.Playlist!.UpdatedAt = DateTimeOffset.UtcNow;
+                outcome = new(item.Playlist.Name, item.Playlist.TeamId);
+            }
+            request.Status = RequestStatus.Available;
+            request.CompletedAt = request.UpdatedAt = DateTimeOffset.UtcNow;
+            request.FailureReason = error;
+            await db.SaveChangesAsync(ct);
+            await transaction.CommitAsync(ct);
+        }
+        await NotifyAsync(request, trackIds.Count, outcome, ct);
     }
 
     private sealed record AppendOutcome(string PlaylistName, Guid? TeamId);
@@ -96,6 +138,11 @@ public sealed class RequestFulfiller(
             ? $"{tracks} added to {appended.PlaylistName}."
             : $"{tracks} added to your library.";
 
+        if (request.ReplacementItemId is not null)
+            body = appended is not null
+                ? $"Song replaced in {appended.PlaylistName}, keeping its playlist position."
+                : request.FailureReason ?? "Downloaded to the library; no playlist replacement was made.";
+
         await notifications.PublishAsync(
             request.RequesterId,
             NotificationType.RequestAvailable,
@@ -118,8 +165,8 @@ public sealed class RequestFulfiller(
             await notifications.PublishAsync(
                 memberId,
                 NotificationType.RequestAvailable,
-                $"{requesterName} added {what}",
-                $"{tracks} added to {appended.PlaylistName}.",
+                $"{requesterName} {(request.ReplacementItemId is null ? "added" : "replaced a song with")} {what}",
+                body,
                 url,
                 request.Id,
                 ct);

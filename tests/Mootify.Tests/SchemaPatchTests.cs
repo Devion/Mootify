@@ -107,6 +107,8 @@ public sealed class SchemaPatchTests : IAsyncDisposable
     [Fact]
     public async Task Soulseek_download_identity_reaches_a_database_that_predates_it()
     {
+        await ExecAsync("""ALTER TABLE "Requests" DROP COLUMN "ReplacementItemId" """);
+        await ExecAsync("""ALTER TABLE "Requests" DROP COLUMN "ReplacementTrackId" """);
         await ExecAsync("""DROP INDEX "IX_Requests_SoulseekBatchId" """);
         await ExecAsync("""ALTER TABLE "Requests" DROP COLUMN "SoulseekBatchId" """);
         await ExecAsync("""ALTER TABLE "Requests" DROP COLUMN "SoulseekUsername" """);
@@ -129,6 +131,8 @@ public sealed class SchemaPatchTests : IAsyncDisposable
             Query = "Numb",
             ArtistName = "Linkin Park",
             SoulseekBatchId = batchId,
+            ReplacementItemId = batchId,
+            ReplacementTrackId = batchId,
             SoulseekUsername = "peer",
             SoulseekFilename = "music\\Numb.mp3",
             CreatedAt = DateTimeOffset.UtcNow,
@@ -139,6 +143,8 @@ public sealed class SchemaPatchTests : IAsyncDisposable
         var saved = await db.Requests.SingleAsync();
 
         Assert.Equal(batchId, saved.SoulseekBatchId);
+        Assert.Equal(batchId, saved.ReplacementItemId);
+        Assert.Equal(batchId, saved.ReplacementTrackId);
         Assert.Equal("peer", saved.SoulseekUsername);
         Assert.Equal("music\\Numb.mp3", saved.SoulseekFilename);
         Assert.Equal(0, saved.OfflineRecoveryAttempts);

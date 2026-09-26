@@ -480,4 +480,38 @@ public sealed class PlayerServiceTests : IAsyncLifetime
         await restored.EnsureInitializedAsync();
         Assert.True(restored.NormalizeVolume);
     }
+
+    [Fact]
+    public async Task Open_queue_renders_manual_and_automatic_track_changes_without_new_parameters()
+    {
+        var tracks = await AddTracksAsync(3);
+        await using var player = CreatePlayer();
+        await player.PlayQueueAsync(tracks, 0);
+        var services = new Microsoft.Extensions.DependencyInjection.ServiceCollection();
+        Microsoft.Extensions.DependencyInjection.ServiceCollectionServiceExtensions.AddSingleton(services, player);
+        Microsoft.Extensions.DependencyInjection.LoggingServiceCollectionExtensions.AddLogging(services);
+        await using var provider = Microsoft.Extensions.DependencyInjection.ServiceCollectionContainerBuilderExtensions.BuildServiceProvider(services);
+        await using var renderer = new Microsoft.AspNetCore.Components.Web.HtmlRenderer(
+            provider, Microsoft.Extensions.DependencyInjection.ServiceProviderServiceExtensions.GetRequiredService<Microsoft.Extensions.Logging.ILoggerFactory>(provider));
+        await renderer.Dispatcher.InvokeAsync(async () =>
+        {
+            var parameters = Microsoft.AspNetCore.Components.ParameterView.FromDictionary(new Dictionary<string, object?> { ["Open"] = true });
+            var rendered = await renderer.RenderComponentAsync<Mootify.Components.Layout.QueuePanel>(parameters);
+            AssertCurrent();
+            await player.NextAsync();
+            Assert.Equal(tracks[1], player.Current!.Id);
+            AssertCurrent();
+            await player.OnEnded();
+            Assert.Equal(tracks[2], player.Current!.Id);
+            AssertCurrent();
+
+            void AssertCurrent()
+            {
+                var html = rendered.ToHtmlString();
+                var nowPlaying = html[..html.IndexOf("All queued songs", StringComparison.Ordinal)];
+                Assert.Contains(player.Current!.Title, nowPlaying);
+                Assert.DoesNotContain("Normalize volume", html);
+            }
+        });
+    }
 }

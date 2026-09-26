@@ -127,8 +127,52 @@ public sealed class OfflinePeerRecoveryTests : IAsyncLifetime
         Assert.NotEqual(request.SoulseekBatchId, saved.SoulseekBatchId);
     }
 
+    [Theory]
+    [InlineData(RequestStatus.NotFound, RequestKind.Track)]
+    [InlineData(RequestStatus.Failed, RequestKind.Track)]
+    [InlineData(RequestStatus.NotFound, RequestKind.Album)]
+    public async Task Admin_retry_converts_legacy_requests_to_soulseek(RequestStatus status, RequestKind kind)
+    {
+        var admin = await _db.AddUserAsync("admin");
+        var original = await AddRequestAsync(status);
+        await using (var db = _db.CreateDbContext())
+        {
+            (await db.Users.SingleAsync(u => u.Id == admin.Id)).IsAdmin = true;
+            var r = await db.Requests.SingleAsync();
+            r.Kind = kind;
+            r.ArtistName = "Artist";
+            r.TrackTitle = "Song";
+            r.AlbumTitle = "Album";
+            r.Query = "";
+            r.SoulseekFilename = null;
+            r.SoulseekUsername = null;
+            r.SoulseekBatchId = null;
+            r.CompletedAt = DateTimeOffset.UtcNow;
+            await db.SaveChangesAsync();
+        }
+        _handler.Album = kind == RequestKind.Album;
+        var settings = new Mootify.Services.Settings.SettingsService(_db,
+            new StaticOptionsMonitor<AuthOptions>(new()), new StaticOptionsMonitor<RequestOptions>(new()));
+        var service = new RequestService(_db, _soulseek, settings, NullLogger<RequestService>.Instance);
+        Assert.False((await service.RetryFailedAsync(_user.Id, original.Id)).Ok);
+        Assert.True((await service.RetryFailedAsync(admin.Id, original.Id)).Ok);
+        Assert.False((await service.RetryFailedAsync(admin.Id, original.Id)).Ok);
+        await Reconciler().ReconcileAllAsync();
+        await using var check = _db.CreateDbContext();
+        var saved = await check.Requests.SingleAsync();
+        Assert.Equal(RequestStatus.Downloading, saved.Status);
+        Assert.Equal(_user.Id, saved.RequesterId);
+        Assert.Equal(kind, saved.Kind);
+        Assert.NotNull(saved.SoulseekBatchId);
+        Assert.Null(saved.CompletedAt);
+        Assert.Equal(original.Id, _handler.EnqueuedDestinationId);
+        Assert.Equal(kind == RequestKind.Album ? 2 : 1, _handler.EnqueuedFiles);
+    }
+
     private sealed class RecoveryHandler : HttpMessageHandler
     {
+        public bool Album { get; set; }
+        public int EnqueuedFiles { get; private set; }
         public bool IncludeMatch { get; set; } = true;
         public bool OfflineOnEnqueue { get; set; }
         public int SearchCalls { get; private set; }
@@ -148,6 +192,7 @@ public sealed class OfflinePeerRecoveryTests : IAsyncLifetime
                 var files = IncludeMatch
                     ? """[{"filename":"Music\\Other Band\\Song.mp3","size":1000,"extension":"mp3"},{"filename":"Music\\Artist\\Other Song.mp3","size":1000,"extension":"mp3"},{"filename":"Music\\Artist\\Song.mp3","size":1234,"extension":"mp3"}]"""
                     : """[{"filename":"Music\\Artist\\Other Song.mp3","size":1000,"extension":"mp3"}]""";
+                if (Album) files = """[{"filename":"Music\\Artist\\Album\\01 - Song.mp3","size":1234,"extension":"mp3"},{"filename":"Music\\Artist\\Album\\02 - Second.mp3","size":5678,"extension":"mp3"}]""";
                 return Json(HttpStatusCode.OK,
                     """{"isComplete":true,"responses":[{"username":"online-peer","hasFreeUploadSlot":true,"files":""" + files + "}]}");
             }
@@ -156,6 +201,7 @@ public sealed class OfflinePeerRecoveryTests : IAsyncLifetime
                 EnqueueCalls++;
                 if (OfflineOnEnqueue) return Json(HttpStatusCode.BadRequest, "User not online");
                 using var body = System.Text.Json.JsonDocument.Parse(await request.Content!.ReadAsStringAsync(ct));
+                EnqueuedFiles = body.RootElement.GetProperty("files").GetArrayLength();
                 var destination = body.RootElement.GetProperty("options").GetProperty("destination").GetString();
                 EnqueuedDestinationId = Guid.Parse(destination!.Split('/')[^1]);
                 return Json(HttpStatusCode.Created, "{\"failures\":[]}");

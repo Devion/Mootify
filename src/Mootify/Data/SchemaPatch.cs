@@ -108,6 +108,10 @@ public static class SchemaPatch
         ("Users", "MustChangePassword",
             """ALTER TABLE "Users" ADD COLUMN "MustChangePassword" INTEGER NOT NULL DEFAULT 0"""),
 
+        ("Requests", "ReplacementItemId",
+            """ALTER TABLE "Requests" ADD COLUMN "ReplacementItemId" TEXT NULL"""),
+        ("Requests", "ReplacementTrackId",
+            """ALTER TABLE "Requests" ADD COLUMN "ReplacementTrackId" TEXT NULL"""),
         ("Requests", "SoulseekBatchId",
             """ALTER TABLE "Requests" ADD COLUMN "SoulseekBatchId" TEXT NULL"""),
         ("Requests", "SoulseekUsername",

@@ -1,7 +1,9 @@
-﻿@page "/admin"
+@page "/admin"
 @attribute [Authorize(Policy = MootifyAuth.AdminPolicy)]
 @implements IDisposable
 @inject LibraryTranscodeService LibraryTranscode
+@inject LibraryNormalizationService LibraryNormalization
+@inject TranscodeCache PlaybackCache
 @inject AdminService Admin
 @inject SettingsService Settings
 @inject LibraryScanner Scanner
@@ -175,6 +177,7 @@
         @* A scan already forgets the art of the albums it touched. This is for the other case:
            covers that changed without the music files changing, which no scan can notice. *@
         <button class="linkbutton" @onclick="ForgetArt">Forget cached album art</button>
+        <span class="muted">Art cache: <code>@AlbumArt.CacheDirectory</code></span>
     </div>
 
     @if (_message is not null)
@@ -254,7 +257,56 @@
     }
 </section>
 
+<section class="managebox">
+    <h2>Normalized playback</h2>
+    <p class="muted">Storage: <code>@PlaybackCache.NormalizedDirectory</code></p>
+    <p class="muted">
+        Prepare normalized playback copies of all MP3s in the scanned library so songs can start
+        without waiting for conversion. This runs in the background; you can leave this page.
+        Originals stay unchanged. Copies use additional disk space, and preparing a large library
+        can take a while. Rerunning skips copies that are already up to date.
+    </p>
+    @{ var normalization = LibraryNormalization.Progress; }
+    <label for="normalization-parallelism">Parallel normalizations: @(normalization.IsRunning ? normalization.Parallelism : _normalizationParallelism)</label>
+    <input id="normalization-parallelism" type="range" min="1" max="8" step="1"
+           @bind="_normalizationParallelism" @bind:event="oninput" disabled="@(normalization.IsRunning || _normalizationBusy)" />
+    <p class="managebox__hint">Choose 1–8 tracks at a time before starting. Higher values use more CPU and disk bandwidth.</p>
+    @if (normalization.IsRunning || normalization.FinishedAt is not null)
+    {
+        <p role="status">
+            @(normalization.CancelRequested && normalization.IsRunning ? "Stopping…" : normalization.IsRunning ? "Preparing…" : normalization.Cancelled ? "Stopped." : normalization.Processed < normalization.Total || normalization.LastError is not null && normalization.Total == 0 ? "Stopped before completion." : "Finished.")
+            @normalization.Processed of @normalization.Total checked:
+            @normalization.Prepared prepared, @normalization.AlreadyReady already ready, @normalization.Failed failed.
+        </p>
+        @if (normalization.Current is { } preparing)
+        {
+            <p class="muted">@preparing</p>
+        }
+        <progress max="100" value="@normalization.Percent" aria-label="Normalized playback preparation">@normalization.Percent%</progress>
+        @if (normalization.LastError is { } normalizationError)
+        {
+            <p class="error">@normalizationError</p>
+        }
+    }
+    <div class="managebox__actions">
+        @if (normalization.IsRunning)
+        {
+            <button class="linkbutton linkbutton--danger" @onclick="StopNormalization" disabled="@(normalization.CancelRequested || _normalizationBusy)">Stop preparation</button>
+        }
+        else
+        {
+            <button class="button" @onclick="PrepareNormalization" disabled="@(!_ffmpegOk || _normalizationBusy)">Prepare all MP3s</button>
+            @if (!_ffmpegOk) { <span class="muted">FFmpeg isn't available.</span> }
+        }
+    </div>
+    @if (_normalizationError is not null) { <p class="error">@_normalizationError</p> }
+    <p class="managebox__hint">Listeners enable Normalize volume in Account → Playback. Run preparation again after adding songs or clearing the playback cache.</p>
+</section>
+
 @code {
+    private string? _normalizationError;
+    private bool _normalizationBusy;
+    private int _normalizationParallelism = 1;
     private AdminStats _stats = new(0, 0, 0, 0, 0, 0, 0);
     private int _convertible;
     private bool _registrationOpen;
@@ -281,6 +333,8 @@
     {
         _userId = await CurrentUser.GetRequiredIdAsync();
         LibraryTranscode.Changed += OnTranscodeProgress;
+        LibraryNormalization.Changed += OnNormalizationProgress;
+        _normalizationParallelism = LibraryNormalization.Progress.Parallelism;
         await LoadAsync();
 
         var (ffmpegOk, version) = await Transcoder.ProbeAsync();
@@ -329,7 +383,34 @@
         StateHasChanged();
     });
 
-    public void Dispose() => LibraryTranscode.Changed -= OnTranscodeProgress;
+    private async Task PrepareNormalization()
+    {
+        if (_normalizationBusy) return;
+        _normalizationBusy = true;
+        try { _normalizationError = (await LibraryNormalization.PrepareAsync(_userId, parallelism: _normalizationParallelism)).Error; }
+        finally { _normalizationBusy = false; }
+    }
+
+    private async Task StopNormalization()
+    {
+        if (_normalizationBusy) return;
+        _normalizationBusy = true;
+        try { _normalizationError = (await LibraryNormalization.CancelAsync(_userId)).Error; }
+        finally { _normalizationBusy = false; }
+    }
+
+    private void OnNormalizationProgress() => _ = InvokeAsync(() =>
+    {
+        if (LibraryNormalization.Progress.IsRunning)
+            _normalizationParallelism = LibraryNormalization.Progress.Parallelism;
+        StateHasChanged();
+    });
+
+    public void Dispose()
+    {
+        LibraryTranscode.Changed -= OnTranscodeProgress;
+        LibraryNormalization.Changed -= OnNormalizationProgress;
+    }
 
     private async Task Reconnect()
     {

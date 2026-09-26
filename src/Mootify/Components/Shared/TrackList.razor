@@ -1,4 +1,5 @@
-@implements IDisposable
+@implements IAsyncDisposable
+@inject IJSRuntime JS
 @inject PlayerService Player
 
 <table class="tracklist">
@@ -25,7 +26,10 @@
             @* Double-click starts the list from this row whatever it is showing; the button
                below decides for itself, so it stops the double-click from also reaching here
                and undoing what the press just did. *@
-            <tr class="@(isCurrent ? "is-current" : "")" @ondblclick="() => StartFrom(index)" @oncontextmenu="() => _menuTrack = row.TrackId" @oncontextmenu:preventDefault="true">
+            <tr @key="@(row.ItemId ?? row.TrackId)" class="@(isCurrent ? "is-current" : "")" @ondblclick="() => StartFrom(index)"
+                @oncontextmenu="e => OpenMenu(row, e)" @oncontextmenu:preventDefault="true"
+                draggable="@(CanReorder && row.ItemId is not null)" @ondragstart="() => _draggedItem = row.ItemId"
+                @ondragover:preventDefault="CanReorder" @ondrop="() => Drop(row)" @ondragend="() => _draggedItem = null">
                 <td class="tracklist__num">
                     @* The label follows the icon, because the icon follows the player. *@
                     <button class="tracklist__play" @onclick="() => Press(index)"
@@ -38,7 +42,7 @@
                         }
                         else
                         {
-                            <span class="tracklist__index">@(index + 1)</span>
+                            <span class="tracklist__index">@(RowOffset + index + 1)</span>
                             <svg class="tracklist__playicon" viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>
                         }
                     </button>
@@ -50,15 +54,17 @@
                 }
                 <td class="tracklist__dur">@Format(row.Duration)</td>
                 <td class="tracklist__actions">
-                    <button class="iconbutton iconbutton--small" aria-label="Queue options" title="Queue options" @onclick="() => _menuTrack = row.TrackId" @ondblclick:stopPropagation="true">⋯</button>
-                    @if (_menuTrack == row.TrackId)
+                    @if (OnMove.HasDelegate && row.ItemId is { } itemId)
                     {
-                        <div class="track-queue-menu" role="group" aria-label="Queue options" @ondblclick:stopPropagation="true">
-                            <button @onclick="() => Enqueue(row.TrackId, true)">Play next</button>
-                            <button @onclick="() => Enqueue(row.TrackId, false)">Add to queue</button>
-                            <button @onclick="() => _menuTrack = null">Close</button>
-                        </div>
+                        <button class="iconbutton iconbutton--small" disabled="@(!CanReorder || RowOffset + index == 0)"
+                                @onclick="() => OnMove.InvokeAsync(new MoveRequest(itemId, -1))" @ondblclick:stopPropagation="true"
+                                title="Move up" aria-label="@($"Move {row.Title} up")">↑</button>
+                        <button class="iconbutton iconbutton--small" disabled="@(!CanReorder || RowOffset + index >= EffectiveTotal - 1)"
+                                @onclick="() => OnMove.InvokeAsync(new MoveRequest(itemId, 1))" @ondblclick:stopPropagation="true"
+                                title="Move down" aria-label="@($"Move {row.Title} down")">↓</button>
                     }
+                    <button class="iconbutton iconbutton--small" aria-label="Song options" title="Queue options"
+                            @onclick="e => OpenMenu(row, e)" @ondblclick:stopPropagation="true">⋯</button>
                     <AddToPlaylistButton TrackIds="@(new[] { row.TrackId })" />
                     @if (OnRemove.HasDelegate)
                     {
@@ -73,6 +79,21 @@
     </tbody>
 </table>
 
+@if (_menuRow is { } menuRow)
+{
+    <div class="track-menu-backdrop" @onclick="CloseMenu" @oncontextmenu="CloseMenu" @oncontextmenu:preventDefault="true" @onwheel="CloseMenu"></div>
+    <div class="track-queue-menu" @ref="_menuElement" role="group" aria-label="Song options" tabindex="-1"
+         style="@MenuPosition" @onkeydown="MenuKeyDown">
+        <button @onclick="() => Enqueue(menuRow.TrackId, true)">Play next</button>
+        <button @onclick="() => Enqueue(menuRow.TrackId, false)">Add to queue</button>
+        @if (menuRow.ItemId is not null && OnRequestReplacement.HasDelegate)
+        {
+            <button @onclick="() => RequestReplacement(menuRow)">Request &amp; replace…</button>
+        }
+        <button @onclick="CloseMenu">Close</button>
+    </div>
+}
+
 @if (Rows.Count == 0)
 {
     <div class="emptystate">
@@ -82,10 +103,60 @@
 }
 
 @code {
-    private Guid? _menuTrack;
+    public sealed record MoveRequest(Guid ItemId, int Direction, Guid? TargetItemId = null);
+    private Row? _menuRow;
+    private Guid? _draggedItem;
+    private double _menuX, _menuY;
+    private bool _positionMenu, _keyboardMenu;
+    private ElementReference _menuElement;
+    private IJSObjectReference? _menuModule;
+    private IReadOnlyList<Row>? _previousRows;
+    private bool CanReorder => OnMove.HasDelegate && ReorderingEnabled && !IsReordering;
+    private int EffectiveTotal => TotalRows ?? RowOffset + Rows.Count;
+    private string MenuPosition => FormattableString.Invariant($"left:{_menuX}px;top:{_menuY}px");
+
+    private void OpenMenu(Row row, MouseEventArgs e)
+    {
+        _menuRow = row;
+        _menuX = e.ClientX;
+        _menuY = e.ClientY;
+        _keyboardMenu = e.ClientX == 0 && e.ClientY == 0;
+        _positionMenu = true;
+    }
+
+    private void CloseMenu() => _menuRow = null;
+    private async Task RequestReplacement(Row row)
+    {
+        CloseMenu();
+        await OnRequestReplacement.InvokeAsync(row);
+    }
+    private void MenuKeyDown(KeyboardEventArgs e) { if (e.Key == "Escape") CloseMenu(); }
+
+    protected override void OnParametersSet()
+    {
+        if (!ReferenceEquals(_previousRows, Rows)) CloseMenu();
+        _previousRows = Rows;
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!_positionMenu || _menuRow is null) return;
+        _positionMenu = false;
+        _menuModule ??= await JS.InvokeAsync<IJSObjectReference>("import", "./js/context-menu.js");
+        await _menuModule.InvokeVoidAsync("position", _menuElement, _menuX, _menuY, _keyboardMenu);
+    }
+
+    private async Task Drop(Row target)
+    {
+        var source = _draggedItem;
+        _draggedItem = null;
+        if (CanReorder && source is { } from && target.ItemId is { } to && from != to)
+            await OnMove.InvokeAsync(new MoveRequest(from, 0, to));
+    }
+
     private async Task Enqueue(Guid id, bool next)
     {
-        _menuTrack = null;
+        CloseMenu();
         await Player.EnqueueAsync(id, next);
     }
 
@@ -100,6 +171,12 @@
     [Parameter] public bool ShowArtist { get; set; } = true;
     [Parameter] public string EmptyMessage { get; set; } = "Nothing here yet.";
     [Parameter] public EventCallback<Guid> OnRemove { get; set; }
+    [Parameter] public EventCallback<Row> OnRequestReplacement { get; set; }
+    [Parameter] public int RowOffset { get; set; }
+    [Parameter] public int? TotalRows { get; set; }
+    [Parameter] public EventCallback<MoveRequest> OnMove { get; set; }
+    [Parameter] public bool ReorderingEnabled { get; set; } = true;
+    [Parameter] public bool IsReordering { get; set; }
 
     /// <summary>
     /// The playlist these rows came out of, when they came out of one. Passed to the player so
@@ -118,7 +195,15 @@
 
     private async Task OnPlayerChanged() => await InvokeAsync(StateHasChanged);
 
-    public void Dispose() => Player.StateChanged -= OnPlayerChanged;
+    public async ValueTask DisposeAsync()
+    {
+        Player.StateChanged -= OnPlayerChanged;
+        if (_menuModule is not null)
+        {
+            try { await _menuModule.DisposeAsync(); }
+            catch (JSDisconnectedException) { }
+        }
+    }
 
     /// <summary>
     /// The button on the row. Pauses when it is showing a pause icon, and otherwise starts the

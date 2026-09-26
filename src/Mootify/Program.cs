@@ -268,6 +268,8 @@ builder.Services.AddSingleton<AlbumArtService>();
 builder.Services.AddSingleton<Transcoder>();
 builder.Services.AddSingleton<LibraryTranscodeService>();
 builder.Services.AddSingleton<TranscodeCache>();
+builder.Services.AddSingleton<LibraryNormalizationService>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<LibraryNormalizationService>());
 
 builder.Services.AddScoped<LibrarySearchService>();
 builder.Services.AddScoped<PlaylistService>();

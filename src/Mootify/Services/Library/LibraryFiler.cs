@@ -99,13 +99,16 @@ public sealed class LibraryFiler(
 
     /// <summary>
     /// The folders inside the music root that are <i>not</i> the library: the mailbox, whose
-    /// contents are still being copied, and the quarantine, whose contents were deliberately
-    /// taken out. One list in one place, because three different walkers over the same tree with
+    /// contents are still being copied, the quarantine, whose contents were deliberately
+    /// taken out, and the storage cache, whose copies must never become library tracks. One list in one place, because three different walkers over the same tree with
     /// two different opinions about it is precisely how a merged-away duplicate finds its way
     /// back in — see <see cref="LibraryScanner.EnumerateAudioFiles"/> and
     /// <see cref="Transcoding.LibraryTranscodeService.FindConvertible"/>.
     /// </summary>
-    public string?[] NotLibrary => [DropFolder, DuplicatesFolder];
+    public string? CacheFolder => string.IsNullOrWhiteSpace(options.CurrentValue.MusicRoot)
+        ? null : LibraryCachePaths.Root(options.CurrentValue);
+
+    public string?[] NotLibrary => [DropFolder, DuplicatesFolder, CacheFolder];
 
     /// <summary>Resolves a configured folder name against the music root. Null if either is blank.</summary>
     private string? Inside(string? folder)

@@ -130,19 +130,27 @@ else
         <p class="muted">Searching&hellip;</p>
     }
 
-    <TrackList Rows="_tracks" OnRemove="Remove" SourcePlaylistId="PlaylistId"
+    @if (!string.IsNullOrWhiteSpace(_query))
+    {
+        <p class="muted">Clear the search to reorder this playlist.</p>
+    }
+    @if (_moveError is not null) { <p class="error" role="alert">@_moveError</p> }
+    <TrackList Rows="_tracks" OnRemove="Remove" SourcePlaylistId="PlaylistId" OnRequestReplacement="RequestReplacement"
+               TotalRows="_page.Total" OnMove="Move"
+               ReorderingEnabled="@(string.IsNullOrWhiteSpace(_query))" IsReordering="_moving"
                EmptyMessage="@EmptyMessage" />
 
-    <Pager Page="_page.PageNumber" Of="_page.PageCount" Total="_page.Total" Noun="track"
-           HasPrevious="_page.HasPrevious" HasNext="_page.HasNext"
-           OnGoTo="GoTo" Skip="_page.Skip" Take="_page.Take" />
+    <InfiniteScroll HasMore="@(_tracks.Count < _page.Total)" Busy="@(_loadingMore || _searching || _moving)"
+                    OnLoadMore="LoadMoreAsync" Label="Load more songs"
+                    EndLabel="@(_tracks.Count > 0 ? $"All {_tracks.Count} songs shown" : null)" />
 }
 
 @code {
     [Parameter] public Guid PlaylistId { get; set; }
 
     private PlaylistTrackPage? _page;
-    private int _skip;
+    private bool _loadingMore;
+    private int _loadVersion;
     private Guid _userId;
     private string _query = "";
     private bool _searching;
@@ -173,102 +181,124 @@ else
     /// <summary>
     /// Which playlist the state below belongs to. <c>OnParametersSetAsync</c> runs on every
     /// cascading update as well as on navigation — an auth-state renewal is one — so without
-    /// this, somebody reading page 4 of a long playlist gets thrown back to page 1 by an event
-    /// that has nothing to do with them.
+    /// this, an unrelated update can reset a listener's scroll through a long playlist.
     /// </summary>
     private Guid _loadedPlaylistId;
 
     protected override async Task OnParametersSetAsync()
     {
-        if (PlaylistId != _loadedPlaylistId)
-        {
-            // A different playlist is a different list; page 4 of the last one means nothing here.
-            _loadedPlaylistId = PlaylistId;
-            _skip = 0;
-            _query = "";
-            StartPolling();
-        }
-
+        if (PlaylistId == _loadedPlaylistId) return;
+        _loadedPlaylistId = PlaylistId;
+        _searchCts?.Cancel();
+        _query = "";
+        _searching = false;
+        _tracks = [];
+        _page = null;
+        StartPolling();
         await LoadAsync();
     }
 
-    private async Task LoadAsync(CancellationToken ct = default)
+    // Reload the visible prefix after edits, preserving how far the listener has scrolled.
+    private async Task LoadAsync(CancellationToken ct = default, int? minimumRows = null)
     {
-        _userId = await CurrentUser.GetRequiredIdAsync();
-
-        var page = await Playlists.GetPageAsync(PlaylistId, _userId, _skip, query: _query, ct: ct);
-
-        if (page is null)
+        var version = ++_loadVersion;
+        _loadingMore = true;
+        var playlistId = PlaylistId;
+        var query = _query;
+        var keep = minimumRows ?? _tracks.Count;
+        try
         {
-            _notFound = true;
-            _page = null;
-            return;
+            _userId = await CurrentUser.GetRequiredIdAsync();
+            var page = await Playlists.GetPageAsync(playlistId, _userId, query: query, ct: ct);
+            if (version != _loadVersion) return;
+            if (page is null)
+            {
+                _notFound = true;
+                _page = null;
+                _tracks = [];
+                return;
+            }
+            var rows = page.Rows.ToList();
+            while (rows.Count < keep && rows.Count < page.Total)
+            {
+                var next = await Playlists.GetPageAsync(playlistId, _userId, rows.Count, query: query, ct: ct);
+                if (version != _loadVersion) return;
+                if (next is null || next.Skip != rows.Count || next.Rows.Count == 0) break;
+                rows.AddRange(next.Rows);
+                page = next;
+            }
+            var teams = page.TeamId is null ? await Teams.GetForUserAsync(_userId) : [];
+            if (version != _loadVersion) return;
+            _notFound = false;
+            _page = page;
+            _myTeams = teams;
+            _tracks = rows.Select(ToRow).ToList();
+            if (page.IsTeamPlaylist)
+            {
+                _shareListening = await Listening.IsSharingAsync(_userId);
+                await RefreshListenersAsync();
+            }
+            else _listeners = [];
         }
-
-        _notFound = false;
-        _page = page;
-
-        // GetPageAsync clamps a skip that ran off the end of a shrinking list; take its answer
-        // rather than keeping our own.
-        _skip = page.Skip;
-
-        _myTeams = page.TeamId is null ? await Teams.GetForUserAsync(_userId) : [];
-
-        _tracks =
-        [
-            .. page.Rows.Select(r => new TrackList.Row(
-                r.TrackId, r.Title, r.ArtistName, r.Duration, r.ItemId))
-        ];
-
-        if (page.IsTeamPlaylist)
-        {
-            _shareListening = await Listening.IsSharingAsync(_userId);
-            await RefreshListenersAsync();
-        }
-        else
-        {
-            _listeners = [];
-        }
+        finally { if (version == _loadVersion) _loadingMore = false; }
     }
 
-    private async Task GoTo(int skip)
+    private async Task LoadMoreAsync()
     {
-        _skip = Math.Max(0, skip);
-        await LoadAsync();
+        if (_loadingMore || _searching || _moving || _page is null || _tracks.Count >= _page.Total) return;
+        _loadingMore = true;
+        var version = _loadVersion;
+        try
+        {
+            var page = await Playlists.GetPageAsync(PlaylistId, _userId, _tracks.Count, query: _query);
+            if (version != _loadVersion) return;
+            if (page is null || page.Skip != _tracks.Count)
+            {
+                await LoadAsync();
+                return;
+            }
+            var seen = _tracks.Select(r => r.ItemId).ToHashSet();
+            if (page.Rows.Any(r => seen.Contains(r.ItemId)))
+            {
+                // Another editor changed the order while this batch was loading.
+                await LoadAsync();
+                return;
+            }
+            _tracks = [.. _tracks, .. page.Rows.Select(ToRow)];
+            _page = page;
+        }
+        finally { if (version == _loadVersion) _loadingMore = false; }
     }
+
+    private static TrackList.Row ToRow(PlaylistTrackRow row) =>
+        new(row.TrackId, row.Title, row.ArtistName, row.Duration, row.ItemId);
 
     private void OnQueryChanged()
     {
         _searchCts?.Cancel();
         _searchCts?.Dispose();
         _searchCts = new CancellationTokenSource();
-        var token = _searchCts.Token;
+        ++_loadVersion; // Discard any page that is still arriving for the previous query.
+        _searching = true;
+        _ = SearchAsync(_searchCts.Token);
+    }
 
-        _ = Task.Run(async () =>
+    private async Task SearchAsync(CancellationToken token)
+    {
+        try
         {
-            try
+            await Task.Delay(SearchDebounce, token);
+            await LoadAsync(token, minimumRows: 0);
+        }
+        catch (OperationCanceledException) { }
+        finally
+        {
+            if (!token.IsCancellationRequested)
             {
-                await Task.Delay(SearchDebounce, token);
-                _searching = true;
+                _searching = false;
                 await InvokeAsync(StateHasChanged);
-
-                _skip = 0;
-                await LoadAsync(token);
-                await InvokeAsync(StateHasChanged);
             }
-            catch (OperationCanceledException)
-            {
-                // Superseded by the next keystroke, or the page was closed.
-            }
-            finally
-            {
-                if (!token.IsCancellationRequested)
-                {
-                    _searching = false;
-                    await InvokeAsync(StateHasChanged);
-                }
-            }
-        }, CancellationToken.None);
+        }
     }
 
     private string EmptyMessage => LibraryMatch.Clean(_query) is null
@@ -329,6 +359,7 @@ else
 
     public ValueTask DisposeAsync()
     {
+        ++_loadVersion;
         StopPolling();
         _searchCts?.Cancel();
         _searchCts?.Dispose();
@@ -349,6 +380,32 @@ else
         await Player.PlayQueueAsync(ids, 0, PlaylistId);
     }
 
+    private bool _moving;
+    private string? _moveError;
+    private void RequestReplacement(TrackList.Row row) =>
+        Nav.NavigateTo($"/search?replaceItem={row.ItemId}");
+
+    private async Task Move(TrackList.MoveRequest request)
+    {
+        if (_moving || _page is null || !string.IsNullOrWhiteSpace(_query)) return;
+        _moving = true;
+        _moveError = null;
+        try
+        {
+            var rowIndex = _tracks.FindIndex(r => r.ItemId == request.ItemId);
+            if (!await Playlists.MoveItemAsync(request.ItemId, _userId, request.Direction, request.TargetItemId))
+                _moveError = "Could not move this song. The playlist may have changed, or you may no longer have edit access.";
+            else
+            {
+                PlaylistEvents.NotifyChanged();
+            }
+            // A move below the loaded boundary reveals the next batch rather than losing the row.
+            var keep = _tracks.Count + (request.TargetItemId is null && request.Direction > 0 && rowIndex == _tracks.Count - 1 ? 1 : 0);
+            await LoadAsync(minimumRows: keep);
+        }
+        finally { _moving = false; }
+    }
+
     private bool _deduplicating;
     private string? _deduplicateStatus;
     private async Task RemoveDuplicates()
@@ -359,7 +416,6 @@ else
         {
             var count = await Playlists.RemoveDuplicatesAsync(PlaylistId, _userId);
             _deduplicateStatus = count is null ? "You cannot edit this playlist." : count == 0 ? "No duplicates found." : $"Removed {count} duplicate(s).";
-            _skip = 0;
             await LoadAsync();
             PlaylistEvents.NotifyChanged();
         }

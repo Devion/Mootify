@@ -10,7 +10,18 @@
 @using Mootify.Services.Requests
 
 <PageTitle>Search · Mootify</PageTitle>
-<h1>Search</h1>
+<h1>@(ReplacementItemId is null ? "Search" : "Request & replace")</h1>
+@if (_replacement is { } replacement)
+{
+    <p>Find an alternative to <strong>@replacement.Title</strong> by @replacement.ArtistName
+        in <a href="@($"/playlist/{replacement.PlaylistId}")">@replacement.PlaylistName</a>.</p>
+    <p class="muted">The current song stays until the download is ready. Its playlist position is kept.
+        If the chosen version is already in this playlist, it will appear only at this position.</p>
+}
+else if (ReplacementItemId is not null)
+{
+    <p class="error">That playlist entry is no longer available to replace.</p>
+}
 <input class="filterbox filterbox--large" type="search" autofocus placeholder="Song, album or artist…"
        @bind="_query" @bind:event="oninput" @bind:after="OnQueryChanged" aria-label="Search" />
 
@@ -42,15 +53,18 @@
         else if (_remote.Count > 0)
         {
             <p class="muted">Live recordings and bootlegs are excluded. Pick the exact file you want.</p>
-            <div class="lookup__target">
-                <select @bind="_targetPlaylistId" @bind:after="ReloadRequestedAsync" aria-label="Add to playlist when it arrives">
-                    <option value="">Don't add to a playlist</option>
-                    @foreach (var p in _playlists)
-                    {
-                        <option value="@p.Id">Add to @p.Name@(p.IsTeamPlaylist ? $" ({p.TeamName})" : "")</option>
-                    }
-                </select>
-            </div>
+            @if (ReplacementItemId is null)
+            {
+                <div class="lookup__target">
+                    <select @bind="_targetPlaylistId" @bind:after="ReloadRequestedAsync" aria-label="Add to playlist when it arrives">
+                        <option value="">Don't add to a playlist</option>
+                        @foreach (var p in _playlists)
+                        {
+                            <option value="@p.Id">Add to @p.Name@(p.IsTeamPlaylist ? $" ({p.TeamName})" : "")</option>
+                        }
+                    </select>
+                </div>
+            }
             <ul class="results">
                 @foreach (var file in _remote)
                 {
@@ -65,8 +79,8 @@
                                 &middot; @FormatSize(file.Size) &middot; @(file.HasFreeUploadSlot ? "free slot" : $"queue {file.QueueLength}")
                             </span>
                         </div>
-                        <div class="result__actions"><button class="button" @onclick="() => Submit(file)" disabled="@(_submitting || requested)">
-                            @(requested ? "Requested" : "Download")</button></div>
+                        <div class="result__actions"><button class="button" @onclick="() => Submit(file)" disabled="@(_submitting || requested || (ReplacementItemId is not null && (_replacement is null || _replacementRequested)))">
+                            @(requested || _replacementRequested ? "Requested" : ReplacementItemId is not null ? "Request & replace" : "Download")</button></div>
                     </div></li>
                 }
             </ul>
@@ -77,6 +91,10 @@
 
 @code {
     [SupplyParameterFromQuery(Name = "q")] public string? InitialQuery { get; set; }
+    [SupplyParameterFromQuery(Name = "replaceItem")] public Guid? ReplacementItemId { get; set; }
+    private ReplacementTarget? _replacement;
+    private Guid? _loadedReplacement;
+    private bool _replacementRequested;
     private const int LocalResults = 25;
     private string _query = "";
     private List<TrackList.Row> _localTracks = [];
@@ -97,12 +115,28 @@
     }
     protected override async Task OnParametersSetAsync()
     {
+        if (_loadedReplacement != ReplacementItemId)
+        {
+            _loadedReplacement = ReplacementItemId;
+            _replacement = ReplacementItemId is { } itemId
+                ? await Requests.GetReplacementTargetAsync(itemId, _userId) : null;
+            _replacementRequested = false;
+            _remote = []; _lookupDone = false; _message = null;
+            if (_replacement is { } source)
+            {
+                // Remove explicit version suffixes, while preserving titles such as "Live to Tell".
+                var title = System.Text.RegularExpressions.Regex.Replace(source.Title,
+                    @"(?i)\s*[\(\[]\s*(?:live|bootleg)\b[^\)\]]*[\)\]]|\s+-\s+(?:live|bootleg)\b.*$", "").Trim();
+                _query = $"{source.ArtistName} {title}";
+                await SearchLocalAsync();
+            }
+        }
         if (!string.IsNullOrWhiteSpace(InitialQuery) && InitialQuery != _query) { _query = InitialQuery; await SearchLocalAsync(); }
     }
-    private Guid? TargetPlaylistId => Guid.TryParse(_targetPlaylistId, out var id) ? id : null;
+    private Guid? TargetPlaylistId => _replacement?.PlaylistId ?? (Guid.TryParse(_targetPlaylistId, out var id) ? id : null);
     private async Task ReloadRequestedAsync() => _requested = await Requests.GetActiveKeysAsync(_userId);
     private bool AlreadyRequested(SoulseekFile file) => _requested.Contains(
-        RequestService.DuplicateKey(file.Username, file.Filename, TargetPlaylistId, _userId));
+        RequestService.DuplicateKey(file.Username, file.Filename, TargetPlaylistId, _userId, ReplacementItemId));
     private async Task OnQueryChanged()
     {
         _lookupDone = false; _remote = []; _message = null;
@@ -120,15 +154,33 @@
     }
     private async Task RunLookup()
     {
-        _lookingUp = true; _message = null; _remote = await Soulseek.SearchAsync(_query); _lookingUp = false; _lookupDone = true;
+        _lookingUp = true; _message = null;
+        var query = _query;
+        try
+        {
+            var results = await Soulseek.SearchAsync(query);
+            if (query == _query) { _remote = results; _lookupDone = true; }
+        }
+        catch (Exception) { _messageIsError = true; _message = "Soulseek search failed. Please try again."; }
+        finally { _lookingUp = false; }
     }
     private async Task Submit(SoulseekFile file)
     {
+        if (_submitting || (ReplacementItemId is not null && (_replacement is null || _replacementRequested))) return;
         _submitting = true; _message = null;
-        var result = await Requests.CreateAsync(_userId, file, _query, TargetPlaylistId);
-        _messageIsError = !result.Ok;
-        _message = result.Ok ? $"Downloading {file.DisplayName}. You'll get a cowbell when it lands." : result.Error;
-        _submitting = false; await ReloadRequestedAsync();
+        try
+        {
+            var result = await Requests.CreateAsync(_userId, file, _query, TargetPlaylistId,
+                replacementItemId: ReplacementItemId, expectedTrackId: _replacement?.TrackId);
+            _messageIsError = !result.Ok;
+            _replacementRequested = result.Ok && ReplacementItemId is not null;
+            _message = result.Ok
+                ? (_replacementRequested ? "Replacement requested. Your current song stays until it is ready; you'll get a cowbell when it lands."
+                    : $"Downloading {file.DisplayName}. You'll get a cowbell when it lands.") : result.Error;
+            await ReloadRequestedAsync();
+        }
+        catch (Exception) { _messageIsError = true; _message = "Could not submit the request. Please check your requests before trying again."; }
+        finally { _submitting = false; }
     }
     private static string FormatSize(long bytes) => bytes < 1024 * 1024 ? $"{bytes / 1024d:0.#} KB" : $"{bytes / 1024d / 1024d:0.#} MB";
     public void Dispose() => _debounceCts?.Dispose();

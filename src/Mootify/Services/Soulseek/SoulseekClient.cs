@@ -274,15 +274,21 @@ public sealed class SoulseekClient(
         || reason?.Contains("user is offline", StringComparison.OrdinalIgnoreCase) == true;
 
     public async Task<(bool Ok, string? Error)> EnqueueAsync(
-        Guid requestId, SoulseekFile file, CancellationToken ct = default, Guid? destinationId = null)
+        Guid requestId, SoulseekFile file, CancellationToken ct = default, Guid? destinationId = null) =>
+        await EnqueueFilesAsync(requestId, [file], ct, destinationId);
+
+    public async Task<(bool Ok, string? Error)> EnqueueFilesAsync(
+        Guid requestId, IReadOnlyList<SoulseekFile> files, CancellationToken ct = default, Guid? destinationId = null)
     {
+        if (files.Count == 0 || files.Any(f => f.Username != files[0].Username))
+            return (false, "A download batch must contain files from one peer.");
         var destination = DestinationFor(destinationId ?? requestId);
         var request = Request(HttpMethod.Post, "api/v0/transfers/downloads/batches");
         request.Content = JsonContent.Create(new
         {
             id = requestId,
-            username = file.Username,
-            files = new[] { new { filename = file.Filename, size = file.Size } },
+            username = files[0].Username,
+            files = files.Select(file => new { filename = file.Filename, size = file.Size }).ToArray(),
             options = new { destination, externalId = requestId.ToString() },
         });
 

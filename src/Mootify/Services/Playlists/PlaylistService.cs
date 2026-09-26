@@ -588,6 +588,39 @@ public sealed class PlaylistService(
         return true;
     }
 
+    /// <summary>
+    /// Moves an item by one visible position, or to another item's position for drag/drop.
+    /// Stable item IDs and a transaction avoid trusting stale page indices or client sort keys.
+    /// </summary>
+    public async Task<bool> MoveItemAsync(
+        Guid itemId, Guid userId, int direction, Guid? targetItemId = null, CancellationToken ct = default)
+    {
+        if (targetItemId is null && direction is not (-1 or 1)) return false;
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
+        await using var transaction = await db.Database.BeginTransactionAsync(ct);
+        var item = await db.PlaylistItems.Include(i => i.Playlist).FirstOrDefaultAsync(i => i.Id == itemId, ct);
+        if (item?.Playlist is null) return false;
+        var teams = await TeamService.GetTeamIdsAsync(db, userId, ct);
+        if (!PlaylistAccess.CanEdit(item.Playlist, userId, teams)) return false;
+
+        var items = await db.PlaylistItems.Where(i => i.PlaylistId == item.PlaylistId)
+            .Include(i => i.Track).OrderBy(i => i.SortKey).ThenBy(i => i.Id).ToListAsync(ct);
+        var visible = items.Where(i => i.Track!.IsPresent).ToList();
+        var from = visible.FindIndex(i => i.Id == itemId);
+        if (from < 0) return false;
+        var to = targetItemId is { } target ? visible.FindIndex(i => i.Id == target) : from + direction;
+        if (to < 0 || to >= visible.Count) return false;
+        if (to == from) return true;
+        var destination = items.IndexOf(visible[to]);
+        items.Remove(item);
+        items.Insert(destination, item);
+        for (var i = 0; i < items.Count; i++) items[i].SortKey = (i + 1) * SortKeyStep;
+        item.Playlist.UpdatedAt = DateTimeOffset.UtcNow;
+        await db.SaveChangesAsync(ct);
+        await transaction.CommitAsync(ct);
+        return true;
+    }
+
     private async Task RenumberAsync(Guid playlistId, CancellationToken ct)
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct);

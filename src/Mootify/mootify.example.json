@@ -36,6 +36,8 @@
   "Library": {
     "//MusicRoot": "The path THIS app can see. A UNC share works: \\\\\\\\host\\\\Data\\\\MediaMusic",
     "MusicRoot": "",
+    "//CacheFolder": "Directory on music storage for Art and Normalized caches. Excluded from scanning; never falls back to local storage.",
+    "CacheFolder": "Cache",
     "//Username": "Only needed for a UNC share that requires a login. Windows only — on Linux, mount the share in the OS.",
     "//Password": "Also reads from the Library__Password environment variable or a Docker secret.",
     "Username": "",
@@ -75,9 +77,7 @@
     "//TokenLifetime": "How long a signed-in phone stays signed in. 0 means never expires. A car stereo asking for a password is worse than useless; devices are revoked from /account.",
     "TokenLifetime": "365.00:00:00",
     "MaxTokensPerUser": 10,
-    "MaxPageSize": 500,
-    "//ArtCacheDirectory": "Extracted cover art. Empty means data/art-cache — never put it inside MusicRoot, which the scanner walks.",
-    "ArtCacheDirectory": ""
+    "MaxPageSize": 500
   },
 
   "Transcode": {

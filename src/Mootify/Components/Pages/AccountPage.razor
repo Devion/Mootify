@@ -5,6 +5,7 @@
 @inject ListeningService Listening
 @inject PreferenceService Preferences
 @inject CurrentUser CurrentUser
+@inject PlayerService Player
 
 <PageTitle>Account · Mootify</PageTitle>
 
@@ -32,7 +33,17 @@
 </section>
 
 <section class="managebox">
-    <h2>Keep playing</h2>
+    <h2>Playback</h2>
+    <label>
+        <input type="checkbox" checked="@_normalizeVolume" @onchange="SetNormalization" />
+        Normalize volume
+    </label>
+    <p class="muted">
+        Keep songs at a similar volume during website playback. Changes apply from the next song.
+        Songs that have not been prepared yet can take longer to start.
+    </p>
+
+    <h3>Keep playing</h3>
     <p class="muted">
         When a playlist runs out, carry on with songs picked from what you listen to. It only
         does anything once there's enough history to pick from &mdash; before that the music just
@@ -103,6 +114,7 @@
     private List<ApiTokenInfo> _devices = [];
     private bool _shareListening;
     private bool _autoContinue;
+    private bool _normalizeVolume;
 
     protected override async Task OnInitializedAsync()
     {
@@ -111,8 +123,15 @@
         var userId = await CurrentUser.GetRequiredIdAsync();
         _shareListening = await Listening.IsSharingAsync(userId);
         _autoContinue = await Preferences.GetAutoContinueAsync(userId);
+        _normalizeVolume = await Preferences.GetNormalizeVolumeAsync(userId);
 
         await LoadDevicesAsync();
+    }
+
+    private async Task SetNormalization(ChangeEventArgs e)
+    {
+        await Player.SetNormalizeVolumeAsync(e.Value is true);
+        _normalizeVolume = Player.NormalizeVolume;
     }
 
     private async Task ToggleAutoContinue() =>

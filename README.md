@@ -27,16 +27,30 @@ files have vanished.
 
 - Open **Queue** in the play bar for the full right-hand panel, including the current track.
   Drag songs or use the up/down buttons to change playback order, including while shuffled.
-- Right-click a song in the library or a playlist, or open its **⋯** menu, to **Play next** or
-  **Add to queue**. These actions keep the current song playing.
-- **Normalize volume** in the queue panel is saved per account for website playback and takes
+- Playlists load more songs as you scroll, with continuous numbering. Drag rows or use their
+  arrows to reorder the saved playlist. Clear a playlist search before reordering.
+- Right-click a song in the library or a playlist for a menu beside the pointer, or open its **⋯**
+  menu, to **Play next** or **Add to queue**. These actions keep the current song playing.
+- **Normalize volume** in **Account → Playback** is saved per account for website playback and takes
   effect from the next song. It uses FFmpeg loudness normalization (-16 LUFS, -1.5 dB true-peak
   target) in separate cached MP3 copies; the originals stay intact. Preparing a song's first
-  normalized copy can delay playback. Normalized copies share the existing transcode cache controls.
+  normalized copy can delay playback. Admins can use **Admin → Normalized playback → Prepare all MP3s**
+  to prepare the scanned MP3 library in the background, with progress and cancellation. Reruns skip
+  up-to-date copies, so cancelled jobs can be resumed by starting again. Run it again after adding
+  songs or clearing the playback cache. Preparation uses extra disk space and keeps originals intact.
 - Adding to playlists skips library tracks already present, including repeated tracks in a batch.
   **Remove duplicates** on a playlist removes repeated occurrences of the same library track,
   retaining the first occurrence and the remaining order. Existing duplicates stay until removed.
 - Soulseek search results show duration when the peer supplies it, or **Length unknown**.
+- In a playlist, **Request & replace…** opens an editable search for an alternative recording.
+  Choose a Soulseek file; the original stays until that download is ready, then the selected entry
+  is replaced in place. Other playlists and library files are untouched. If the new version already
+  appears elsewhere in this playlist, that duplicate is removed. A cowbell reports the outcome;
+  deleted or changed entries and revoked access prevent replacement.
+- **Admin → Requests → Retry** searches Soulseek again for failed or not-found requests, including
+  older Lidarr requests. It retains the requester and playlist target; album retries download the
+  matching files returned from one peer's album folder. Searches run in the background and retry
+  later when no matching peer is available.
 
 When filing an Ideabox item, admins can optionally send a reply of up to 280 characters. The author
 sees it on the idea and receives a notification in the bell. **Last seen** updates on authenticated
@@ -47,6 +61,14 @@ visits, navigation, and API activity, with a five-minute write throttle for pers
 Everything lives in `src/Mootify/mootify.json`, which is gitignored because it holds the slskd
 API key. Environment variables override it (`Soulseek__ApiKey`, `Library__MusicRoot`), so Docker
 secrets work without touching the file.
+
+Artwork and normalized playback copies are stored on the music storage device:
+`<Library:MusicRoot>/Cache/Art` and `<Library:MusicRoot>/Cache/Normalized`.
+`Library:CacheFolder` defaults to `Cache` and must stay inside `MusicRoot`. The entire cache folder
+is excluded from scanning and organizing. If storage is unavailable, these caches never fall back
+to the webserver's `data` directory. The former `Api:ArtCacheDirectory` setting no longer controls
+where artwork is written. Existing normalized copies in the old transcode cache are moved to
+storage when playback or bulk preparation needs them, avoiding another conversion.
 
 Two settings need real thought:
 

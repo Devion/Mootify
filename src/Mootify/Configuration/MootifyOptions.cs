@@ -73,19 +73,7 @@ public sealed class ApiOptions
     [Range(10, 2000)]
     public int MaxPageSize { get; set; } = 500;
 
-    /// <summary>
-    /// Where extracted cover art is cached. Empty puts it next to the transcode cache, under
-    /// the app's data folder — never inside the music root, which the scanner walks.
-    /// </summary>
-    /// <summary>
-    /// Where extracted cover art is cached. Empty puts it under the app's data folder — never
-    /// inside the music root, which the scanner walks.
-    ///
-    /// Art is served at whatever size the file embeds it. Resizing would mean an image library
-    /// on the server, and the clients that ask for art (Coil on Android, the browser) already
-    /// downsample to the slot they're drawing into.
-    /// </summary>
-    public string ArtCacheDirectory { get; set; } = "";
+
 }
 
 public sealed class SoulseekOptions
@@ -142,6 +130,10 @@ public sealed class LibraryOptions
     /// <summary>Root folder containing the library and, normally, slskd's downloads directory.</summary>
     [Required(AllowEmptyStrings = false)]
     public string MusicRoot { get; set; } = "";
+
+    /// <summary>Cache directory inside music storage; excluded from scans. Contains Art and Normalized.</summary>
+    [Required(AllowEmptyStrings = false)]
+    public string CacheFolder { get; set; } = "Cache";
 
     /// <summary>
     /// Credentials for a UNC share that needs them. Leave blank when the share is open, or

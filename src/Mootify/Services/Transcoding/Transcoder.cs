@@ -29,6 +29,9 @@ public sealed class Transcoder(
         Math.Max(1, options.CurrentValue.MaxConcurrent),
         Math.Max(1, options.CurrentValue.MaxConcurrent));
 
+    // Normalization has its own budget; admin preparation further limits its worker count.
+    private readonly SemaphoreSlim _normalizationGate = new(8, 8);
+
     public bool IsAvailable { get; private set; } = true;
 
     /// <summary>
@@ -126,7 +129,8 @@ public sealed class Transcoder(
     {
         var opts = options.CurrentValue;
 
-        await _gate.WaitAsync(ct);
+        var gate = normalize ? _normalizationGate : _gate;
+        await gate.WaitAsync(ct);
         try
         {
             // Write to a temp name first — a half-written .mp3 picked up by the watcher
@@ -157,7 +161,7 @@ public sealed class Transcoder(
         }
         finally
         {
-            _gate.Release();
+            gate.Release();
         }
     }
 

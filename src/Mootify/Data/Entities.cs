@@ -460,6 +460,10 @@ public sealed class Request
     public Guid? TargetPlaylistId { get; set; }
     public Playlist? TargetPlaylist { get; set; }
 
+    // Bare ids survive deletion: completion must never recreate a removed entry.
+    public Guid? ReplacementItemId { get; set; }
+    public Guid? ReplacementTrackId { get; set; }
+
     [MaxLength(1024)]
     public string? FailureReason { get; set; }
 
