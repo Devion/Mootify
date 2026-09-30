@@ -87,9 +87,10 @@
 
     <div class="playbar__right">
         <button class="iconbutton @(_queueOpen ? "is-active" : "")" @onclick="ToggleQueue"
-                title="Queue" aria-label="Queue" aria-expanded="@_queueOpen">
+                title="@(Player.JoinedQueue is { } joined ? $"{joined.HostName}’s shared queue" : "Queue")"
+                aria-label="@(Player.JoinedQueue is null ? "Queue" : "Shared queue")" aria-expanded="@_queueOpen">
             <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M3 5h13v2H3Zm0 4h13v2H3Zm0 4h9v2H3Zm0 4h9v2H3Zm12-1.5V11l6 3.25Z"/></svg>
-            @if (Player.UpNextTotal() is > 0 and var waiting)
+            @if ((Player.JoinedQueue is { } shared ? shared.Entries.Count - shared.CurrentIndex - 1 : Player.UpNextTotal()) is > 0 and var waiting)
             {
                 <span class="iconbutton__mark">@(waiting > 99 ? "99+" : waiting.ToString())</span>
             }
@@ -99,7 +100,7 @@
             <path fill="currentColor" d="M4 9h3l4-4v14l-4-4H4Zm12.5 3a4.5 4.5 0 0 0-2.5-4v8a4.5 4.5 0 0 0 2.5-4Z"/>
         </svg>
         <input class="playbar__volume" type="range" min="0" max="1" step="0.01"
-               value="@Num(Player.Volume)" @onchange="OnVolume" aria-label="Volume" />
+               value="@Num(Player.Volume)" @oninput="OnVolume" aria-label="Volume" />
     </div>
 
     @*  Inside the play bar, so the drawer lives in the layout that never unmounts and
@@ -117,13 +118,45 @@
     private bool _scrubbing;
     private double _scrubTarget;
     private bool _queueOpen;
+    private Guid? _lastJoinedQueue;
 
     private void ToggleQueue() => _queueOpen = !_queueOpen;
 
-    protected override void OnInitialized() => Player.StateChanged += OnChanged;
+    private readonly CancellationTokenSource _queuePolling = new();
+
+    protected override void OnInitialized()
+    {
+        Player.StateChanged += OnChanged;
+        Player.DispatchSharedQueue = action => InvokeAsync(action);
+    }
+
+    protected override Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender) _ = PollSharedQueueAsync(_queuePolling.Token);
+        return Task.CompletedTask;
+    }
+
+    private async Task PollSharedQueueAsync(CancellationToken token)
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(2));
+        try
+        {
+            while (await timer.WaitForNextTickAsync(token))
+            {
+                try { await InvokeAsync(Player.RefreshSharedQueueAsync); }
+                catch (Exception) when (!token.IsCancellationRequested) { /* Retry on the next tick. */ }
+            }
+        }
+        catch (OperationCanceledException) { }
+    }
 
     private async Task OnChanged()
     {
+        if (Player.JoinedQueue?.Id != _lastJoinedQueue)
+        {
+            _lastJoinedQueue = Player.JoinedQueue?.Id;
+            if (_lastJoinedQueue is not null) _queueOpen = true;
+        }
         // Not while somebody is dragging. Playback reports its position several times a
         // second, and re-rendering rewrites the input's value — which yanks the thumb back to
         // the playhead mid-gesture, so the browser abandons the drag and never fires `change`.
@@ -199,5 +232,11 @@
         return t.TotalHours >= 1 ? t.ToString(@"h\:mm\:ss") : t.ToString(@"m\:ss");
     }
 
-    public void Dispose() => Player.StateChanged -= OnChanged;
+    public void Dispose()
+    {
+        _queuePolling.Cancel();
+        _queuePolling.Dispose();
+        Player.DispatchSharedQueue = null;
+        Player.StateChanged -= OnChanged;
+    }
 }

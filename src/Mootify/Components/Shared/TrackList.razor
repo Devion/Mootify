@@ -26,10 +26,11 @@
             @* Double-click starts the list from this row whatever it is showing; the button
                below decides for itself, so it stops the double-click from also reaching here
                and undoing what the press just did. *@
-            <tr @key="@(row.ItemId ?? row.TrackId)" class="@(isCurrent ? "is-current" : "")" @ondblclick="() => StartFrom(index)"
+            <tr @key="@(row.ItemId ?? row.TrackId)" class="@(isCurrent ? "is-current" : "") @DropClass(row)" @ondblclick="() => StartFrom(index)"
                 @oncontextmenu="e => OpenMenu(row, e)" @oncontextmenu:preventDefault="true"
                 draggable="@(CanReorder && row.ItemId is not null)" @ondragstart="() => _draggedItem = row.ItemId"
-                @ondragover:preventDefault="CanReorder" @ondrop="() => Drop(row)" @ondragend="() => _draggedItem = null">
+                @ondragover:preventDefault="CanReorder" @ondragover="() => _dropTarget = row.ItemId"
+                @ondragleave="() => _dropTarget = null" @ondrop="() => Drop(row)" @ondragend="EndDrag">
                 <td class="tracklist__num">
                     @* The label follows the icon, because the icon follows the player. *@
                     <button class="tracklist__play" @onclick="() => Press(index)"
@@ -84,8 +85,8 @@
     <div class="track-menu-backdrop" @onclick="CloseMenu" @oncontextmenu="CloseMenu" @oncontextmenu:preventDefault="true" @onwheel="CloseMenu"></div>
     <div class="track-queue-menu" @ref="_menuElement" role="group" aria-label="Song options" tabindex="-1"
          style="@MenuPosition" @onkeydown="MenuKeyDown">
-        <button @onclick="() => Enqueue(menuRow.TrackId, true)">Play next</button>
-        <button @onclick="() => Enqueue(menuRow.TrackId, false)">Add to queue</button>
+        <button @onclick="() => Enqueue(menuRow.TrackId, true)">@(Player.JoinedQueue is null ? "Play next" : "Suggest next in shared queue")</button>
+        <button @onclick="() => Enqueue(menuRow.TrackId, false)">@(Player.JoinedQueue is null ? "Add to queue" : "Add to shared queue")</button>
         @if (menuRow.ItemId is not null && OnRequestReplacement.HasDelegate)
         {
             <button @onclick="() => RequestReplacement(menuRow)">Request &amp; replace…</button>
@@ -106,6 +107,15 @@
     public sealed record MoveRequest(Guid ItemId, int Direction, Guid? TargetItemId = null);
     private Row? _menuRow;
     private Guid? _draggedItem;
+    private Guid? _dropTarget;
+    private void EndDrag() { _draggedItem = null; _dropTarget = null; }
+    private string DropClass(Row row)
+    {
+        if (!CanReorder || _draggedItem is null || _dropTarget != row.ItemId || _draggedItem == row.ItemId) return "";
+        var from = Rows.ToList().FindIndex(r => r.ItemId == _draggedItem);
+        var to = Rows.ToList().FindIndex(r => r.ItemId == _dropTarget);
+        return from < to ? "drop-after" : "drop-before";
+    }
     private double _menuX, _menuY;
     private bool _positionMenu, _keyboardMenu;
     private ElementReference _menuElement;
@@ -134,7 +144,7 @@
 
     protected override void OnParametersSet()
     {
-        if (!ReferenceEquals(_previousRows, Rows)) CloseMenu();
+        if (!ReferenceEquals(_previousRows, Rows)) { CloseMenu(); EndDrag(); }
         _previousRows = Rows;
     }
 
@@ -149,7 +159,7 @@
     private async Task Drop(Row target)
     {
         var source = _draggedItem;
-        _draggedItem = null;
+        EndDrag();
         if (CanReorder && source is { } from && target.ItemId is { } to && from != to)
             await OnMove.InvokeAsync(new MoveRequest(from, 0, to));
     }

@@ -28,7 +28,15 @@ files have vanished.
 - Open **Queue** in the play bar for the full right-hand panel, including the current track.
   Drag songs or use the up/down buttons to change playback order, including while shuffled.
 - Playlists load more songs as you scroll, with continuous numbering. Drag rows or use their
-  arrows to reorder the saved playlist. Clear a playlist search before reordering.
+  arrows to reorder the saved playlist. A yellow insertion line marks the drop position.
+  Clear a playlist search before reordering.
+- For an office queue, play a team playlist, enable **Share what I'm playing**, then **Share queue**.
+  Teammates choose **Join queue** beside your listening status. Their Queue panel follows your
+  playback order; song options offer **Suggest next in shared queue** and **Add to shared queue**.
+  Joining never starts audio on their device. **Leave queue** restores their local queue controls.
+  Sharing ends when the host stops sharing, replaces the queue, or closes the session. These live
+  website queues are held in server memory and end on a server restart.
+- The volume slider applies changes continuously while dragging.
 - Right-click a song in the library or a playlist for a menu beside the pointer, or open its **⋯**
   menu, to **Play next** or **Add to queue**. These actions keep the current song playing.
 - **Normalize volume** in **Account → Playback** is saved per account for website playback and takes

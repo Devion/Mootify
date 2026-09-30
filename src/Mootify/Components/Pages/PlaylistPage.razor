@@ -71,6 +71,14 @@ else
                 @(_shareListening ? "Sharing what I'm playing" : "Share what I'm playing")
             </button>
 
+            @if (_shareListening && Player.SourcePlaylistId == PlaylistId && Player.Current is not null)
+            {
+                <button class="listening__toggle @(Player.IsSharingQueue ? "is-on" : "")"
+                        @onclick="ToggleShareQueue">
+                    @(Player.IsSharingQueue ? "Stop sharing queue" : "Share queue")
+                </button>
+            }
+
             @if (_listeners.Count > 0)
             {
                 <ul class="listening__list">
@@ -82,6 +90,17 @@ else
                                 @(listener.IsPlaying ? "is on" : "is paused on")
                                 @listener.TrackTitle &middot; @listener.ArtistName
                             </span>
+                            @if (_sharedQueues.TryGetValue(listener.UserId, out var queue))
+                            {
+                                @if (Player.JoinedQueue?.Id == queue.Id)
+                                {
+                                    <button class="linkbutton" @onclick="Player.LeaveSharedQueueAsync">Leave queue</button>
+                                }
+                                else
+                                {
+                                    <button class="linkbutton" @onclick="() => Player.JoinSharedQueueAsync(queue.Id)">Join queue</button>
+                                }
+                            }
                         </li>
                     }
                 </ul>
@@ -168,6 +187,7 @@ else
 
     private bool _shareListening;
     private List<Listener> _listeners = [];
+    private Dictionary<Guid, SharedQueueSnapshot> _sharedQueues = [];
 
     /// <summary>
     /// Polls the listening strip. Other people's playback happens in other processes — a phone,
@@ -184,6 +204,9 @@ else
     /// this, an unrelated update can reset a listener's scroll through a long playlist.
     /// </summary>
     private Guid _loadedPlaylistId;
+
+    protected override void OnInitialized() => Player.StateChanged += OnPlayerChanged;
+    private Task OnPlayerChanged() => InvokeAsync(StateHasChanged);
 
     protected override async Task OnParametersSetAsync()
     {
@@ -307,8 +330,17 @@ else
 
     // ---- listening along -------------------------------------------------
 
-    private async Task RefreshListenersAsync() =>
+    private async Task RefreshListenersAsync()
+    {
         _listeners = await Listening.GetForPlaylistAsync(PlaylistId, _userId);
+        var queues = new Dictionary<Guid, SharedQueueSnapshot>();
+        foreach (var listener in _listeners)
+            if (await Player.FindSharedQueueAsync(listener.UserId, PlaylistId) is { } queue)
+                queues[listener.UserId] = queue;
+        _sharedQueues = queues;
+    }
+
+    private Task ToggleShareQueue() => Player.SetSharingQueueAsync(!Player.IsSharingQueue);
 
     private async Task ToggleShareListening()
     {
@@ -359,6 +391,7 @@ else
 
     public ValueTask DisposeAsync()
     {
+        Player.StateChanged -= OnPlayerChanged;
         ++_loadVersion;
         StopPolling();
         _searchCts?.Cancel();

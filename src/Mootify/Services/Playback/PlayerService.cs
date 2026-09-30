@@ -47,8 +47,89 @@ public sealed class PlayerService(
     TasteService taste,
     PreferenceService preferences,
     CurrentUser currentUser,
-    ILogger<PlayerService> log) : IAsyncDisposable
+    ILogger<PlayerService> log,
+    SharedQueueService? sharedQueues = null) : IAsyncDisposable
 {
+    private Guid? _sharedQueueId;
+    public bool IsSharingQueue => _sharedQueueId is not null;
+    public SharedQueueSnapshot? JoinedQueue { get; private set; }
+    public string? SharedQueueMessage { get; private set; }
+    public Func<Func<Task>, Task>? DispatchSharedQueue { get; set; }
+
+    public async Task SetSharingQueueAsync(bool enabled)
+    {
+        if (_sharedQueueId is { } old) sharedQueues?.Stop(old);
+        _sharedQueueId = null;
+        if (enabled && sharedQueues is not null && SourcePlaylistId is { } playlist && Current is not null
+            && DispatchSharedQueue is { } dispatch && await currentUser.GetIdAsync() is { } host)
+        {
+            JoinedQueue = null;
+            Guid? sessionId = null;
+            sessionId = await sharedQueues.StartAsync(host, playlist, QueueEntries, _cursor, IsPlaying,
+                (ids, next) => dispatch(async () =>
+                {
+                    if (_sharedQueueId != sessionId) return;
+                    var tracks = await LoadTracksAsync(ids);
+                    if (_sharedQueueId != sessionId) return;
+                    var first = _queue.Count;
+                    _queue.AddRange(tracks);
+                    var indices = Enumerable.Range(first, tracks.Count);
+                    if (next) _order.InsertRange(Math.Max(0, _cursor + 1), indices);
+                    else _order.AddRange(indices);
+                    await NotifyAsync();
+                }));
+            _sharedQueueId = sessionId;
+        }
+        await NotifyAsync();
+    }
+
+    public async Task<SharedQueueSnapshot?> FindSharedQueueAsync(Guid host, Guid playlist) =>
+        sharedQueues is not null && await currentUser.GetIdAsync() is { } viewer
+            ? await sharedQueues.FindAsync(host, playlist, viewer) : null;
+
+    public async Task JoinSharedQueueAsync(Guid id)
+    {
+        var snapshot = sharedQueues is not null && await currentUser.GetIdAsync() is { } viewer
+            ? await sharedQueues.GetAsync(id, viewer) : null;
+        if (snapshot is null) { SharedQueueMessage = "This shared queue is no longer available."; }
+        else
+        {
+            await SetSharingQueueAsync(false);
+            JoinedQueue = snapshot;
+            SharedQueueMessage = null;
+        }
+        await NotifyAsync();
+    }
+
+    public async Task LeaveSharedQueueAsync()
+    {
+        JoinedQueue = null;
+        SharedQueueMessage = null;
+        await NotifyAsync();
+    }
+
+    public async Task RefreshSharedQueueAsync()
+    {
+        if (!IsSharingQueue && JoinedQueue is null) return;
+        if (sharedQueues is null || await currentUser.GetIdAsync() is not { } viewer) return;
+        if (_sharedQueueId is { } own && await sharedQueues.GetAsync(own, viewer) is null)
+            await SetSharingQueueAsync(false);
+        if (JoinedQueue is { } joined)
+        {
+            JoinedQueue = await sharedQueues.GetAsync(joined.Id, viewer);
+            if (JoinedQueue is null) SharedQueueMessage = "The shared queue ended or is no longer available.";
+        }
+        if (IsSharingQueue || JoinedQueue is not null || SharedQueueMessage is not null) await NotifyAsync();
+    }
+
+    private async Task ContributeAsync(IReadOnlyList<Guid> ids, bool next)
+    {
+        if (JoinedQueue is not { } joined || sharedQueues is null) return;
+        var ok = await currentUser.GetIdAsync() is { } viewer && await sharedQueues.AddAsync(joined.Id, viewer, ids, next);
+        SharedQueueMessage = ok ? (next ? "Suggested to play next." : "Added to the shared queue.") : "Could not add songs: the shared queue is no longer available.";
+        await RefreshSharedQueueAsync();
+    }
+
     private IJSObjectReference? _module;
     private DotNetObjectReference<PlayerService>? _selfRef;
 
@@ -121,6 +202,7 @@ public sealed class PlayerService(
 
     private async Task NotifyAsync()
     {
+        if (_sharedQueueId is { } id) sharedQueues?.Publish(id, QueueEntries, _cursor, IsPlaying);
         // A multicast Func<Task> only returns the final subscriber's task. Await every
         // component so a completed state update means all subscribed views have refreshed.
         foreach (var handler in StateChanged?.GetInvocationList() ?? [])
@@ -195,6 +277,9 @@ public sealed class PlayerService(
     {
         if (trackIds.Count == 0) return;
 
+        await SetSharingQueueAsync(false);
+        await LeaveSharedQueueAsync();
+
         // Before the queue is replaced: whatever was playing has now been left, and its seconds
         // are only reportable while we still know what they belong to.
         await FlushPlayAsync();
@@ -213,6 +298,7 @@ public sealed class PlayerService(
     /// <summary>Append without disturbing what's playing or the shuffle permutation already walked.</summary>
     public async Task EnqueueAsync(IReadOnlyList<Guid> trackIds)
     {
+        if (JoinedQueue is not null) { await ContributeAsync(trackIds, false); return; }
         var added = await LoadTracksAsync(trackIds);
         if (added.Count == 0) return;
 
@@ -298,6 +384,7 @@ public sealed class PlayerService(
 
     public async Task EnqueueAsync(Guid trackId, bool next = false)
     {
+        if (JoinedQueue is not null) { await ContributeAsync([trackId], next); return; }
         var tracks = await LoadTracksAsync([trackId]);
         if (tracks.Count == 0) return;
         var index = _queue.Count;
@@ -726,6 +813,8 @@ public sealed class PlayerService(
 
         await listening.SetSharingAsync(userId, enabled);
 
+        if (!enabled) await SetSharingQueueAsync(false);
+
         if (enabled) await BroadcastAsync(force: true);
 
         await NotifyAsync();
@@ -792,6 +881,8 @@ public sealed class PlayerService(
 
     public async ValueTask DisposeAsync()
     {
+        if (_sharedQueueId is { } id) sharedQueues?.Stop(id);
+        DispatchSharedQueue = null;
         // Best effort, and only that: a circuit torn down by a closed laptop never gets here at
         // all, which is why ListeningService expires a session on age rather than on being told.
         // Doing it anyway means the common case — navigating away, signing out — is instant.

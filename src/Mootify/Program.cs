@@ -283,6 +283,7 @@ builder.Services.AddSingleton<ImportRequestQueue>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<ImportRequestQueue>());
 builder.Services.AddScoped<TeamService>();
 builder.Services.AddScoped<PlayerService>();
+builder.Services.AddSingleton<SharedQueueService>();
 builder.Services.AddScoped<RequestService>();
 builder.Services.AddScoped<RequestFulfiller>();
 builder.Services.AddScoped<ImportRequestMatcher>();

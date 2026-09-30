@@ -2,6 +2,30 @@
 @inject PlayerService Player
 @if (Open)
 {
+    @if (Player.JoinedQueue is { } shared)
+    {
+        <aside class="queuepanel" aria-label="Shared play queue">
+            <header class="queuepanel__head">
+                <div><h3>@shared.HostName’s queue</h3><span class="queuepanel__note">Only the host plays audio. Use song options to suggest next or append.</span></div>
+                <button class="iconbutton" @onclick="OnClose" aria-label="Close queue">×</button>
+            </header>
+            <div class="queuepanel__body">
+                <button class="linkbutton" @onclick="Player.LeaveSharedQueueAsync">Leave queue</button>
+                @if (Player.SharedQueueMessage is { } message) { <p role="status">@message</p> }
+                <ol class="queuepanel__list">
+                    @foreach (var entry in shared.Entries)
+                    {
+                        <li class="queuerow @(entry.OrderIndex == shared.CurrentIndex ? "queuerow--current" : "")">
+                            <span class="queuerow__meta"><span class="queuerow__title">@entry.Track.Title</span><span class="queuerow__artist">@entry.Track.ArtistName</span></span>
+                            @if (entry.OrderIndex == shared.CurrentIndex) { <span class="queuepanel__note">@(shared.IsPlaying ? "Playing" : "Paused")</span> }
+                        </li>
+                    }
+                </ol>
+            </div>
+        </aside>
+    }
+    else
+    {
     var entries = Player.QueueEntries;
     <aside class="queuepanel" aria-label="Play queue">
         <header class="queuepanel__head">
@@ -11,6 +35,12 @@
             <button class="iconbutton" @onclick="OnClose" aria-label="Close queue">×</button>
         </header>
         <div class="queuepanel__body">
+            @if (Player.IsSharingQueue)
+            {
+                <p class="queuepanel__note">Sharing this queue with your team.</p>
+                <button class="linkbutton" @onclick="() => Player.SetSharingQueueAsync(false)">Stop sharing queue</button>
+            }
+            @if (Player.SharedQueueMessage is { } message) { <p role="status">@message</p> }
             @if (Player.Current is { } current)
             {
                 <p class="queuepanel__section">Now playing</p>
@@ -36,6 +66,7 @@
             </ol>
         </div>
     </aside>
+    }
 }
 @code {
     [Parameter] public bool Open { get; set; }
