@@ -29,7 +29,7 @@
     var entries = Player.QueueEntries;
     <aside class="queuepanel" aria-label="Play queue">
         <header class="queuepanel__head">
-            <div><h3>Queue · @entries.Count</h3><span class="queuepanel__note">@(Player.ShuffleEnabled ? "Shuffled" : "In order") · drag or use arrows to reorder</span>
+            <div><h3>Queue · @entries.Count</h3><span class="queuepanel__note">@(Player.ShuffleEnabled ? "Shuffled" : "In order") · drag to reorder</span>
                 @if (Player.Repeat == RepeatMode.One) { <span class="queuepanel__note">Repeating this track</span> }
                 else if (Player.Repeat == RepeatMode.All) { <span class="queuepanel__note">Repeating queue</span> }</div>
             <button class="iconbutton" @onclick="OnClose" aria-label="Close queue">×</button>
@@ -48,22 +48,20 @@
             }
             <p class="queuepanel__section">All queued songs</p>
             @if (entries.Count == 0) { <p class="queuepanel__empty">Nothing queued. Add songs from your library or a playlist.</p> }
-            <ol class="queuepanel__list">
+            <ol class="queuepanel__list" @ref="_reorderElement">
                 @foreach (var entry in entries)
                 {
-                    <li class="queue-item" draggable="true" @ondragstart="() => _dragged = entry.OrderIndex"
-                        @ondragover:preventDefault="true" @ondrop="() => Drop(entry.OrderIndex)" @ondragend="() => _dragged = null">
+                    <li class="queue-item" draggable="true" data-reorder-id="@entry.OrderIndex">
                         <button class="queuerow queuerow--button @(entry.OrderIndex == Player.CurrentOrderIndex ? "queuerow--current" : "")"
                                 @onclick="() => Player.JumpToAsync(entry.OrderIndex)" title="Play now">
                             <span class="queuerow__meta"><span class="queuerow__title">@entry.Track.Title</span><span class="queuerow__artist">@entry.Track.ArtistName</span></span>
                             <span class="queuerow__dur">@Format(entry.Track.Duration)</span>
                             @if (entry.OrderIndex == Player.CurrentOrderIndex) { <span class="queuepanel__note">Current</span> }
                         </button>
-                        <button class="iconbutton iconbutton--small" disabled="@(entry.OrderIndex == 0)" @onclick="() => Player.MoveQueueItemAsync(entry.OrderIndex, entry.OrderIndex - 1)" aria-label="@($"Move {entry.Track.Title} up")">↑</button>
-                        <button class="iconbutton iconbutton--small" disabled="@(entry.OrderIndex == entries.Count - 1)" @onclick="() => Player.MoveQueueItemAsync(entry.OrderIndex, entry.OrderIndex + 1)" aria-label="@($"Move {entry.Track.Title} down")">↓</button>
                     </li>
                 }
             </ol>
+            <ReorderList Element="@(() => _reorderElement)" Enabled="true" OnMove="Drop" />
         </div>
     </aside>
     }
@@ -71,7 +69,7 @@
 @code {
     [Parameter] public bool Open { get; set; }
     [Parameter] public EventCallback OnClose { get; set; }
-    private int? _dragged;
+    private ElementReference _reorderElement;
 
     // Primitive parameters (Open/OnClose) can stay unchanged while the injected player advances.
     // Subscribe here so the renderer does not skip this child when its parent updates.
@@ -79,10 +77,11 @@
     private Task OnPlayerChanged() => Open ? InvokeAsync(StateHasChanged) : Task.CompletedTask;
     public void Dispose() => Player.StateChanged -= OnPlayerChanged;
 
-    private async Task Drop(int to)
+    private async Task Drop(ReorderList.MoveRequest request)
     {
-        if (_dragged is { } from) await Player.MoveQueueItemAsync(from, to);
-        _dragged = null;
+        if (Player.JoinedQueue is null && int.TryParse(request.Source, out var from)
+            && int.TryParse(request.Target, out var to))
+            await Player.MoveQueueItemAsync(from, to);
     }
     private static string Format(TimeSpan t) => t.ToString(t.TotalHours >= 1 ? @"h\:mm\:ss" : @"m\:ss");
 }

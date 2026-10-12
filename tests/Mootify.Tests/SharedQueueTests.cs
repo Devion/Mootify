@@ -20,10 +20,11 @@ public sealed class SharedQueueTests : IAsyncLifetime
     private AppUser _host = null!, _guest = null!;
     private Guid _team, _playlist;
     private List<Guid> _tracks = [];
+    private readonly PlaybackClock _clock = new();
 
     public async Task InitializeAsync()
     {
-        _queues = new SharedQueueService(_db);
+        _queues = new SharedQueueService(_db, _clock);
         _playlists = new PlaylistService(_db, NullLogger<PlaylistService>.Instance);
         _listening = new ListeningService(_db, _playlists, NullLogger<ListeningService>.Instance);
         _host = await _db.AddUserAsync("host");
@@ -40,7 +41,7 @@ public sealed class SharedQueueTests : IAsyncLifetime
     private PlayerService Player(AppUser user, FakeJsRuntime? js = null) => new(
         js ?? new FakeJsRuntime(), _db, _listening, new TasteService(_db, NullLogger<TasteService>.Instance),
         new PreferenceService(_db), new CurrentUser(new FakeAuthStateProvider(user.Id)),
-        NullLogger<PlayerService>.Instance, _queues) { DispatchSharedQueue = action => action() };
+        NullLogger<PlayerService>.Instance, _queues, _clock) { DispatchSharedQueue = action => action() };
 
     private async Task<Guid> Share(PlayerService host)
     {
@@ -134,6 +135,88 @@ public sealed class SharedQueueTests : IAsyncLifetime
         await guest.EnqueueAsync(_tracks[4]);
         Assert.Single(guest.Queue);
         Assert.Equal(13, host.Queue.Count);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Server_heartbeats_keep_sharing_for_more_than_twelve_hours_without_audio_events(bool playing)
+    {
+        await using var host = Player(_host);
+        var id = await Share(host);
+        if (!playing) await host.TogglePlayPauseAsync();
+        var startedAt = DateTimeOffset.UtcNow.AddHours(-13);
+        await using (var db = _db.CreateDbContext())
+        {
+            var session = await db.ListeningSessions.SingleAsync(s => s.UserId == _host.Id);
+            session.StartedAt = startedAt;
+            session.UpdatedAt = startedAt;
+            await db.SaveChangesAsync();
+            await db.Entry(session).ReloadAsync();
+            startedAt = session.StartedAt;
+        }
+
+        var elapsed = TimeSpan.Zero;
+        while (elapsed < TimeSpan.FromHours(13))
+        {
+            _clock.Advance(ListeningService.HeartbeatInterval);
+            elapsed += ListeningService.HeartbeatInterval;
+            await host.RefreshPlaybackPresenceAsync();
+            await host.RefreshSharedQueueAsync();
+            Assert.True(host.IsSharingQueue);
+        }
+
+        var queue = await _queues.GetAsync(id, _guest.Id);
+        Assert.NotNull(queue);
+        Assert.Equal(playing, queue.IsPlaying);
+        Assert.Equal(3, queue.Entries.Count);
+        var listener = Assert.Single(await _listening.GetForPlaylistAsync(_playlist, _guest.Id));
+        Assert.Equal(playing, listener.IsPlaying);
+        Assert.Equal(startedAt, listener.StartedAt);
+        Assert.True(listener.UpdatedAt > DateTimeOffset.UtcNow.AddMinutes(-1));
+        Assert.True(await _queues.AddAsync(id, _guest.Id, [_tracks[3]], false));
+        Assert.Equal(4, host.Queue.Count);
+    }
+
+    [Fact]
+    public async Task Presence_refresh_is_throttled_and_does_not_keep_an_unresponsive_host_live()
+    {
+        await using var host = Player(_host);
+        var id = await Share(host);
+        DateTimeOffset updatedAt;
+        await using (var db = _db.CreateDbContext())
+            updatedAt = (await db.ListeningSessions.SingleAsync()).UpdatedAt;
+
+        _clock.Advance(TimeSpan.FromSeconds(10));
+        await host.RefreshPlaybackPresenceAsync();
+        await using (var db = _db.CreateDbContext())
+            Assert.Equal(updatedAt, (await db.ListeningSessions.SingleAsync()).UpdatedAt);
+
+        _clock.Advance(TimeSpan.FromSeconds(21));
+        Assert.Null(await _queues.GetAsync(id, _guest.Id));
+        Assert.False(await _queues.AddAsync(id, _guest.Id, [_tracks[3]], false));
+
+        await host.RefreshPlaybackPresenceAsync();
+        await host.RefreshSharedQueueAsync();
+        Assert.True(host.IsSharingQueue);
+        Assert.NotNull(await _queues.GetAsync(id, _guest.Id));
+    }
+
+    [Fact]
+    public async Task Closing_the_host_ends_the_shared_queue_immediately()
+    {
+        var host = Player(_host);
+        var id = await Share(host);
+        await host.DisposeAsync();
+        Assert.Null(await _queues.GetAsync(id, _guest.Id));
+        Assert.Empty(await _listening.GetForPlaylistAsync(_playlist, _guest.Id));
+    }
+
+    private sealed class PlaybackClock : TimeProvider
+    {
+        private DateTimeOffset _now = DateTimeOffset.UtcNow;
+        public override DateTimeOffset GetUtcNow() => _now;
+        public void Advance(TimeSpan elapsed) => _now += elapsed;
     }
 
     public Task DisposeAsync() => _db.DisposeAsync().AsTask();

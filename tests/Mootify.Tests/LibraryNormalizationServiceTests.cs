@@ -63,6 +63,27 @@ public sealed class LibraryNormalizationServiceTests : IAsyncLifetime
 
     private string CachedPath(Guid id) => Path.Combine(_cache.NormalizedDirectory, $"{id:n}-normalized-v1.mp3");
 
+    [Theory]
+    [InlineData(".mp3")]
+    [InlineData(".flac")]
+    public async Task Playback_returns_ready_normalized_copy_synchronously_without_ffmpeg(string extension)
+    {
+        // The fixture deliberately configures a nonexistent FFmpeg executable: a cache hit
+        // must succeed without launching it, for both MP3 and native FLAC originals.
+        var ids = await SeedAsync((extension, true, true));
+        var cached = CachedPath(ids[0]);
+        var modified = File.GetLastWriteTimeUtc(cached);
+        for (var play = 0; play < 2; play++)
+        {
+            var pending = _cache.GetOrCreateAsync(ids[0], Path.Combine(_root, ids[0] + extension), normalize: true);
+            Assert.True(pending.IsCompletedSuccessfully);
+            Assert.Equal(cached, await pending);
+            Assert.Equal("normalized copy", await File.ReadAllTextAsync(cached));
+            Assert.Equal(modified, File.GetLastWriteTimeUtc(cached));
+            Assert.False(File.Exists(cached + ".partial"));
+        }
+    }
+
     private Task<NormalizationProgress> Completion()
     {
         var completion = new TaskCompletionSource<NormalizationProgress>(TaskCreationOptions.RunContinuationsAsynchronously);

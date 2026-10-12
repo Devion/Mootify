@@ -101,6 +101,47 @@ public sealed class TrackUploadServiceTests : IAsyncLifetime
         return new TrackUploadService.Incoming(fileName, new MemoryStream(bytes));
     }
 
+    [Fact]
+    public async Task Preview_reads_tags_without_filing_and_missing_tags_stay_editable()
+    {
+        var tagged = File("song.mp3", "Artist", "Album", "Title");
+        using (tagged.Content)
+        {
+            var tags = await _service.InspectAsync(tagged);
+            Assert.Equal(new TrackUploadService.Metadata("Title", "Artist", "Album"), tags);
+        }
+        var untagged = File("unknown.mp3");
+        using (untagged.Content)
+        {
+            var tags = await _service.InspectAsync(untagged);
+            Assert.True(string.IsNullOrEmpty(tags.Artist));
+        }
+        Assert.Empty(Directory.GetFileSystemEntries(_root));
+    }
+
+    [Fact]
+    public async Task Reviewed_tags_are_written_before_filing_and_indexing()
+    {
+        var incoming = File("song.mp3", "Wrong artist", "Wrong album", "Wrong title");
+        using var stream = incoming.Content;
+        var report = await UploadAsync(incoming with { Tags = new("Correct title", "Correct artist", "Correct album") });
+        Assert.Equal(1, report.Filed);
+        await using var db = _db.CreateDbContext();
+        var track = await db.Tracks.Include(t => t.Artist).Include(t => t.Album).SingleAsync();
+        Assert.Equal("Correct title", track.Title);
+        Assert.Equal("Correct artist", track.Artist!.Name);
+        Assert.Equal("Correct album", track.Album!.Title);
+    }
+
+    [Fact]
+    public async Task Missing_tags_can_be_supplied_in_review()
+    {
+        var incoming = File("unknown.mp3");
+        using var stream = incoming.Content;
+        var report = await UploadAsync(incoming with { Tags = new("Title", "Artist", "Album") });
+        Assert.Equal(1, report.Filed);
+    }
+
     private bool Exists(string relativePath) => System.IO.File.Exists(Path.Combine(_root, relativePath));
 
     private Task<UploadReport> UploadAsync(params TrackUploadService.Incoming[] files) =>

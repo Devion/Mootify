@@ -24,11 +24,13 @@ public sealed class PlaylistInteractionTests
     {
         public InfiniteScroll Scroll { get; private set; } = null!;
         public TrackList Tracks { get; private set; } = null!;
+        public ReorderList Reorder { get; private set; } = null!;
         public IComponent CreateInstance(Type componentType)
         {
             var instance = (IComponent)Activator.CreateInstance(componentType)!;
             if (instance is InfiniteScroll scroll) Scroll = scroll;
             if (instance is TrackList tracks) Tracks = tracks;
+            if (instance is ReorderList reorder) Reorder = reorder;
             return instance;
         }
     }
@@ -78,6 +80,9 @@ public sealed class PlaylistInteractionTests
             var rendered = await renderer.RenderComponentAsync<PlaylistPage>(ParameterView.FromDictionary(
                 new Dictionary<string, object?> { [nameof(PlaylistPage.PlaylistId)] = playlist }));
             Assert.Equal(100, capture.Tracks.Rows.Count);
+            Assert.Contains("draggable=\"true\"", rendered.ToHtmlString());
+            Assert.DoesNotContain("title=\"Move up\"", rendered.ToHtmlString());
+            Assert.DoesNotContain("title=\"Move down\"", rendered.ToHtmlString());
             Assert.Contains("tracklist__index\">100</span>", rendered.ToHtmlString());
             if (moveAtBoundary)
             {
@@ -93,7 +98,7 @@ public sealed class PlaylistInteractionTests
             Assert.Contains("All 120 songs shown", html);
             Assert.DoesNotContain("class=\"pager", html);
             var last = capture.Tracks.Rows[119];
-            await capture.Tracks.OnMove.InvokeAsync(new TrackList.MoveRequest(last.ItemId!.Value, 0, capture.Tracks.Rows[0].ItemId));
+            await capture.Reorder.MoveAsync(last.ItemId!.Value.ToString(), capture.Tracks.Rows[0].ItemId!.Value.ToString());
             Assert.Equal(120, capture.Tracks.Rows.Count);
             Assert.Equal(last.ItemId, capture.Tracks.Rows[0].ItemId);
             Assert.True(capture.Tracks.OnRequestReplacement.HasDelegate);

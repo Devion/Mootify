@@ -15,7 +15,7 @@
             <th class="tracklist__actions"></th>
         </tr>
     </thead>
-    <tbody>
+    <tbody @ref="_reorderElement">
         @for (var i = 0; i < Rows.Count; i++)
         {
             var index = i;
@@ -26,11 +26,9 @@
             @* Double-click starts the list from this row whatever it is showing; the button
                below decides for itself, so it stops the double-click from also reaching here
                and undoing what the press just did. *@
-            <tr @key="@(row.ItemId ?? row.TrackId)" class="@(isCurrent ? "is-current" : "") @DropClass(row)" @ondblclick="() => StartFrom(index)"
+            <tr @key="@(row.ItemId ?? row.TrackId)" class="@(isCurrent ? "is-current" : "")" @ondblclick="() => StartFrom(index)"
                 @oncontextmenu="e => OpenMenu(row, e)" @oncontextmenu:preventDefault="true"
-                draggable="@(CanReorder && row.ItemId is not null)" @ondragstart="() => _draggedItem = row.ItemId"
-                @ondragover:preventDefault="CanReorder" @ondragover="() => _dropTarget = row.ItemId"
-                @ondragleave="() => _dropTarget = null" @ondrop="() => Drop(row)" @ondragend="EndDrag">
+                draggable="@((CanReorder && row.ItemId is not null) ? "true" : "false")" data-reorder-id="@row.ItemId">
                 <td class="tracklist__num">
                     @* The label follows the icon, because the icon follows the player. *@
                     <button class="tracklist__play" @onclick="() => Press(index)"
@@ -55,15 +53,6 @@
                 }
                 <td class="tracklist__dur">@Format(row.Duration)</td>
                 <td class="tracklist__actions">
-                    @if (OnMove.HasDelegate && row.ItemId is { } itemId)
-                    {
-                        <button class="iconbutton iconbutton--small" disabled="@(!CanReorder || RowOffset + index == 0)"
-                                @onclick="() => OnMove.InvokeAsync(new MoveRequest(itemId, -1))" @ondblclick:stopPropagation="true"
-                                title="Move up" aria-label="@($"Move {row.Title} up")">↑</button>
-                        <button class="iconbutton iconbutton--small" disabled="@(!CanReorder || RowOffset + index >= EffectiveTotal - 1)"
-                                @onclick="() => OnMove.InvokeAsync(new MoveRequest(itemId, 1))" @ondblclick:stopPropagation="true"
-                                title="Move down" aria-label="@($"Move {row.Title} down")">↓</button>
-                    }
                     <button class="iconbutton iconbutton--small" aria-label="Song options" title="Queue options"
                             @onclick="e => OpenMenu(row, e)" @ondblclick:stopPropagation="true">⋯</button>
                     <AddToPlaylistButton TrackIds="@(new[] { row.TrackId })" />
@@ -79,6 +68,7 @@
         }
     </tbody>
 </table>
+<ReorderList Element="@(() => _reorderElement)" Enabled="CanReorder" OnMove="Drop" />
 
 @if (_menuRow is { } menuRow)
 {
@@ -106,23 +96,13 @@
 @code {
     public sealed record MoveRequest(Guid ItemId, int Direction, Guid? TargetItemId = null);
     private Row? _menuRow;
-    private Guid? _draggedItem;
-    private Guid? _dropTarget;
-    private void EndDrag() { _draggedItem = null; _dropTarget = null; }
-    private string DropClass(Row row)
-    {
-        if (!CanReorder || _draggedItem is null || _dropTarget != row.ItemId || _draggedItem == row.ItemId) return "";
-        var from = Rows.ToList().FindIndex(r => r.ItemId == _draggedItem);
-        var to = Rows.ToList().FindIndex(r => r.ItemId == _dropTarget);
-        return from < to ? "drop-after" : "drop-before";
-    }
+    private ElementReference _reorderElement;
     private double _menuX, _menuY;
     private bool _positionMenu, _keyboardMenu;
     private ElementReference _menuElement;
     private IJSObjectReference? _menuModule;
     private IReadOnlyList<Row>? _previousRows;
     private bool CanReorder => OnMove.HasDelegate && ReorderingEnabled && !IsReordering;
-    private int EffectiveTotal => TotalRows ?? RowOffset + Rows.Count;
     private string MenuPosition => FormattableString.Invariant($"left:{_menuX}px;top:{_menuY}px");
 
     private void OpenMenu(Row row, MouseEventArgs e)
@@ -144,7 +124,7 @@
 
     protected override void OnParametersSet()
     {
-        if (!ReferenceEquals(_previousRows, Rows)) { CloseMenu(); EndDrag(); }
+        if (!ReferenceEquals(_previousRows, Rows)) { CloseMenu(); }
         _previousRows = Rows;
     }
 
@@ -156,11 +136,10 @@
         await _menuModule.InvokeVoidAsync("position", _menuElement, _menuX, _menuY, _keyboardMenu);
     }
 
-    private async Task Drop(Row target)
+    private async Task Drop(ReorderList.MoveRequest request)
     {
-        var source = _draggedItem;
-        EndDrag();
-        if (CanReorder && source is { } from && target.ItemId is { } to && from != to)
+        if (CanReorder && Guid.TryParse(request.Source, out var from) && Guid.TryParse(request.Target, out var to)
+            && from != to && Rows.Any(r => r.ItemId == from) && Rows.Any(r => r.ItemId == to))
             await OnMove.InvokeAsync(new MoveRequest(from, 0, to));
     }
 

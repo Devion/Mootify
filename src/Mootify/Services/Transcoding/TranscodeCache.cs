@@ -73,10 +73,9 @@ public sealed class TranscodeCache(
         }
 
         var cached = CachePath(trackId, normalize);
-        if (normalize) LibraryCachePaths.EnsureStorageAvailable(library.CurrentValue);
-        Directory.CreateDirectory(Path.GetDirectoryName(cached)!);
 
-        // Re-convert if the source has changed since we cached it.
+        // Playback hits need only read the completed copy, without preparing storage or
+        // waiting for conversion slots. This also applies to every browser range request.
         if (FindReady(trackId, sourcePath, normalize) is not null)
         {
             return cached;
@@ -99,6 +98,9 @@ public sealed class TranscodeCache(
             {
                 return cached;
             }
+
+            if (normalize) LibraryCachePaths.EnsureStorageAvailable(library.CurrentValue);
+            Directory.CreateDirectory(Path.GetDirectoryName(cached)!);
 
             if (normalize)
             {

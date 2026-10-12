@@ -104,7 +104,26 @@ public sealed class TrackUploadService(
     public static string AcceptAttribute => string.Join(',', AcceptedExtensions);
 
     /// <summary>One file, opened as a stream, plus whatever the browser called it.</summary>
-    public sealed record Incoming(string FileName, Stream Content);
+    public sealed record Metadata(string Title, string Artist, string Album);
+    public sealed record Incoming(string FileName, Stream Content, Metadata? Tags = null);
+
+    /// <summary>Reads tags without adding anything to the library; temporary data is always removed.</summary>
+    public async Task<Metadata> InspectAsync(Incoming file, CancellationToken ct = default)
+    {
+        var extension = Path.GetExtension(file.FileName);
+        if (!AcceptedExtensions.Contains(extension, StringComparer.OrdinalIgnoreCase))
+            throw new InvalidDataException("Unsupported audio format.");
+        var temp = Path.Combine(Path.GetTempPath(), "mootify-upload", Guid.NewGuid().ToString("n") + extension);
+        Directory.CreateDirectory(Path.GetDirectoryName(temp)!);
+        try
+        {
+            if (!await SpoolAsync(file.Content, temp, MaxBytes, ct))
+                throw new InvalidDataException("The file is empty or too large.");
+            using var audio = TagLib.File.Create(temp);
+            return new Metadata(audio.Tag.Title ?? "", LibraryScanner.ReadArtist(audio) ?? "", audio.Tag.Album ?? "");
+        }
+        finally { TryDelete(temp); }
+    }
 
     // Clamped rather than trusted: LibraryOptions isn't data-annotation validated at startup, and
     // a zero in the file would turn "upload" into "refuse everything" with no error anywhere.
@@ -210,6 +229,19 @@ public sealed class TrackUploadService(
                     $"Bigger than {MaxBytes / (1024 * 1024)}MB.");
             }
 
+            if (file.Tags is { } tags)
+            {
+                if (string.IsNullOrWhiteSpace(tags.Title) || LibraryFiler.SafeFolder(tags.Artist) is null
+                    || LibraryFiler.SafeFolder(tags.Album) is null)
+                    return new UploadedFile(file.FileName, UploadOutcome.MissingTags,
+                        "Enter a title, artist and album before importing.");
+                using var audio = TagLib.File.Create(temp);
+                audio.Tag.Title = tags.Title.Trim();
+                audio.Tag.Performers = [tags.Artist.Trim()];
+                audio.Tag.AlbumArtists = [tags.Artist.Trim()];
+                audio.Tag.Album = tags.Album.Trim();
+                audio.Save();
+            }
             var (artist, album, readable) = ReadTags(temp);
 
             if (!readable)

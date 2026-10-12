@@ -5,6 +5,16 @@
 // of this file.
 
 const MUTE_KEY = 'mootify.sound.muted';
+const COW_MODE_KEY = 'mootify.sound.extremeCowMode';
+const MOO_SOUNDS = ['/audio/moo.mp3', '/audio/moo1.mp3', '/audio/moo2.mp3'];
+let logoClicks = 0;
+
+export function clickLogo() {
+    if (++logoClicks < 5) return false;
+    logoClicks = 0;
+    localStorage.setItem(COW_MODE_KEY, '1');
+    return true;
+}
 
 // Read straight from localStorage so the mute setting applies on first paint, before the
 // circuit has connected and told us the user's stored preference.
@@ -26,6 +36,12 @@ export async function playCowbell(duckMusic, duckTo) {
 
     const el = bell();
     if (!el) return false;
+
+    el.dataset.normalSound ??= el.getAttribute('src');
+    const sound = localStorage.getItem(COW_MODE_KEY) === '1'
+        ? MOO_SOUNDS[Math.floor(Math.random() * MOO_SOUNDS.length)]
+        : el.dataset.normalSound;
+    if (el.getAttribute('src') !== sound) el.setAttribute('src', sound);
 
     try {
         el.currentTime = 0;

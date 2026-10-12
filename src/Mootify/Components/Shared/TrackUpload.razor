@@ -12,24 +12,45 @@
 
 <section class="managebox">
     <label for="files">Files</label>
-    <InputFile id="files" OnChange="OnFilesChosen" multiple accept="@TrackUploadService.AcceptAttribute" />
+    <InputFile id="files" OnChange="OnFilesChosen" disabled="@_working" multiple accept="@TrackUploadService.AcceptAttribute" />
 
     <p class="managebox__hint">
         @string.Join(" and ", TrackUploadService.AcceptedExtensions.Select(e => e.TrimStart('.').ToUpperInvariant())),
         up to @(Uploads.MaxBytes / (1024 * 1024))MB each and @Uploads.MaxFiles at a time.
-        Every file needs an <strong>artist</strong> and an <strong>album</strong> tag &mdash; that's
-        what decides where it lands, so anything untagged is handed back rather than guessed at.
+        Review and edit the title, artist and album before importing.
         Other formats go in the import folder on the server, where they get converted first.
     </p>
 
     @if (_working)
     {
         <p class="muted">
-            Uploading @_done of @_total&hellip; then a scan of the folders they landed in.
+            @_status
         </p>
         <div class="progressbar"><span style="width:@(_total == 0 ? 0 : _done * 100 / _total)%"></span></div>
     }
 </section>
+
+@if (_pending.Count > 0)
+{
+    <section class="managebox">
+        <h2>Review music details</h2>
+        <form @onsubmit="ConfirmAsync" @onsubmit:preventDefault>
+            <fieldset disabled="@_working">
+                @foreach (var item in _pending)
+                {
+                    <div class="managebox" @key="item">
+                        <strong>@item.File.Name</strong>
+                        <label>Title <input @bind="item.Title" required /></label>
+                        <label>Artist <input @bind="item.Artist" required /></label>
+                        <label>Album <input @bind="item.Album" required /></label>
+                    </div>
+                }
+                <button class="button" type="submit">Import into library</button>
+                <button class="button" type="button" @onclick="() => _pending.Clear()">Cancel</button>
+            </fieldset>
+        </form>
+    </section>
+}
 
 @if (_error is not null)
 {
@@ -99,6 +120,15 @@
 }
 
 @code {
+    private sealed class Pending(IBrowserFile file, TrackUploadService.Metadata tags)
+    {
+        public IBrowserFile File { get; } = file;
+        public string Title { get; set; } = tags.Title;
+        public string Artist { get; set; } = tags.Artist;
+        public string Album { get; set; } = tags.Album;
+    }
+    private readonly List<Pending> _pending = [];
+    private string _status = "";
     private UploadReport? _report;
     private string? _error;
     private bool _working;
@@ -109,42 +139,26 @@
     {
         _error = null;
         _report = null;
+        _pending.Clear();
+        _status = "Reading music details…";
         _done = 0;
         _working = true;
 
         try
         {
-            var userId = await CurrentUser.GetRequiredIdAsync();
+            await CurrentUser.GetRequiredIdAsync();
 
             // GetMultipleFiles refuses silently past its cap, so it is asked for the service's
             // own limit — everything above that is then reported as refused by name.
             var chosen = e.GetMultipleFiles(maximumFileCount: Uploads.MaxFiles);
             _total = chosen.Count;
 
-            // Streams are opened one at a time and read straight through to a temp file, so the
-            // memory cost is one buffer rather than one album. OpenReadStream's own cap is the
-            // first wall; TrackUploadService counts the bytes that actually arrive as the second.
-            var files = new List<TrackUploadService.Incoming>(chosen.Count);
-            var streams = new List<Stream>(chosen.Count);
-
-            try
+            foreach (var file in chosen)
             {
-                foreach (var file in chosen)
-                {
-                    var stream = file.OpenReadStream(maxAllowedSize: Uploads.MaxBytes);
-                    streams.Add(stream);
-                    files.Add(new TrackUploadService.Incoming(file.Name, stream));
-                }
-
-                _report = await Uploads.UploadAsync(userId, files);
-                _done = _total;
-            }
-            finally
-            {
-                foreach (var stream in streams)
-                {
-                    await stream.DisposeAsync();
-                }
+                await using var stream = file.OpenReadStream(maxAllowedSize: Uploads.MaxBytes);
+                var tags = await Uploads.InspectAsync(new(file.Name, stream));
+                _pending.Add(new Pending(file, tags));
+                _done++;
             }
         }
         catch (Exception ex)
@@ -152,10 +166,49 @@
             // The message from a browser file stream is not worth showing anybody, and it can
             // contain a path.
             Log.LogWarning(ex, "An upload failed before anything was filed");
-            _error = "That upload didn't go through. Try a smaller batch.";
+            _pending.Clear();
+            _error = "Could not read these files. Choose valid MP3 or FLAC files within the size limit.";
         }
         finally
         {
+            _working = false;
+        }
+    }
+
+    private async Task ConfirmAsync()
+    {
+        if (_working || _pending.Count == 0) return;
+        if (_pending.Any(p => string.IsNullOrWhiteSpace(p.Title) || LibraryFiler.SafeFolder(p.Artist) is null
+            || LibraryFiler.SafeFolder(p.Album) is null))
+        {
+            _error = "Enter a title, artist and album for every file.";
+            return;
+        }
+        _working = true;
+        _error = null;
+        _status = "Importing music into the library…";
+        var streams = new List<Stream>();
+        try
+        {
+            var userId = await CurrentUser.GetRequiredIdAsync();
+            var files = new List<TrackUploadService.Incoming>();
+            foreach (var item in _pending)
+            {
+                var stream = item.File.OpenReadStream(maxAllowedSize: Uploads.MaxBytes);
+                streams.Add(stream);
+                files.Add(new(item.File.Name, stream, new(item.Title, item.Artist, item.Album)));
+            }
+            _report = await Uploads.UploadAsync(userId, files);
+            _pending.Clear();
+        }
+        catch (Exception ex)
+        {
+            Log.LogWarning(ex, "Could not finish importing music");
+            _error = "The import did not finish. Check the library before trying again.";
+        }
+        finally
+        {
+            foreach (var stream in streams) await stream.DisposeAsync();
             _working = false;
         }
     }

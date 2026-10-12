@@ -460,7 +460,7 @@ input[type=range]:disabled { opacity: .4; cursor: default; }
     border: 1px solid var(--line);
     border-radius: var(--radius);
     box-shadow: 0 12px 40px #000a;
-    z-index: 50;
+    z-index: 70;
 }
 
 .bell__panel header {
@@ -490,6 +490,21 @@ input[type=range]:disabled { opacity: .4; cursor: default; }
 .bell__panel li span { color: var(--text-dim); }
 .bell__panel li time { color: var(--text-dim); font-size: .75rem; }
 .bell__empty { padding: 1.25rem 1rem; color: var(--text-dim); font-size: .88rem; }
+
+.cow-mode-popup {
+    position: fixed;
+    top: calc(var(--topbar-h) + .5rem);
+    left: 1.25rem;
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    padding: .75rem 1rem;
+    background: var(--bg-raised);
+    border: 1px solid var(--accent);
+    border-radius: var(--radius);
+    box-shadow: 0 12px 40px #000a;
+    z-index: 80;
+}
 
 /* ---- track list ------------------------------------------------------- */
 
@@ -1348,7 +1363,23 @@ a.badge:hover { text-decoration: none; filter: brightness(1.2); }
 
 .shell__content { width: 100%; max-width: 1200px; margin-inline: auto; min-width: 0; }
 .track-menu-backdrop { position: fixed; inset: 0; z-index: 100; }
-.tracklist tr[draggable="true"] { cursor: grab; }
-.tracklist tr[draggable="true"]:active { cursor: grabbing; }
-.tracklist tr.drop-before > td { box-shadow: inset 0 3px 0 #facc15; }
-.tracklist tr.drop-after > td { box-shadow: inset 0 -3px 0 #facc15; }
+[data-reorder-id][draggable="true"] { cursor: grab; }
+[data-reorder-id][draggable="true"]:active { cursor: grabbing; }
+/* An overlay keeps the insertion line from changing row heights during a drag. */
+.queue-item, .tracklist tr > td { position: relative; }
+.queue-item.drop-before::after, .queue-item.drop-after::after,
+.tracklist tr.drop-before > td::after, .tracklist tr.drop-after > td::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    border-top: 3px dashed #facc15;
+    pointer-events: none;
+    z-index: 1;
+}
+.queue-item.drop-before::after, .tracklist tr.drop-before > td::after { top: 0; }
+.queue-item.drop-after::after, .tracklist tr.drop-after > td::after { bottom: 0; }
+
+.playbar__shared-progress { flex: 1; height: 6px; border-radius: 4px; overflow: hidden; background: #ffffff25; position: relative; }
+.playbar__shared-progress span { display: block; height: 100%; background: var(--accent, #b8dc82); }
+.playbar__shared-progress::after { content: ''; position: absolute; inset: 0; background: repeating-linear-gradient(135deg, transparent 0 4px, #0006 4px 6px); pointer-events: none; }

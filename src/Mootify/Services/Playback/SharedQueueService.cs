@@ -4,22 +4,30 @@ using Mootify.Data;
 namespace Mootify.Services.Playback;
 
 public sealed record SharedQueueSnapshot(Guid Id, Guid HostId, Guid PlaylistId, string HostName,
-    IReadOnlyList<QueueEntry> Entries, int CurrentIndex, bool IsPlaying);
+    IReadOnlyList<QueueEntry> Entries, int CurrentIndex, bool IsPlaying, double Position = 0, double Duration = 0,
+    DateTimeOffset UpdatedAt = default)
+{
+    public TrackInfo? Current => Entries.ElementAtOrDefault(CurrentIndex)?.Track;
+    public double PositionAt(DateTimeOffset now) => Math.Clamp(
+        Position + (IsPlaying && UpdatedAt != default ? Math.Max(0, (now - UpdatedAt).TotalSeconds) : 0),
+        0, Math.Max(0, Duration));
+}
 
 /// <summary>Live web-player sessions. The host circuit owns playback; guests only contribute tracks.</summary>
-public sealed class SharedQueueService(IDbContextFactory<MootifyDbContext> dbFactory)
+public sealed class SharedQueueService(IDbContextFactory<MootifyDbContext> dbFactory, TimeProvider? timeProvider = null)
 {
     private sealed class Session(SharedQueueSnapshot snapshot, Func<IReadOnlyList<Guid>, bool, Task> add)
     {
         public SharedQueueSnapshot Snapshot = snapshot;
         public readonly Func<IReadOnlyList<Guid>, bool, Task> Add = add;
         public readonly SemaphoreSlim Gate = new(1);
-        public DateTimeOffset Updated = DateTimeOffset.UtcNow;
+        public DateTimeOffset Updated;
     }
 
     private readonly object _lock = new();
     private readonly Dictionary<Guid, Session> _sessions = [];
-    private static bool IsLive(Session s) => DateTimeOffset.UtcNow - s.Updated < TimeSpan.FromSeconds(30);
+    private readonly TimeProvider _time = timeProvider ?? TimeProvider.System;
+    private bool IsLive(Session s) => _time.GetUtcNow() - s.Updated < TimeSpan.FromSeconds(30);
 
     private async Task<bool> CanAccessAsync(SharedQueueSnapshot s, Guid viewer)
     {
@@ -41,18 +49,19 @@ public sealed class SharedQueueService(IDbContextFactory<MootifyDbContext> dbFac
         {
             foreach (var id in _sessions.Where(p => !IsLive(p.Value) || p.Value.Snapshot.HostId == host).Select(p => p.Key).ToList())
                 _sessions.Remove(id);
-            _sessions.Add(snapshot.Id, new Session(snapshot, add));
+            _sessions.Add(snapshot.Id, new Session(snapshot, add) { Updated = _time.GetUtcNow() });
         }
         return snapshot.Id;
     }
 
-    public void Publish(Guid id, IReadOnlyList<QueueEntry> entries, int currentIndex, bool playing)
+    public void Publish(Guid id, IReadOnlyList<QueueEntry> entries, int currentIndex, bool playing, double position = 0, double duration = 0)
     {
         lock (_lock)
             if (_sessions.TryGetValue(id, out var session))
             {
-                session.Snapshot = session.Snapshot with { Entries = entries, CurrentIndex = currentIndex, IsPlaying = playing };
-                session.Updated = DateTimeOffset.UtcNow;
+                session.Snapshot = session.Snapshot with { Entries = entries, CurrentIndex = currentIndex, IsPlaying = playing,
+                    Position = position, Duration = duration, UpdatedAt = _time.GetUtcNow() };
+                session.Updated = _time.GetUtcNow();
             }
     }
 

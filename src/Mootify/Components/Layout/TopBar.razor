@@ -1,8 +1,10 @@
 @inject NavigationManager Nav
 @inject CurrentUser CurrentUser
+@inject IJSRuntime JS
+@implements IAsyncDisposable
 
 <header class="topbar">
-    <a class="topbar__brand" href="/">
+    <a class="topbar__brand" href="/" @onclick="OnLogoClick">
         <img src="img/logo-small.png" alt="Mootify" />
     </a>
 
@@ -28,10 +30,20 @@
     </div>
 </header>
 
+@if (_showCowMode)
+{
+    <div class="cow-mode-popup" role="status">
+        <strong>Extreme Cow Mode Enabled</strong>
+        <button class="iconbutton" @onclick="() => _showCowMode = false" aria-label="Dismiss">×</button>
+    </div>
+}
+
 @code {
     private string _query = "";
     private string _displayName = "";
     private bool _isAdmin;
+    private bool _showCowMode;
+    private IJSObjectReference? _notifications;
 
     protected override async Task OnInitializedAsync()
     {
@@ -45,5 +57,18 @@
         {
             Nav.NavigateTo($"/search?q={Uri.EscapeDataString(_query)}");
         }
+    }
+
+    private async Task OnLogoClick()
+    {
+        _notifications ??= await JS.InvokeAsync<IJSObjectReference>("import", "./js/notifications.js");
+        if (await _notifications.InvokeAsync<bool>("clickLogo")) _showCowMode = true;
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_notifications is null) return;
+        try { await _notifications.DisposeAsync(); }
+        catch (JSDisconnectedException) { }
     }
 }

@@ -284,6 +284,9 @@ builder.Services.AddHostedService(sp => sp.GetRequiredService<ImportRequestQueue
 builder.Services.AddScoped<TeamService>();
 builder.Services.AddScoped<PlayerService>();
 builder.Services.AddSingleton<SharedQueueService>();
+builder.Services.AddScoped<PlaybackConnectionState>();
+builder.Services.AddScoped<Microsoft.AspNetCore.Components.Server.Circuits.CircuitHandler>(
+    sp => sp.GetRequiredService<PlaybackConnectionState>());
 builder.Services.AddScoped<RequestService>();
 builder.Services.AddScoped<RequestFulfiller>();
 builder.Services.AddScoped<ImportRequestMatcher>();

@@ -1,13 +1,15 @@
 @implements IDisposable
 @using System.Globalization
 @inject PlayerService Player
+@inject PlaybackConnectionState Connection
+@inject ILogger<PlayBar> Log
 
 @*  Rendered entirely from PlayerService. Nothing here keeps its own copy of "is playing" —
     that's how you end up with a pause button that lies about what the audio element is doing. *@
 
-<footer class="playbar @(Player.Current is null ? "is-empty" : "")">
+<footer class="playbar @(Player.DisplayTrack is null ? "is-empty" : "")">
     <div class="playbar__now">
-        @if (Player.Current is { } track)
+        @if (Player.DisplayTrack is { } track)
         {
             <div class="playbar__art" aria-hidden="true">
                 <img src="img/pietjecow-sm.png" alt="" />
@@ -20,7 +22,7 @@
                        this says MP3, not FLAC — claiming lossless while sending a transcode
                        would be the one genuinely misleading thing to put here. *@
                     <span class="playbar__format @(Player.UsingFallback ? "is-fallback" : "")"
-                          title="@FormatHint(track)">@Player.PlayingFormat</span>
+                          title="@(Player.JoinedQueue is null ? FormatHint(track) : "Host playback")">@(Player.JoinedQueue is null ? Player.PlayingFormat : track.Format)</span>
                 </span>
             </div>
         }
@@ -36,19 +38,19 @@
     <div class="playbar__transport">
         <div class="playbar__buttons">
             <button class="iconbutton @(Player.ShuffleEnabled ? "is-active" : "")"
-                    @onclick="Player.ToggleShuffleAsync" title="Shuffle" aria-pressed="@Player.ShuffleEnabled">
+                    disabled="@(Player.JoinedQueue is not null)" @onclick="Player.ToggleShuffleAsync" title="Shuffle" aria-pressed="@Player.ShuffleEnabled">
                 <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M17 3v2h1.6l-4.3 4.3 1.4 1.4L20 6.4V8h2V3ZM4 5v2h3.2l3 3 1.4-1.4-3.6-3.6Zm12.7 8.3-1.4 1.4 3.3 3.3H17v2h5v-5h-2v1.6ZM4 17v2h3.6l9.7-9.7-1.4-1.4L6.8 17Z"/></svg>
             </button>
 
-            <button class="iconbutton" @onclick="Player.PreviousAsync" disabled="@(Player.Current is null)" title="Previous">
+            <button class="iconbutton" @onclick="Player.PreviousAsync" disabled="@(Player.JoinedQueue is not null || Player.DisplayTrack is null)" title="Previous">
                 <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M6 6h2v12H6zm3.5 6L18 6v12z"/></svg>
             </button>
 
             <button class="iconbutton iconbutton--primary" @onclick="Player.TogglePlayPauseAsync"
-                    disabled="@(Player.Queue.Count == 0)"
-                    title="@(Player.IsPlaying ? "Pause" : "Play")"
-                    aria-label="@(Player.IsPlaying ? "Pause" : "Play")">
-                @if (Player.IsPlaying)
+                    disabled="@(Player.JoinedQueue is not null || Player.Queue.Count == 0)"
+                    title="@((Player.JoinedQueue?.IsPlaying ?? Player.IsPlaying) ? "Pause" : "Play")"
+                    aria-label="@((Player.JoinedQueue?.IsPlaying ?? Player.IsPlaying) ? "Pause" : "Play")">
+                @if (Player.JoinedQueue?.IsPlaying ?? Player.IsPlaying)
                 {
                     <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="currentColor" d="M7 5h4v14H7zm6 0h4v14h-4z"/></svg>
                 }
@@ -58,12 +60,12 @@
                 }
             </button>
 
-            <button class="iconbutton" @onclick="Player.NextAsync" disabled="@(!Player.HasNext)" title="Next">
+            <button class="iconbutton" @onclick="Player.NextAsync" disabled="@(Player.JoinedQueue is not null || !Player.HasNext)" title="Next">
                 <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M16 6h2v12h-2zM6 6l8.5 6L6 18z"/></svg>
             </button>
 
             <button class="iconbutton @(Player.Repeat != Data.RepeatMode.Off ? "is-active" : "")"
-                    @onclick="Player.CycleRepeatAsync" title="@($"Repeat: {Player.Repeat}")">
+                    disabled="@(Player.JoinedQueue is not null)" @onclick="Player.CycleRepeatAsync" title="@($"Repeat: {Player.Repeat}")">
                 <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M7 7h10v3l4-4-4-4v3H5v6h2Zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2Z"/></svg>
                 @if (Player.Repeat == Data.RepeatMode.One)
                 {
@@ -75,13 +77,24 @@
         <div class="playbar__scrub">
             @* Shows where you're dragging to, not where playback is, so you can aim. *@
             <span class="playbar__time">@Format(ScrubPosition)</span>
-            <input type="range" min="0" max="@Num(Math.Max(1, Player.Duration))" step="0.5"
+            @if (Player.JoinedQueue is not null)
+            {
+                <div class="playbar__shared-progress" role="progressbar" aria-label="Host playback position (read only)"
+                     aria-valuemin="0" aria-valuemax="@Num(Player.DisplayDuration)" aria-valuenow="@Num(ScrubPosition)"
+                     title="Playback is controlled by the host">
+                    <span style="width:@Num(Player.DisplayDuration > 0 ? ScrubPosition / Player.DisplayDuration * 100 : 0)%"></span>
+                </div>
+            }
+            else
+            {
+            <input type="range" min="0" max="@Num(Math.Max(1, Player.DisplayDuration))" step="0.5"
                    value="@Num(ScrubPosition)"
                    @onpointerdown="BeginScrub"
                    @oninput="OnScrubbing"
                    @onchange="OnSeek"
-                   disabled="@(Player.Current is null)" aria-label="Seek" />
-            <span class="playbar__time">@Format(Player.Duration)</span>
+                   disabled="@(Player.DisplayTrack is null)" aria-label="Seek" />
+            }
+            <span class="playbar__time">@Format(Player.DisplayDuration)</span>
         </div>
     </div>
 
@@ -113,7 +126,7 @@
     /// Where the scrubber should sit: normally the playhead, but the value you're dragging
     /// to while you're dragging.
     /// </summary>
-    private double ScrubPosition => _scrubbing ? _scrubTarget : Player.Position;
+    private double ScrubPosition => _scrubbing && Player.JoinedQueue is null ? _scrubTarget : Player.DisplayPosition;
 
     private bool _scrubbing;
     private double _scrubTarget;
@@ -138,13 +151,28 @@
 
     private async Task PollSharedQueueAsync(CancellationToken token)
     {
-        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(2));
+        using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(250));
+        var ticks = 0;
         try
         {
             while (await timer.WaitForNextTickAsync(token))
             {
-                try { await InvokeAsync(Player.RefreshSharedQueueAsync); }
-                catch (Exception) when (!token.IsCancellationRequested) { /* Retry on the next tick. */ }
+                if (!Connection.IsConnected) continue;
+                if (Player.JoinedQueue is not null) await InvokeAsync(StateHasChanged);
+                if (++ticks % 8 != 0) continue;
+                try
+                {
+                    await InvokeAsync(async () =>
+                    {
+                        if (!Connection.IsConnected || token.IsCancellationRequested) return;
+                        await Player.RefreshPlaybackPresenceAsync();
+                        await Player.RefreshSharedQueueAsync();
+                    });
+                }
+                catch (Exception ex) when (!token.IsCancellationRequested)
+                {
+                    Log.LogWarning(ex, "Could not refresh playback presence or the shared queue");
+                }
             }
         }
         catch (OperationCanceledException) { }
@@ -161,6 +189,7 @@
         // second, and re-rendering rewrites the input's value — which yanks the thumb back to
         // the playhead mid-gesture, so the browser abandons the drag and never fires `change`.
         // The seek then never happens and the bar looks broken.
+        if (Player.JoinedQueue is not null) _scrubbing = false;
         if (_scrubbing) return;
 
         await InvokeAsync(StateHasChanged);

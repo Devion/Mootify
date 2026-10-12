@@ -48,11 +48,16 @@ public sealed class PlayerService(
     PreferenceService preferences,
     CurrentUser currentUser,
     ILogger<PlayerService> log,
-    SharedQueueService? sharedQueues = null) : IAsyncDisposable
+    SharedQueueService? sharedQueues = null,
+    TimeProvider? timeProvider = null) : IAsyncDisposable
 {
+    private readonly TimeProvider _time = timeProvider ?? TimeProvider.System;
     private Guid? _sharedQueueId;
     public bool IsSharingQueue => _sharedQueueId is not null;
     public SharedQueueSnapshot? JoinedQueue { get; private set; }
+    public TrackInfo? DisplayTrack => JoinedQueue is { } joined ? joined.Current : Current;
+    public double DisplayDuration => JoinedQueue?.Duration ?? Duration;
+    public double DisplayPosition => JoinedQueue is { } joined ? joined.PositionAt(_time.GetUtcNow()) : Position;
     public string? SharedQueueMessage { get; private set; }
     public Func<Func<Task>, Task>? DispatchSharedQueue { get; set; }
 
@@ -202,7 +207,7 @@ public sealed class PlayerService(
 
     private async Task NotifyAsync()
     {
-        if (_sharedQueueId is { } id) sharedQueues?.Publish(id, QueueEntries, _cursor, IsPlaying);
+        if (_sharedQueueId is { } id) sharedQueues?.Publish(id, QueueEntries, _cursor, IsPlaying, Position, Duration);
         // A multicast Func<Task> only returns the final subscriber's task. Await every
         // component so a completed state update means all subscribed views have refreshed.
         foreach (var handler in StateChanged?.GetInvocationList() ?? [])
@@ -523,6 +528,7 @@ public sealed class PlayerService(
 
     public async Task SeekAsync(double seconds)
     {
+        if (JoinedQueue is not null) return;
         await EnsureInitializedAsync();
         Position = seconds;
         await _module!.InvokeVoidAsync("seek", seconds);
@@ -762,6 +768,10 @@ public sealed class PlayerService(
 
     // ---- listening along -------------------------------------------------
 
+    /// <summary>Also called by the connected circuit's timer when background tabs stop sending audio events.</summary>
+    public Task RefreshPlaybackPresenceAsync() =>
+        Current is not null ? BroadcastAsync() : Task.CompletedTask;
+
     /// <summary>
     /// Tells <see cref="ListeningService"/> where we are, at most once every
     /// <see cref="ListeningService.HeartbeatInterval"/> unless <paramref name="force"/> says this
@@ -777,10 +787,11 @@ public sealed class PlayerService(
     /// </summary>
     private async Task BroadcastAsync(bool force = false)
     {
-        var now = DateTimeOffset.UtcNow;
+        var now = _time.GetUtcNow();
         if (!force && now - _lastBroadcast < ListeningService.HeartbeatInterval) return;
 
         _lastBroadcast = now;
+        if (_sharedQueueId is { } id) sharedQueues?.Publish(id, QueueEntries, _cursor, IsPlaying);
 
         try
         {

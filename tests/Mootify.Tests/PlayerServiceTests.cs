@@ -489,6 +489,7 @@ public sealed class PlayerServiceTests : IAsyncLifetime
         await player.PlayQueueAsync(tracks, 0);
         var services = new Microsoft.Extensions.DependencyInjection.ServiceCollection();
         Microsoft.Extensions.DependencyInjection.ServiceCollectionServiceExtensions.AddSingleton(services, player);
+        Microsoft.Extensions.DependencyInjection.ServiceCollectionServiceExtensions.AddSingleton<Microsoft.JSInterop.IJSRuntime>(services, _js);
         Microsoft.Extensions.DependencyInjection.LoggingServiceCollectionExtensions.AddLogging(services);
         await using var provider = Microsoft.Extensions.DependencyInjection.ServiceCollectionContainerBuilderExtensions.BuildServiceProvider(services);
         await using var renderer = new Microsoft.AspNetCore.Components.Web.HtmlRenderer(

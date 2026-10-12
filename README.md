@@ -36,6 +36,13 @@ files have vanished.
   Joining never starts audio on their device. **Leave queue** restores their local queue controls.
   Sharing ends when the host stops sharing, replaces the queue, or closes the session. These live
   website queues are held in server memory and end on a server restart.
+  Connected players refresh listening status and queue sharing from the server every 20 seconds,
+  even if a background tab stops sending audio updates. There is no 12-hour playback limit;
+  login sessions default to 30 days (`Auth:SessionLifetime`). Disconnected players still expire
+  promptly rather than appearing to play all day after a tab is closed.
+- Notifications normally play the cowbell. Click the top-left logo five times to enable
+  **Extreme Cow Mode**: each notification randomly plays `moo.mp3`, `moo1.mp3`, or `moo2.mp3`
+  instead. The mode is remembered in this browser; the notification mute switch still applies.
 - The volume slider applies changes continuously while dragging.
 - Right-click a song in the library or a playlist for a menu beside the pointer, or open its **⋯**
   menu, to **Play next** or **Add to queue**. These actions keep the current song playing.
