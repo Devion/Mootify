@@ -26,6 +26,9 @@ export function bind(list, owner) {
         source = row;
         event.dataTransfer.effectAllowed = 'move';
         event.dataTransfer.setData('text/plain', row.dataset.reorderId);
+        // Selected text can span neighboring rows; always preview only this row.
+        const box = row.getBoundingClientRect();
+        event.dataTransfer.setDragImage(row, event.clientX - box.left, event.clientY - box.top);
     }
     function over(event) {
         const dest = destination(event);

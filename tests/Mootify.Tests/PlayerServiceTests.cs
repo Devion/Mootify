@@ -464,7 +464,7 @@ public sealed class PlayerServiceTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Normalization_is_persisted_and_selects_the_normalized_stream()
+    public async Task Normalization_is_persisted_and_uses_original_audio_with_measurements()
     {
         var tracks = await AddTracksAsync(2);
         await using (var player = CreatePlayer())
@@ -474,11 +474,14 @@ public sealed class PlayerServiceTests : IAsyncLifetime
             Assert.False(player.CurrentIsNormalized);
             await player.PlayTrackAsync(tracks[1]);
             Assert.True(player.CurrentIsNormalized);
-            Assert.Equal($"/media/{tracks[1]}/normalized", _js.Calls.Last(c => c.Identifier == "play").Args[0]);
+            Assert.Equal($"/media/{tracks[1]}", _js.Calls.Last(c => c.Identifier == "play").Args[0]);
+            Assert.Equal($"/media/{tracks[1]}/loudness", _js.Calls.Last(c => c.Identifier == "play").Args[2]);
+            await player.SetSteadyVolumeAsync(true);
         }
         await using var restored = CreatePlayer();
         await restored.EnsureInitializedAsync();
         Assert.True(restored.NormalizeVolume);
+        Assert.True(restored.SteadyVolume);
     }
 
     [Fact]

@@ -183,6 +183,26 @@ public sealed class Transcoder(
         (normalize ? "-af loudnorm=I=-16:TP=-1.5:LRA=11 -ar 48000 " : "") +
         $"-codec:a libmp3lame -b:a {bitrate} -f mp3 \"{tempTarget}\"";
 
+    public async Task<LoudnessMeasurement?> MeasureLoudnessAsync(string source, CancellationToken ct = default)
+    {
+        await _normalizationGate.WaitAsync(ct);
+        try
+        {
+            var (exit, _, stderr) = await RunAsync(options.CurrentValue.FfmpegPath,
+                $"-hide_banner -nostdin -i \"{source}\" -map 0:a:0 -af loudnorm=I=-16:TP=-1.5:dual_mono=true:print_format=json -f null -", ct);
+            var result = exit == 0 ? LoudnessAnalysis.Parse(stderr) : null;
+            LastError = result is null ? "Could not measure audio loudness (silent or invalid audio, or FFmpeg failed)." : null;
+            return result;
+        }
+        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or IOException)
+        {
+            LastError = ex.Message;
+            log.LogWarning(ex, "Could not measure loudness for {Source}", source);
+            return null;
+        }
+        finally { _normalizationGate.Release(); }
+    }
+
     private static async Task<(int ExitCode, string StdOut, string StdErr)> RunAsync(
         string fileName, string arguments, CancellationToken ct)
     {

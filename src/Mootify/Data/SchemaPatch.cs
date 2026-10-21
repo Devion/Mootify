@@ -105,6 +105,8 @@ public static class SchemaPatch
             """ALTER TABLE "Users" ADD COLUMN "ApprovalPending" INTEGER NOT NULL DEFAULT 0"""),
         ("Preferences", "NormalizeVolume",
             """ALTER TABLE "Preferences" ADD COLUMN "NormalizeVolume" INTEGER NOT NULL DEFAULT 0"""),
+        ("Preferences", "SteadyVolume",
+            """ALTER TABLE "Preferences" ADD COLUMN "SteadyVolume" INTEGER NOT NULL DEFAULT 0"""),
         ("Users", "MustChangePassword",
             """ALTER TABLE "Users" ADD COLUMN "MustChangePassword" INTEGER NOT NULL DEFAULT 0"""),
 

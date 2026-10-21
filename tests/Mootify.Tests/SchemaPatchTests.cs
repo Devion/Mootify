@@ -384,11 +384,12 @@ public sealed class SchemaPatchTests : IAsyncDisposable
         var id = await AddUserAsync(db, "existing");
         await ExecAsync("ALTER TABLE Users DROP COLUMN ApprovalPending");
         await ExecAsync("ALTER TABLE Preferences DROP COLUMN NormalizeVolume");
+        await ExecAsync("ALTER TABLE Preferences DROP COLUMN SteadyVolume");
         await ExecAsync("ALTER TABLE Ideas DROP COLUMN AdminReply");
         await ApplyAsync(db);
         await ApplyAsync(db);
         Assert.False(await db.Users.Where(u => u.Id == id).Select(u => u.ApprovalPending).SingleAsync());
-        db.Preferences.Add(new UserPreference { UserId = id, NormalizeVolume = true });
+        db.Preferences.Add(new UserPreference { UserId = id, NormalizeVolume = true, SteadyVolume = true });
         db.Ideas.Add(new Idea { Id = Guid.NewGuid(), UserId = id, Message = "Idea", AdminReply = "Done" });
         await db.SaveChangesAsync();
     }

@@ -1363,7 +1363,7 @@ a.badge:hover { text-decoration: none; filter: brightness(1.2); }
 
 .shell__content { width: 100%; max-width: 1200px; margin-inline: auto; min-width: 0; }
 .track-menu-backdrop { position: fixed; inset: 0; z-index: 100; }
-[data-reorder-id][draggable="true"] { cursor: grab; }
+[data-reorder-id][draggable="true"] { cursor: grab; -webkit-user-select: none; user-select: none; }
 [data-reorder-id][draggable="true"]:active { cursor: grabbing; }
 /* An overlay keeps the insertion line from changing row heights during a drag. */
 .queue-item, .tracklist tr > td { position: relative; }

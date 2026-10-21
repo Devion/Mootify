@@ -40,8 +40,14 @@
     </label>
     <p class="muted">
         Keep songs at a similar volume during website playback. Changes apply from the next song.
-        Songs that have not been prepared yet can take longer to start.
+        Your browser adjusts playback using each song’s loudness measurements, without storing extra audio copies.
+        Unmeasured songs start at their original volume and adjust when analysis finishes.
     </p>
+    <label>
+        <input type="checkbox" checked="@_steadyVolume" disabled="@(!_normalizeVolume)" @onchange="SetSteadyVolume" />
+        Steady volume
+    </label>
+    <p class="muted">Gently smooth louder and quieter passages while normalization is enabled. This reduces musical dynamics. Applies from the next song.</p>
 
     <h3>Keep playing</h3>
     <p class="muted">
@@ -115,6 +121,7 @@
     private bool _shareListening;
     private bool _autoContinue;
     private bool _normalizeVolume;
+    private bool _steadyVolume;
 
     protected override async Task OnInitializedAsync()
     {
@@ -124,6 +131,7 @@
         _shareListening = await Listening.IsSharingAsync(userId);
         _autoContinue = await Preferences.GetAutoContinueAsync(userId);
         _normalizeVolume = await Preferences.GetNormalizeVolumeAsync(userId);
+        _steadyVolume = await Preferences.GetSteadyVolumeAsync(userId);
 
         await LoadDevicesAsync();
     }
@@ -132,6 +140,12 @@
     {
         await Player.SetNormalizeVolumeAsync(e.Value is true);
         _normalizeVolume = Player.NormalizeVolume;
+    }
+
+    private async Task SetSteadyVolume(ChangeEventArgs e)
+    {
+        await Player.SetSteadyVolumeAsync(e.Value is true);
+        _steadyVolume = Player.SteadyVolume;
     }
 
     private async Task ToggleAutoContinue() =>

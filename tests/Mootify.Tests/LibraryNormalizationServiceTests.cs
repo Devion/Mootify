@@ -9,7 +9,7 @@ public sealed class LibraryNormalizationServiceTests : IAsyncLifetime
 {
     private TestDatabase _db = null!;
     private LibraryNormalizationService _service = null!;
-    private TranscodeCache _cache = null!;
+    private LoudnessAnalysis _cache = null!;
     private string _root = null!;
     private Guid _adminId;
 
@@ -28,7 +28,7 @@ public sealed class LibraryNormalizationServiceTests : IAsyncLifetime
             FfmpegPath = "mootify-test-no-ffmpeg",
         });
         var transcoder = new Transcoder(options, NullLogger<Transcoder>.Instance);
-        _cache = new TranscodeCache(transcoder, options, new StaticOptionsMonitor<LibraryOptions>(new LibraryOptions { MusicRoot = _root }), NullLogger<TranscodeCache>.Instance);
+        _cache = new LoudnessAnalysis(transcoder, options);
         _service = new LibraryNormalizationService(_db, _cache, transcoder, NullLogger<LibraryNormalizationService>.Instance);
     }
 
@@ -53,20 +53,23 @@ public sealed class LibraryNormalizationServiceTests : IAsyncLifetime
             File.SetLastWriteTimeUtc(track.Path, DateTime.UtcNow.AddHours(-2));
             if (specifications[i].Cached)
             {
-                Directory.CreateDirectory(_cache.NormalizedDirectory);
-                File.WriteAllText(CachedPath(ids[i]), "normalized copy");
+                Directory.CreateDirectory(_cache.DirectoryPath);
+                var info = new FileInfo(track.Path);
+                File.WriteAllText(CachedPath(ids[i]), System.Text.Json.JsonSerializer.Serialize(
+                    new LoudnessAnalysis.CachedMeasurement(Path.GetFullPath(track.Path), info.Length,
+                        info.LastWriteTimeUtc.Ticks, new LoudnessMeasurement(-20, -8))));
             }
         }
         await db.SaveChangesAsync();
         return ids;
     }
 
-    private string CachedPath(Guid id) => Path.Combine(_cache.NormalizedDirectory, $"{id:n}-normalized-v1.mp3");
+    private string CachedPath(Guid id) => _cache.CachePath(id);
 
     [Theory]
     [InlineData(".mp3")]
     [InlineData(".flac")]
-    public async Task Playback_returns_ready_normalized_copy_synchronously_without_ffmpeg(string extension)
+    public async Task Playback_returns_ready_measurements_synchronously_without_ffmpeg(string extension)
     {
         // The fixture deliberately configures a nonexistent FFmpeg executable: a cache hit
         // must succeed without launching it, for both MP3 and native FLAC originals.
@@ -75,10 +78,10 @@ public sealed class LibraryNormalizationServiceTests : IAsyncLifetime
         var modified = File.GetLastWriteTimeUtc(cached);
         for (var play = 0; play < 2; play++)
         {
-            var pending = _cache.GetOrCreateAsync(ids[0], Path.Combine(_root, ids[0] + extension), normalize: true);
+            var pending = _cache.GetOrCreateAsync(ids[0], Path.Combine(_root, ids[0] + extension));
             Assert.True(pending.IsCompletedSuccessfully);
-            Assert.Equal(cached, await pending);
-            Assert.Equal("normalized copy", await File.ReadAllTextAsync(cached));
+            Assert.Equal(new LoudnessMeasurement(-20, -8), await pending);
+            Assert.True(new FileInfo(cached).Length < 1024);
             Assert.Equal(modified, File.GetLastWriteTimeUtc(cached));
             Assert.False(File.Exists(cached + ".partial"));
         }
@@ -181,17 +184,17 @@ public sealed class LibraryNormalizationServiceTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Prepares_only_present_mp3s_and_reuses_playback_cache_on_rerun()
+    public async Task Analyzes_all_present_formats_and_reuses_measurements_on_rerun()
     {
-        var ids = await SeedAsync((".mp3", true, true), (".MP3", true, true), (".flac", true, false), (".mp3", false, false));
+        var ids = await SeedAsync((".mp3", true, true), (".MP3", true, true), (".flac", true, true), (".mp3", false, false));
         await _service.StartAsync(CancellationToken.None);
         for (var i = 0; i < 2; i++)
         {
             var done = Completion();
             Assert.True((await _service.PrepareAsync(_adminId)).Ok);
             var progress = await done;
-            Assert.Equal(2, progress.Total);
-            Assert.Equal(2, progress.AlreadyReady);
+            Assert.Equal(3, progress.Total);
+            Assert.Equal(3, progress.AlreadyReady);
             Assert.Equal(0, progress.Prepared);
             Assert.Equal(0, progress.Failed);
             Assert.Equal(100, progress.Percent);
@@ -199,7 +202,7 @@ public sealed class LibraryNormalizationServiceTests : IAsyncLifetime
         }
         await using var db = _db.CreateDbContext();
         var track = await db.Tracks.SingleAsync(t => t.Id == ids[0]);
-        Assert.Equal(CachedPath(ids[0]), await _cache.GetOrCreateAsync(track.Id, track.Path, normalize: true));
+        Assert.Equal(new LoudnessMeasurement(-20, -8), await _cache.GetOrCreateAsync(track.Id, track.Path));
         Assert.Equal("original", File.ReadAllText(track.Path));
     }
 
@@ -227,7 +230,7 @@ public sealed class LibraryNormalizationServiceTests : IAsyncLifetime
     public async Task Stale_and_missing_copies_are_attempted_and_errors_are_reported_without_changing_originals()
     {
         var ids = await SeedAsync((".mp3", true, true), (".mp3", true, false));
-        File.SetLastWriteTimeUtc(CachedPath(ids[0]), DateTime.UtcNow.AddDays(-1));
+        File.SetLastWriteTimeUtc(Path.Combine(_root, ids[0] + ".mp3"), DateTime.UtcNow);
         await _service.StartAsync(CancellationToken.None);
         var done = Completion();
         Assert.True((await _service.PrepareAsync(_adminId)).Ok);
@@ -256,26 +259,12 @@ public sealed class LibraryNormalizationServiceTests : IAsyncLifetime
     {
         var ids = await SeedAsync((".mp3", true, true));
         var source = Path.Combine(_root, ids[0] + ".mp3");
-        Assert.NotNull(_cache.FindReady(ids[0], source, normalize: true));
-        Assert.Null(_cache.FindReady(ids[0], source));
+        Assert.NotNull(_cache.FindReady(ids[0], source));
         File.WriteAllText(CachedPath(ids[0]), "");
-        Assert.Null(_cache.FindReady(ids[0], source, normalize: true));
+        Assert.Null(_cache.FindReady(ids[0], source));
         File.WriteAllText(CachedPath(ids[0]), "stale");
-        File.SetLastWriteTimeUtc(CachedPath(ids[0]), DateTime.UtcNow.AddDays(-1));
-        Assert.Null(_cache.FindReady(ids[0], source, normalize: true));
+        File.SetLastWriteTimeUtc(Path.Combine(_root, ids[0] + ".mp3"), DateTime.UtcNow);
+        Assert.Null(_cache.FindReady(ids[0], source));
     }
 
-    [Fact]
-    public async Task Legacy_normalized_copy_moves_to_music_storage_without_reencoding()
-    {
-        var ids = await SeedAsync((".mp3", true, false));
-        Directory.CreateDirectory(_cache.CacheDirectory);
-        var legacy = Path.Combine(_cache.CacheDirectory, $"{ids[0]:n}-normalized-v1.mp3");
-        await File.WriteAllTextAsync(legacy, "already normalized");
-        var result = await _cache.GetOrCreateAsync(ids[0], Path.Combine(_root, ids[0] + ".mp3"), normalize: true);
-        Assert.Equal(Path.Combine(_root, "Cache", "Normalized", $"{ids[0]:n}-normalized-v1.mp3"), result);
-        Assert.Equal("already normalized", await File.ReadAllTextAsync(result!));
-        Assert.False(File.Exists(legacy));
-        Assert.Equal("original", await File.ReadAllTextAsync(Path.Combine(_root, ids[0] + ".mp3")));
-    }
 }

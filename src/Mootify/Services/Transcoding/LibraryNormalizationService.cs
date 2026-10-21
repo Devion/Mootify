@@ -21,13 +21,13 @@ public sealed record NormalizationProgress(
 }
 
 /// <summary>
-/// Manually prepares the same normalized cache entries that playback requests. One server-wide
-/// job survives navigation; shutdown cancels it. Reruns reuse completed copies, including those
-/// prepared before a cancellation or restart. Source files are never rewritten.
+/// Measures loudness for client playback. One server-wide job survives navigation; shutdown
+/// cancels it. Reruns reuse measurements, including those prepared before a restart.
+/// Source files are never rewritten and no extra audio copies are created.
 /// </summary>
 public sealed class LibraryNormalizationService(
     IDbContextFactory<MootifyDbContext> dbFactory,
-    TranscodeCache cache,
+    LoudnessAnalysis cache,
     Transcoder transcoder,
     ILogger<LibraryNormalizationService> log) : BackgroundService
 {
@@ -120,7 +120,7 @@ public sealed class LibraryNormalizationService(
         ct.ThrowIfCancellationRequested();
         await using var db = await dbFactory.CreateDbContextAsync(ct);
         var tracks = await db.Tracks.AsNoTracking()
-            .Where(t => t.IsPresent && t.Path.ToLower().EndsWith(".mp3"))
+            .Where(t => t.IsPresent)
             .OrderBy(t => t.Id)
             .Select(t => new { t.Id, t.Path, t.Title })
             .ToListAsync(ct);
@@ -144,11 +144,11 @@ public sealed class LibraryNormalizationService(
             Notify();
             try
             {
-                if (cache.FindReady(track.Id, track.Path, normalize: true) is not null)
+                if (cache.FindReady(track.Id, track.Path) is not null)
                     Update(p => p with { AlreadyReady = p.AlreadyReady + 1 });
                 else
                 {
-                    var path = await cache.GetOrCreateAsync(track.Id, track.Path, workerToken, normalize: true);
+                    var path = await cache.GetOrCreateAsync(track.Id, track.Path, workerToken);
                     if (path is null)
                         throw new IOException(File.Exists(track.Path)
                             ? transcoder.LastError ?? "Could not prepare this track."

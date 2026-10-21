@@ -47,6 +47,7 @@ public sealed class MootifyDbContext(DbContextOptions<MootifyDbContext> options)
 
         b.Entity<AppUser>().Property(x => x.ApprovalPending).HasDefaultValue(false);
         b.Entity<UserPreference>().Property(x => x.NormalizeVolume).HasDefaultValue(false);
+        b.Entity<UserPreference>().Property(x => x.SteadyVolume).HasDefaultValue(false);
         b.Entity<UserPreference>().HasKey(x => x.UserId);
 
         b.Entity<AppSetting>().HasKey(x => x.Key);

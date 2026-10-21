@@ -55,6 +55,21 @@ public sealed class PreferenceService(IDbContextFactory<MootifyDbContext> dbFact
         return await db.Preferences.Where(p => p.UserId == userId).Select(p => p.NormalizeVolume).FirstOrDefaultAsync();
     }
 
+    public async Task<bool> GetSteadyVolumeAsync(Guid userId)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync();
+        return await db.Preferences.Where(p => p.UserId == userId).Select(p => p.SteadyVolume).FirstOrDefaultAsync();
+    }
+
+    public async Task SetSteadyVolumeAsync(Guid userId, bool enabled)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync();
+        var preference = await db.Preferences.FirstOrDefaultAsync(p => p.UserId == userId);
+        if (preference is null) { preference = new UserPreference { UserId = userId }; db.Preferences.Add(preference); }
+        preference.SteadyVolume = enabled;
+        await db.SaveChangesAsync();
+    }
+
     public async Task SetNormalizeVolumeAsync(Guid userId, bool enabled)
     {
         await using var db = await dbFactory.CreateDbContextAsync();

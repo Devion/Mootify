@@ -3,7 +3,7 @@
 @implements IDisposable
 @inject LibraryTranscodeService LibraryTranscode
 @inject LibraryNormalizationService LibraryNormalization
-@inject TranscodeCache PlaybackCache
+@inject LoudnessAnalysis PlaybackAnalysis
 @inject AdminService Admin
 @inject SettingsService Settings
 @inject LibraryScanner Scanner
@@ -258,16 +258,15 @@
 </section>
 
 <section class="managebox">
-    <h2>Normalized playback</h2>
-    <p class="muted">Storage: <code>@PlaybackCache.NormalizedDirectory</code></p>
+    <h2>Playback loudness analysis</h2>
+    <p class="muted">Measurements: <code>@PlaybackAnalysis.DirectoryPath</code></p>
     <p class="muted">
-        Prepare normalized playback copies of all MP3s in the scanned library so songs can start
-        without waiting for conversion. This runs in the background; you can leave this page.
-        Originals stay unchanged. Copies use additional disk space, and preparing a large library
-        can take a while. Rerunning skips copies that are already up to date.
+        Measure all songs so browsers can match volume from the start. Only small measurement files
+        are stored; no extra audio copies are created. This runs in the background; you can leave
+        this page. Rerunning skips unchanged songs. Existing normalized audio copies are no longer used.
     </p>
     @{ var normalization = LibraryNormalization.Progress; }
-    <label for="normalization-parallelism">Parallel normalizations: @(normalization.IsRunning ? normalization.Parallelism : _normalizationParallelism)</label>
+    <label for="normalization-parallelism">Parallel analyses: @(normalization.IsRunning ? normalization.Parallelism : _normalizationParallelism)</label>
     <input id="normalization-parallelism" type="range" min="1" max="8" step="1"
            @bind="_normalizationParallelism" @bind:event="oninput" disabled="@(normalization.IsRunning || _normalizationBusy)" />
     <p class="managebox__hint">Choose 1–8 tracks at a time before starting. Higher values use more CPU and disk bandwidth.</p>
@@ -295,7 +294,7 @@
         }
         else
         {
-            <button class="button" @onclick="PrepareNormalization" disabled="@(!_ffmpegOk || _normalizationBusy)">Prepare all MP3s</button>
+            <button class="button" @onclick="PrepareNormalization" disabled="@(!_ffmpegOk || _normalizationBusy)">Analyze all songs</button>
             @if (!_ffmpegOk) { <span class="muted">FFmpeg isn't available.</span> }
         }
     </div>

@@ -314,30 +314,30 @@ public sealed class MootifyApiFixture : IsolatedMootifyFixture, IAsyncLifetime
 public sealed class ApiIntegrationTests(MootifyApiFixture fixture) : IClassFixture<MootifyApiFixture>
 {
     [Fact]
-    public async Task Normalized_media_serves_cached_bytes_and_ranges_without_reencoding()
+    public async Task Loudness_metadata_leaves_original_media_and_range_requests_unchanged()
     {
-        var cache = fixture.Services.GetRequiredService<Mootify.Services.Transcoding.TranscodeCache>();
-        Directory.CreateDirectory(cache.NormalizedDirectory);
-        var path = Path.Combine(cache.NormalizedDirectory, $"{fixture.TrackId:n}-normalized-v1.mp3");
-        byte[] cachedBytes = [0x49, 0x44, 0x33, 0x03, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06];
-        await File.WriteAllBytesAsync(path, cachedBytes);
-        File.SetLastWriteTimeUtc(path, File.GetLastWriteTimeUtc(fixture.TrackFilePath).AddSeconds(1));
-        var modified = File.GetLastWriteTimeUtc(path);
+        var analysis = fixture.Services.GetRequiredService<Mootify.Services.Transcoding.LoudnessAnalysis>();
+        Directory.CreateDirectory(analysis.DirectoryPath);
+        var path = analysis.CachePath(fixture.TrackId);
+        var info = new FileInfo(fixture.TrackFilePath);
+        var measurement = new Mootify.Services.Transcoding.LoudnessMeasurement(-20, -8);
+        await File.WriteAllTextAsync(path, System.Text.Json.JsonSerializer.Serialize(
+            new Mootify.Services.Transcoding.LoudnessAnalysis.CachedMeasurement(
+                info.FullName, info.Length, info.LastWriteTimeUtc.Ticks, measurement)));
         try
         {
             using var client = await fixture.SignedInClientAsync();
-            using var response = await client.GetAsync($"/media/{fixture.TrackId}/normalized");
+            using var response = await client.GetAsync($"/media/{fixture.TrackId}/loudness");
             Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-            Assert.Equal("audio/mpeg", response.Content.Headers.ContentType!.MediaType);
-            Assert.Equal(cachedBytes, await response.Content.ReadAsByteArrayAsync());
-            Assert.Contains("bytes", response.Headers.AcceptRanges);
-
-            using var request = new HttpRequestMessage(HttpMethod.Get, $"/media/{fixture.TrackId}/normalized");
+            var metadata = await response.Content.ReadFromJsonAsync<Mootify.Services.Transcoding.LoudnessMeasurement>();
+            Assert.Equal(measurement, metadata);
+            Assert.Equal(4, metadata!.GainDb);
+            using var request = new HttpRequestMessage(HttpMethod.Get, $"/media/{fixture.TrackId}");
             request.Headers.Range = new RangeHeaderValue(2, 5);
             using var partial = await client.SendAsync(request);
             Assert.Equal(HttpStatusCode.PartialContent, partial.StatusCode);
-            Assert.Equal(cachedBytes[2..6], await partial.Content.ReadAsByteArrayAsync());
-            Assert.Equal(modified, File.GetLastWriteTimeUtc(path));
+            var bytes = await File.ReadAllBytesAsync(fixture.TrackFilePath);
+            Assert.Equal(bytes[2..6], await partial.Content.ReadAsByteArrayAsync());
             Assert.False(File.Exists(path + ".partial"));
         }
         finally { File.Delete(path); }

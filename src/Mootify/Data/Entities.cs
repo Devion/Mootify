@@ -84,6 +84,7 @@ public sealed class UserPreference
     /// </summary>
     public bool AutoContinue { get; set; } = true;
     public bool NormalizeVolume { get; set; }
+    public bool SteadyVolume { get; set; }
 
     /// <summary>
     /// Whether playing from a playlist tells everybody else who can see that playlist what you're

@@ -12,7 +12,7 @@ function fixture() {
         const row = {
             dataset: { reorderId: id }, draggable: true, classes,
             classList: { add: name => classes.add(name), remove: (...names) => names.forEach(n => classes.delete(n)) },
-            getBoundingClientRect: () => ({ top: index * 40, height: 40 }),
+            getBoundingClientRect: () => ({ left: 10, top: index * 40, height: 40 }),
             closest: () => row
         };
         return row;
@@ -27,14 +27,24 @@ function fixture() {
     binding.update(true);
     async function emit(name, index, after = false, extra = {}) {
         const event = {
-            target: rows[index], clientY: index * 40 + (after ? 30 : 10),
-            dataTransfer: { setData() {} }, preventDefault() { this.prevented = true; }, ...extra
+            target: rows[index], clientX: 30, clientY: index * 40 + (after ? 30 : 10),
+            dataTransfer: { setData() {}, setDragImage(...args) { this.dragImage = args; } }, preventDefault() { this.prevented = true; }, ...extra
         };
         await handlers.get(name)?.(event);
         return event;
     }
     return { rows, moves, binding, emit, handlers };
 }
+
+test('dragging a row child uses only that row as the preview', async () => {
+    const f = fixture();
+    const event = await f.emit('dragstart', 1, false, {
+        target: { closest: () => f.rows[1] }
+    });
+    assert.deepEqual(event.dataTransfer.dragImage, [f.rows[1], 20, 10]);
+    await f.emit('drop', 3, true);
+    assert.deepEqual(f.moves, [['MoveAsync', 'b', 'd']]);
+});
 
 for (const [from, over, after, target] of [
     [0, 2, false, 'b'], [0, 2, true, 'c'],

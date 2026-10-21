@@ -173,6 +173,7 @@ public sealed class PlayerService(
     public double Position { get; private set; }
     public double Duration { get; private set; }
     public bool NormalizeVolume { get; private set; }
+    public bool SteadyVolume { get; private set; }
     public bool CurrentIsNormalized { get; private set; }
     public double Volume { get; private set; } = 0.8;
     public bool ShuffleEnabled { get; private set; }
@@ -187,7 +188,7 @@ public sealed class PlayerService(
     public bool UsingFallback { get; private set; }
 
     /// <summary>What's actually playing right now, for the play bar badge.</summary>
-    public string? PlayingFormat => Current is null ? null : CurrentIsNormalized || UsingFallback ? "MP3" : Current.Format;
+    public string? PlayingFormat => Current is null ? null : UsingFallback ? "MP3" : Current.Format;
 
     public bool HasNext => _cursor >= 0 && (_cursor + 1 < _order.Count || Repeat == RepeatMode.All);
     public bool HasPrevious => _cursor > 0 || Position > 3;
@@ -221,7 +222,10 @@ public sealed class PlayerService(
         _module = await js.InvokeAsync<IJSObjectReference>("import", "./js/player.js");
         _selfRef = DotNetObjectReference.Create(this);
         if (await currentUser.GetIdAsync() is { } userId)
+        {
             NormalizeVolume = await preferences.GetNormalizeVolumeAsync(userId);
+            SteadyVolume = await preferences.GetSteadyVolumeAsync(userId);
+        }
         await _module.InvokeVoidAsync("init", _selfRef);
         await _module.InvokeVoidAsync("setVolume", Volume);
     }
@@ -445,8 +449,10 @@ public sealed class PlayerService(
         // browser says it can't decode the original, or when a native decode fails anyway.
         await _module!.InvokeVoidAsync(
             "play",
-            CurrentIsNormalized ? $"/media/{Current.Id}/normalized" : $"/media/{Current.Id}",
-            !CurrentIsNormalized && Current.NeedsFallback ? $"/media/{Current.Id}/mp3" : null);
+            $"/media/{Current.Id}",
+            Current.NeedsFallback ? $"/media/{Current.Id}/mp3" : null,
+            CurrentIsNormalized ? $"/media/{Current.Id}/loudness" : null,
+            NormalizeVolume && SteadyVolume);
 
         // A new track is the moment the broadcast is most wrong, so it goes out immediately
         // rather than waiting for the next heartbeat.
@@ -541,6 +547,15 @@ public sealed class PlayerService(
         if (await currentUser.GetIdAsync() is { } userId)
             await preferences.SetNormalizeVolumeAsync(userId, enabled);
         NormalizeVolume = enabled;
+        await NotifyAsync();
+    }
+
+    public async Task SetSteadyVolumeAsync(bool enabled)
+    {
+        await EnsureInitializedAsync();
+        if (await currentUser.GetIdAsync() is { } userId)
+            await preferences.SetSteadyVolumeAsync(userId, enabled);
+        SteadyVolume = enabled;
         await NotifyAsync();
     }
 

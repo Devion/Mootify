@@ -7,10 +7,13 @@
 //   2. The cowbell never touches this element. It gets its own (see notifications.js) —
 //      playing a notification through the music element stops the music.
 
+import * as loudness from './loudness.js';
+
 let audio = null;
 let dotnet = null;
 let duckTimer = null;
 let userVolume = 0.8;
+let playGeneration = 0;
 
 function ensureAudio() {
     if (audio) return audio;
@@ -54,6 +57,13 @@ export function init(dotnetRef) {
     dotnet = dotnetRef;
     ensureAudio();
     primeNotificationAudio();
+    // Resume Web Audio during a real gesture, before the Blazor round trip.
+    const unlock = () => {
+        const el = ensureAudio();
+        loudness.prime(el).catch(error => console.warn('[mootify] Audio processing unavailable.', error));
+    };
+    document.addEventListener('pointerdown', unlock);
+    document.addEventListener('keydown', unlock);
 }
 
 // Chrome, Firefox and Edge decode FLAC; Safari's support has been patchy and version
@@ -92,8 +102,15 @@ function switchToFallback(reason) {
     return true;
 }
 
-export function play(url, fallbackUrl) {
+export async function play(url, fallbackUrl, loudnessUrl = null, steady = false) {
     const el = ensureAudio();
+    const generation = ++playGeneration;
+    if (loudnessUrl) el.pause();
+    const configured = loudness.configure(el, loudnessUrl, steady)
+        .catch(error => console.warn('[mootify] Audio processing unavailable.', error));
+    // Ready measurements apply before playback; new analysis never holds up a song.
+    await Promise.race([configured, new Promise(resolve => setTimeout(resolve, 200))]);
+    if (generation !== playGeneration) return;
 
     // fallbackUrl is only supplied for tracks stored in something other than MP3.
     const useFallback = !!fallbackUrl && !supportsFlac();
@@ -122,21 +139,27 @@ export function play(url, fallbackUrl) {
 }
 
 export function resume() {
+    loudness.prime(ensureAudio()).catch(() => {});
     ensureAudio().play().catch(err => dotnet?.invokeMethodAsync('OnError', String(err)));
 }
 
 export function pause() {
+    playGeneration++;
     ensureAudio().pause();
 }
 
 export function seek(seconds) {
     const el = ensureAudio();
-    if (isFinite(seconds)) el.currentTime = seconds;
+    if (isFinite(seconds)) {
+        loudness.resetDynamics();
+        el.currentTime = seconds;
+    }
 }
 
 export function setVolume(volume) {
     userVolume = volume;
-    ensureAudio().volume = volume;
+    const el = ensureAudio();
+    el.volume = loudness.setOutputVolume(volume) ? 1 : volume;
 }
 
 // Duck rather than stop, and ramp rather than jump — an instant volume change reads as a glitch.
@@ -151,12 +174,13 @@ export function duck(toVolume, durationMs) {
 }
 
 function ramp(el, target, ms) {
-    const from = el.volume;
+    const from = loudness.outputVolume(el.volume);
     const start = performance.now();
 
     function step(now) {
         const t = Math.min(1, (now - start) / ms);
-        el.volume = Math.max(0, Math.min(1, from + (target - from) * t));
+        const volume = Math.max(0, Math.min(1, from + (target - from) * t));
+        el.volume = loudness.setOutputVolume(volume) ? 1 : volume;
         if (t < 1) requestAnimationFrame(step);
     }
 
